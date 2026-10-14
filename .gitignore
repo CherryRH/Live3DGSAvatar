@@ -34,3 +34,6 @@ submodules/diff-gaussian-rasterization/third_party/glm/manual.md
 submodules/*/.git/
 submodules/*/build/
 submodules/*/samples/data/
+
+# ---- 组会周报（内部汇报，不入库）----
+docs/周报/
