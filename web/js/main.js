@@ -250,7 +250,11 @@ function connectToBackend() {
   });
 
   client.addEventListener("error", (ev) => {
-    showOverlay(`连接失败：${ev.detail.error.message}`);
+    // 用可选链兜底：错误处理路径**绝不能再抛错**，否则真正的错误会被掩盖。
+    const err = ev.detail?.error;
+    const msg = err?.message ?? "未知错误";
+    showOverlay(err?.fromServer ? `后端错误：${msg}` : `连接失败：${msg}`);
+    if (!err?.fromServer) setConn("closed", "连接失败");
   });
 
   client.addEventListener("retry", (ev) => {

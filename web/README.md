@@ -113,6 +113,7 @@ node web/tests/all.mjs
 | `view.js::draw` | 复用 `ImageData` 与 RGB→RGBA 缓冲，避免每帧分配；`putImageData` 忽略 CSS 变换 |
 | `client.js::_pump` | **只派发最新一帧**，`bufferedAmount` 超限就丢 —— 背面压，避免延迟累积 |
 | `controls.js` | 控件只"读值"，消息统一在 `_emitParams` 装配，避免每个控件各写一遍 |
+| `client.js` 的 `error` 事件 | **两个来源必须统一形状**：传输层错误与后端 `{type:"error"}` 都以 `detail.error`（Error 实例）派发。后端错误带 `fromServer=true` 以便区分。曾因后端错误原样转发（`detail.error` 不存在）导致**错误处理自己抛 TypeError**，把真正的错误盖掉 |
 
 ## 未做
 

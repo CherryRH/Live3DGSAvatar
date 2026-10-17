@@ -61,6 +61,7 @@ python scripts/show_config.py --json          # 机器可读
 | `runtime.device` | `cuda` 或 `cpu`。`cpu` 仅供不依赖 CUDA 内核的自检 |
 | `runtime.split` | 数据集切分：`all` / `train` / `test` |
 | `smoke.max_frames` | 采样帧数上限；`null` 表示不限制 |
+| `paths.data_dir` | 显式指定数据集目录（绝对路径或相对仓库根）。`null` 表示用 `<paths.data_root>/<subject>`。**数据集目录名与 `subject` 不同时用它** |
 | `app.host` / `app.port` | GUI 服务监听地址与端口。默认 `localhost:8000`。**本机回环地址会用 dual-stack socket 监听**，使 `localhost` / `127.0.0.1` / `::1` 三种写法都能访问（见下） |
 | `app.target_fps` | **帧数上限**：每秒最多渲染几帧。同时决定播放推进速度（30 时动作比 60 慢一倍）。`0` 表示不限，此时帧率受渲染耗时限制 |
 | `app.status_interval_s` | `status` 消息推送间隔（秒）。前端据此更新帧号条；太小占满通道，太大帧号一跳一跳 |
@@ -126,6 +127,44 @@ LIVE3DGS_SUBJECT=duda LIVE3DGS_WORK_NAME=test python scripts/render_test.py
 ```
 监听：IPv4 127.0.0.1 + IPv6 ::1（dual-stack，端口 8000）
 ```
+
+### 数据集的两种格式
+
+`load_scene` 按**文件名**自动识别，不需要额外配置：
+
+| 格式 | 判据 | 需要什么 | 适用 |
+|---|---|---|---|
+| **manifest**（自包含） | 目录下有 `render_inputs.npz` | 只要 FLAME 资产（取拓扑） | 新采集的数据 |
+| **checkpoint**（参照格式） | 目录下有 `checkpoint/` + `images/` | 需 FLAME 前向 + chumpy + GPU | 兼容 duda 等旧数据 |
+
+manifest 里已算好逐帧 `mesh` / `blend_weight` / 相机，**不需要 3DMM 参数**，
+因此不需要 `checkpoint/`，也不需要 GPU 就能加载（渲染仍需 GPU）。
+
+```text
+<dataset>/
+├── render_inputs.npz      # mesh [N,5083,3], blend_weight [N,129],
+│                          # K [3,3], w2v [4,4], width, height, names [N]
+├── images/                # 512×512 原图（PSNR 的 GT）
+└── input/                 # 未抠图的原帧（可选）
+```
+
+加载时会校验三件事，任何一项不符都立即报错（而不是等到训练/渲染中途才炸）：
+
+1. `blend_weight` 维度 == `model.network.num_basis_in`
+2. `mesh` 顶点数足以覆盖 FLAME 面表引用的顶点
+3. `mesh` / `blend_weight` 是 float32
+
+### 切换对象
+
+```yaml
+# configs/system.yaml
+subject: crh_1          # 模型目录 <models_dir>/<subject>/<work_name>/
+work_name: test
+paths:
+  data_dir: null        # null → <data_root>/<subject>
+```
+
+若数据集目录名与 `subject` 不一致，设 `paths.data_dir` 即可，不必改 `subject`。
 
 ### 路径写法
 

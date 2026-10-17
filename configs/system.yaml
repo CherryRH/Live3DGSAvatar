@@ -23,13 +23,30 @@
 #   参照   → <paths.reference_root>/output/<subject>/<work_name>/model.ply
 #
 # 切换对象只需改这两处（脚本的 --subject / --work-name 可临时覆盖）。
-subject: duda
+# 当前使用的对象。模型在 <models_dir>/<subject>/<work_name>/，
+# 数据集目录与 subject 同名时无需设 data_dir（见下）。
+#
+# 现有对象：
+#   duda / test         旧数据集（checkpoint 格式，需 FLAME 前向；仅作回归对照）
+#   crh_1 / test        新采集（render_inputs.npz，自包含，**推荐**）
+#   crh_2 / test        新采集（同上）
+subject: crh_1
 work_name: test
 
 paths:
-  # 数据集根目录。实际读取 <data_root>/<subject>/，
-  # 其中需含 images/（原图）与 checkpoint/（3DMM 参数与相机）。
+  # 数据集根目录。默认读取 <data_root>/<subject>/。
+  # 数据集目录名与 subject 不一致时，用下面的 data_dir 显式指定。
   data_root: /home/crh/Datasets/INSTA
+
+  # 显式指定数据集目录（绝对路径，或相对仓库根）。null 表示用
+  # <data_root>/<subject>。
+  #
+  # 为什么需要它：`subject` 同时用于**模型**目录（models/<subject>/<work_name>/），
+  # 而数据集目录名未必与它相同。例如：
+  #   model  → models/crh/crh_1/model.ply        (subject=crh, work_name=crh_1)
+  #   data   → Datasets/INSTA/crh_1              (而非 INSTA/crh/crh_1)
+  # 这种情形设 data_dir 即可，不必为了目录名去改 subject。
+  data_dir: null
 
   # 产物根目录。设置类脚本默认写到 <output_dir>/<脚本名>/
   # （例如 output_dir=output 时，渲染测试写 output/render_test/）。

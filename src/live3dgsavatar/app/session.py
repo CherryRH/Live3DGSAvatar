@@ -106,6 +106,9 @@ class Session:
             scaling_modifier=float(cfg.get("render.scaling_modifier", 1.0)),
             target_fps=float(cfg.get("app.target_fps", 60)),
         )
+        # 运行设备：模型/数据集/相机/背景必须**全在同一个设备上**，
+        # 否则 `mesh.verts[:, mesh.faces[...]]` 这类索引会抛设备不匹配。
+        self.device = str(cfg.get("runtime.device", "cuda"))
         self.avatar = None
         self.scene = None
         # 帧号推进状态（播放/单步）。total 在模型载入后确定。
@@ -156,7 +159,11 @@ class Session:
         # 载入全部才能让「数据集帧」滑块走满全程。
         # ⚠️ 不要改用 `render.frames`（那是渲染测试的采样量，会让滑块被夹住）。
         preload = int(cfg.get("app.preload_frames", -1))
-        scene = load_scene(cfg, frames=preload)
+        # ⚠️ 显式给出设备：`load_scene` 会把**帧、拓扑、相机**统一搬到该设备，
+        #    下面的 `load_ply(device="cuda")` 与 `Camera.to("cuda")` 才与之一致。
+        #    曾经这里漏传，`scene.faces` 留在 CPU，而 `mesh.verts` 在 GPU，
+        #    `mesh.verts[:, mesh.faces[used]]` 抛设备不匹配错误。
+        scene = load_scene(cfg, frames=preload, device=self.device)
 
         av_cfg = AvatarConfig(
             tex_size=int(cfg.get("model.network.tex_size")),
@@ -165,7 +172,7 @@ class Session:
             mlp_hidden=tuple(cfg.get("model.network.mlp_hidden") or ()),
             use_weight_proj=bool(cfg.get("model.network.use_weight_proj", True)),
         )
-        avatar = load_ply(model_ply, config=av_cfg, device="cuda")
+        avatar = load_ply(model_ply, config=av_cfg, device=self.device)
 
         # 状态一致性：先算完再替换，避免中途失败留下半初始化状态
         self.avatar = avatar
@@ -174,7 +181,7 @@ class Session:
         ref_dir = reference_model_dir(cfg)
         self.reference_model = (ref_dir / "model.ply") if ref_dir else None
         self.camera = Camera.from_intrinsics_extrinsics(
-            scene.K, scene.R, scene.T, scene.width, scene.height).to("cuda")
+            scene.K, scene.R, scene.T, scene.width, scene.height).to(self.device)
         self._rasterizer = SimpleRasterizer(
             sh_degree=int(cfg.get("render.sh_degree", 0)),
             scaling_modifier=self.params.scaling_modifier)
@@ -246,7 +253,7 @@ class Session:
 
         m = Mesh(verts=mesh, faces=self.scene.faces,
                  uvs=self.scene.uvs, uv_faces=self.scene.uv_faces)
-        bg = torch.tensor(self.params.background, dtype=torch.float32, device="cuda")
+        bg = torch.tensor(self.params.background, dtype=torch.float32, device=self.device)
 
         with torch.no_grad():
             t0 = time.perf_counter()

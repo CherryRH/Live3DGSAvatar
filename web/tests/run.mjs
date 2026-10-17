@@ -16,6 +16,7 @@ import { parseFrame, parseMessage, geometryFromConfig, HEADER_BYTES, PROTOCOL_VE
   from "../js/protocol.js";
 import { MockSource } from "../js/mock.js";
 import { FpsMeter } from "../js/fps.js";
+import { RenderClient } from "../js/client.js";
 
 let passed = 0;
 const failures = [];
@@ -260,6 +261,70 @@ tests.push((async () => {
     src.stop();
   });
 })());
+
+
+// ------------------------------------------------------------- client.js --
+
+console.log("\nclient.js（错误事件形状）");
+
+/**
+ * 直接调 `_onMessage` 喂消息。
+ *
+ * 为什么要测这个：`error` 事件有**两个来源** ——
+ * 传输层（`_emitError`，`detail.error` 是 Error）与后端业务错误
+ * （`{type:"error", message}`，直接转发时 `detail.error` **不存在**）。
+ * 监听方统一按 `detail.error.message` 取值，于是后者会让**错误处理自己抛 TypeError**，
+ * 把真正的错误信息盖掉 —— 这是最糟糕的一类 bug：报错时看不到真正的错。
+ */
+// `RenderClient` 构造时按 `location` 推导默认 ws 地址；Node 里没有它，给个桩。
+globalThis.location = { protocol: "http:", host: "127.0.0.1:8000" };
+
+function fakeClient() {
+  const c = new RenderClient();
+  c.geometry = { width: 8, height: 8, channels: 3, totalFrames: 10 };
+  return c;
+}
+
+test("后端 error 消息 → detail.error.message 可读", () => {
+  const c = fakeClient();
+  let received = null;
+  c.addEventListener("error", (ev) => { received = ev.detail; });
+  c._onMessage({ data: JSON.stringify({ type: "error", message: "模型尚未加载" }) });
+  assert(received !== null, "应派发 error 事件");
+  assert(received.error instanceof Error, "detail.error 应是 Error");
+  assertEqual(received.error.message, "模型尚未加载", "错误信息应保留原文");
+  assert(received.error.fromServer === true, "应标记来源为后端");
+});
+
+test("后端 error 缺 message 字段时给出兜底文案（不抛错）", () => {
+  const c = fakeClient();
+  let received = null;
+  c.addEventListener("error", (ev) => { received = ev.detail; });
+  c._onMessage({ data: JSON.stringify({ type: "error" }) });
+  assert(received !== null);
+  assert(/未知错误/.test(received.error.message), "应有兜底文案");
+});
+
+test("传输层错误与后端错误形状一致（同一种读取方式）", () => {
+  const c = fakeClient();
+  const seen = [];
+  c.addEventListener("error", (ev) => seen.push(ev.detail.error.message));
+  c._onMessage({ data: JSON.stringify({ type: "error", message: "后端说" }) });
+  c._emitError(new Error("传输层说"));
+  assertEqual(seen.length, 2);
+  assertEqual(seen[0], "后端说");
+  assertEqual(seen[1], "传输层说");
+});
+
+test("非 error 类型的消息仍原样转发", () => {
+  const c = fakeClient();
+  let got = null;
+  c.addEventListener("status", (ev) => { got = ev.detail; });
+  c._onMessage({ data: JSON.stringify({ type: "status", frame: 3, playing: false }) });
+  assert(got !== null);
+  assertEqual(got.type, "status");
+  assertEqual(got.frame, 3);
+});
 
 await Promise.all(tests);
 

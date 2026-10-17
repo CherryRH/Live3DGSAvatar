@@ -94,9 +94,18 @@ data/FLAME2020/generic_model.pkl     # FLAME 模板（需自行从官网获取�
 `output/<subject>/<work_name>/` 约定一致：
 
 ```
-models/duda/test/model.ply       ← 本项目渲染用（约 62 MB，不入库）
-models/duda/test/config.yaml
+models/<subject>/<work_name>/model.ply     ← 约 62 MB，不入库
+models/<subject>/<work_name>/config.yaml
 ```
+
+数据集支持两种格式，按文件名自动识别：
+
+| 格式 | 判据 | 说明 |
+|---|---|---|
+| **manifest** | 有 `render_inputs.npz` | 已算好逐帧网格/驱动参数/相机，**不需要 3DMM 参数** |
+| **checkpoint** | 有 `checkpoint/` + `images/` | 参照格式，需 FLAME 前向 |
+
+切换对象只改 `configs/system.yaml` 的 `subject` / `work_name`；数据集目录名不同时设 `paths.data_dir`。
 
 首次使用请从 RGBAvatar 复制，或把 `configs/system.yaml` 的 `paths.model_ply` 指向你的模型：
 

@@ -30,9 +30,10 @@ def test_loads_defaults_from_yaml_files() -> None:
     assert cfg.get("model.network.num_basis_in") == 129
     assert cfg.get("model.network.num_basis_blend") == 20
     assert cfg.get("model.network.mlp_hidden") == [128, 128]
-    # 人物名/工作名与 RGBAvatar 的 CLI 与目录约定一致
-    assert cfg.subject == "duda"
-    assert cfg.work_name == "test"
+    # 人物名/工作名与 RGBAvatar 的 CLI 与目录约定一致。
+    # ⚠️ 不写死具体人物名 —— 默认对象会随采集进度变化，测试只校验**约定**。
+    assert cfg.subject and cfg.work_name
+    assert isinstance(cfg.subject, str) and isinstance(cfg.work_name, str)
 
 
 def test_path_fields_are_absolute_paths() -> None:
@@ -269,10 +270,10 @@ def test_model_dir_follows_rgba_avatar_layout() -> None:
     from live3dgsavatar.config import model_dir, reference_model_dir
 
     cfg = load_config()
-    assert cfg.subject == "duda" and cfg.work_name == "test"
-    assert model_dir(cfg) == Path(cfg.paths.models_dir) / "duda" / "test"
+    subject, work = str(cfg.subject), str(cfg.work_name)
+    assert model_dir(cfg) == Path(cfg.paths.models_dir) / subject / work
     ref = reference_model_dir(cfg)
-    assert ref == Path(cfg.paths.reference_root) / "output" / "duda" / "test"
+    assert ref == Path(cfg.paths.reference_root) / "output" / subject / work
 
 
 def test_resolve_model_ply_prefers_project_models(tmp_path) -> None:
@@ -287,8 +288,8 @@ def test_resolve_model_ply_prefers_project_models(tmp_path) -> None:
     # 1) 都不存在 → 报错，且信息里列出尝试过的路径
     with _raises(FileNotFoundError) as exc:
         resolve_model_ply(cfg)
-    assert "subject=duda" in str(exc.value)
-    assert "work_name=test" in str(exc.value)
+    assert f"subject={cfg.subject}" in str(exc.value)
+    assert f"work_name={cfg.work_name}" in str(exc.value)
 
     # 2) 只建本项目模型 → 命中
     target = model_dir(cfg)
@@ -299,7 +300,7 @@ def test_resolve_model_ply_prefers_project_models(tmp_path) -> None:
     # 3) 同时存在参照模型 → 仍优先本项目
     ref_root = tmp_path / "ref"
     cfg.set("paths.reference_root", ref_root)
-    ref_dir = ref_root / "output" / "duda" / "test"
+    ref_dir = ref_root / "output" / str(cfg.subject) / str(cfg.work_name)
     ref_dir.mkdir(parents=True)
     (ref_dir / "model.ply").write_bytes(b"y")
     assert resolve_model_ply(cfg) == target / "model.ply"

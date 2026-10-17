@@ -150,7 +150,11 @@ class Binding:
     Attributes:
         face_id:   [N] int64 每个高斯绑定的三角面下标（0-based）
         face_bary: [N, 3] 该面内的重心坐标 `(u, v, 1-u-v)`
-        valid_mask: [H*W] bool UV 图上哪些 texel 绑定了高斯
+        valid_mask: UV 图掩码。两种形状并存：
+            - `[H*W]`（**构建时**，来自 UV 光栅化）：每个 texel 是否绑定高斯，
+              可用于 `extract_texture` 重建 UV 图；
+            - `[N]`（**从 .ply 加载时**）：文件只存有效 texel，故等价于全 True，
+              此时无法还原 texel 位置（`extract_texture` 会显式报错）。
     """
 
     face_id: torch.Tensor

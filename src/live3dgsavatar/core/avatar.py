@@ -205,10 +205,24 @@ class GaussianAvatar(nn.Module):
 
         对应参照实现的 `BindingModel.extract_texture`：`_feature_dc` 存的是 SH 系数，
         先转成 `[0,1]` 颜色再写入有效 texel。
+
+        ⚠️ **仅当绑定来自 UV 光栅化时可用**（此时 `valid_binding_mask` 是
+        `[tex_size²]`，每个高斯对应一个已知 texel）。从 `.ply` 加载时文件里
+        只存了有效 texel（`N` 个高斯），**原始 texel 位置信息不在文件里**，
+        因此无法重建 UV 图 —— 此时显式报错，而不是画出一张错位的纹理图。
         """
         size = self.config.tex_size
-        flat = torch.zeros(size * size, 3, dtype=self.color.dtype, device=self.color.device)
-        flat[self.valid_binding_mask] = sh0_to_rgb(self.color.squeeze(1))
+        n_texel = size * size
+        mask = self.valid_binding_mask
+        if int(mask.numel()) != n_texel:
+            raise RuntimeError(
+                f"无法重建 UV 纹理图：valid_binding_mask 有 {int(mask.numel())} 项，"
+                f"应为 tex_size²={n_texel}。\n"
+                "从 .ply 加载时只保留了有效 texel，原始 UV 位置未存盘。"
+                "若确需纹理图，请在构建绑定的那一侧（UV 光栅化时）调用本方法，"
+                "或把 texel 索引一并写进 .ply。")
+        flat = torch.zeros(n_texel, 3, dtype=self.color.dtype, device=self.color.device)
+        flat[mask] = sh0_to_rgb(self.color.squeeze(1))
         return flat.reshape(size, size, 3)
 
     # -------------------------------------------------------------- 设备 --

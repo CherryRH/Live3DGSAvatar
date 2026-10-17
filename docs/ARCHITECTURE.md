@@ -169,6 +169,7 @@ Live3DGSAvatar/
 │   │       └── camera_utils.py  # 矩阵转置/列主序转换的唯一入口
 │   ├── data/                    # 数据层（无 GPU 计算，只做加载与适配）
 │   │   ├── scene.py             #   模板几何 + 相机 + 逐帧 mesh/驱动参数
+│   │   │                        #   支持 manifest（自包含）与 checkpoint 两种格式
 │   │   └── reference.py         #   参照实现适配（等价门与渲染测试用）
 │   ├── training/                # 待接入（不自研，见 ARCHITECTURE §6）
 │   ├── tracking/                # 待实现（Tracker 协议 + 离线 metrical-tracker 适配）

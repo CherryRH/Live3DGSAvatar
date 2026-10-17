@@ -55,6 +55,7 @@ _FALLBACK: dict[str, Any] = {
     "subject": "duda",
     "work_name": "test",
     "paths.data_root": "data/INSTA",
+    "paths.data_dir": None,
     "paths.output_dir": "output",
     "paths.reference_root": None,
     "paths.models_dir": "models",
@@ -93,6 +94,7 @@ _FALLBACK: dict[str, Any] = {
 # 需要解析为绝对路径的字段（相对路径按**仓库根**解析，而非 cwd）
 _PATH_FIELDS = (
     "paths.data_root",
+    "paths.data_dir",
     "paths.output_dir",
     "paths.reference_root",
     "paths.models_dir",
@@ -136,13 +138,20 @@ class Config(dict):
         return _wrap(node)
 
     def set(self, key: str, value: Any) -> None:
-        """按点路径赋值，中间层不存在时自动创建。"""
+        """按点路径赋值，中间层不存在时自动创建。
+
+        路径类字段（`_PATH_FIELDS`）会自动转成绝对 `Path`，
+        与 `load_config()` 的处理保持一致 —— 否则 CLI 传入的相对路径
+        会在不同 cwd 下解析出不同结果。
+        """
         parts = key.split(".")
         node: Any = self
         for part in parts[:-1]:
             if not isinstance(node.get(part), dict):
                 node[part] = Config()
             node = node[part]
+        if key in _PATH_FIELDS and value is not None:
+            value = _resolve_path(value, key)
         node[parts[-1]] = value
 
     def as_plain(self) -> dict:
@@ -402,3 +411,29 @@ def resolve_model_config(cfg: "Config" | None = None) -> Path | None:
         if path.exists():
             return path
     return None
+
+
+def resolve_data_dir(cfg: Config) -> Path:
+    """数据集目录。
+
+    优先级：
+
+    1. 显式 `paths.data_dir`（绝对路径，或相对**仓库根**）
+    2. 默认 `<paths.data_root>/<subject>`
+
+    为什么需要覆盖：`subject` 同时用于**模型**目录
+    （`models/<subject>/<work_name>/`），而数据集目录名未必与它相同。
+    例如模型在 `models/crh/crh_1/`（subject=`crh`），数据集却直接叫
+    `Datasets/INSTA/crh_1`，不是 `Datasets/INSTA/crh/crh_1`。
+    这种情况下设 `paths.data_dir` 即可，无需为了迁就目录名去改 `subject`。
+    """
+    explicit = cfg.get("paths.data_dir")
+    if explicit:
+        p = Path(str(explicit))
+        if not p.is_absolute():
+            p = repo_root() / p
+        return p.resolve()
+    data_root = cfg.get("paths.data_root")
+    if data_root is None:
+        raise ValueError("缺少 paths.data_root，且未设置 paths.data_dir")
+    return (Path(str(data_root)) / str(cfg.subject)).resolve()

@@ -203,6 +203,24 @@ rot_world  = q(R) ⊗ rot_tangent            # 四元数左乘，WXYZ
 
 ---
 
+### 5.2 设备一致性（`Scene` 的契约）
+
+`load_scene(device=...)` 返回的 `Scene` 里**所有张量都在该设备上**：
+逐帧 `mesh`/`blend_weight`、拓扑 `faces`/`uvs`/`uv_faces`、相机 `K`/`R`/`T`。
+
+调用方直接组装 `Mesh`/`Camera` 即可，**不要再逐个 `.to()`**。
+
+> ⚠️ 这条曾是真实的 bug：`manifest` 路径把帧搬到了 GPU，却直接返回缓存的
+> FLAME 拓扑（CPU），于是 `mesh.verts[:, mesh.faces[used]]` 抛
+> `RuntimeError: indices should be either on cpu or on the same device`。
+> 报错发生在 `core/deform/bind.py`，与根因（`data/` 少搬一个张量）相距很远。
+>
+> 同理，`_flame_topology()` 的缓存**以 CPU 为准**、每次调用再搬设备 ——
+> 若缓存持有 GPU 张量，"先 cuda 后 cpu"的调用会拿到错误设备。
+>
+> 回归测试：`test_scene_tensors_share_one_device`、
+> `test_flame_topology_is_device_independent`。
+
 ## 6. 数值精度与容差
 
 ### 6.1 验收门

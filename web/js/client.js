@@ -126,7 +126,17 @@ export class RenderClient extends EventTarget {
         this.dispatchEvent(new CustomEvent("config", { detail: this.geometry }));
         return;
       }
-      // status / captured / error 等直接转发
+      // 后端的业务错误（`{type:"error", message}`）也统一成 `{error}` 形状。
+      // ⚠️ 必须与 `_emitError` 一致：监听方只读 `detail.error.message`。
+      //    曾经这里原样转发 `detail = msg`，而 `msg.error` 不存在 ——
+      //    于是**错误处理本身抛 TypeError**，把真正的错误信息盖掉了。
+      if (msg.type === "error") {
+        const err = new Error(typeof msg.message === "string" ? msg.message : "后端返回未知错误");
+        err.fromServer = true;
+        this._emitError(err);
+        return;
+      }
+      // status / captured 等直接转发
       this.dispatchEvent(new CustomEvent(msg.type, { detail: msg }));
       return;
     }
