@@ -4,9 +4,10 @@
 
 | 文件 | 内容 |
 |---|---|
-| `configs/system.yaml` | 路径、设备、数据集主体名 |
+| `configs/system.yaml` | 路径、设备、数据集主体名、服务参数 |
 | `configs/render.yaml` | 渲染参数、模型结构、数据集读取选项 |
-| `configs/local.yaml` | **可选**，本机私有覆盖（已 gitignore） |
+| `configs/train.yaml` | 训练管线与在线更新的超参、**门控** |
+| `configs/local.yaml` | **可选**，本机私有覆盖（已 gitignore）；GUI 设置面板写这里 |
 
 ## 1. 优先级
 
@@ -17,8 +18,13 @@
 代码内置兜底（`src/live3dgsavatar/config/__init__.py::_FALLBACK`）**刻意保持最小**，
 只为保证字段缺失时不 `KeyError`；真正的默认量都在 YAML 里，便于查看与修改。
 
-`configs/local.yaml` 在 `system.yaml` / `render.yaml` 之后**深合并**，用于放不想入库的
-本机覆盖（例如另一个数据集路径）。
+`configs/local.yaml` 在三份主配置之后**深合并**，用于放不想入库的本机覆盖
+（例如另一个数据集路径）。
+
+**GUI 设置面板保存到 `local.yaml`**，而不是改那三份带注释的文件 ——
+程序化 `yaml.dump` 会把注释全部丢掉，把手写文档变成机器产物。
+面板只写**被改动过的项**，所以 `local.yaml` 始终是"我改过什么"的最小记录；
+删掉它即恢复默认。
 
 ## 2. 查看最终生效值
 
@@ -63,8 +69,6 @@ python scripts/show_config.py --json          # 机器可读
 | `smoke.max_frames` | 采样帧数上限；`null` 表示不限制 |
 | `paths.data_dir` | 显式指定数据集目录（绝对路径或相对仓库根）。`null` 表示用 `<paths.data_root>/<subject>`。**数据集目录名与 `subject` 不同时用它** |
 | `app.host` / `app.port` | GUI 服务监听地址与端口。默认 `localhost:8000`。**本机回环地址会用 dual-stack socket 监听**，使 `localhost` / `127.0.0.1` / `::1` 三种写法都能访问（见下） |
-| `app.target_fps` | **帧数上限**：每秒最多渲染几帧。同时决定播放推进速度（30 时动作比 60 慢一倍）。`0` 表示不限，此时帧率受渲染耗时限制 |
-| `app.status_interval_s` | `status` 消息推送间隔（秒）。前端据此更新帧号条；太小占满通道，太大帧号一跳一跳 |
 | `app.stats_log_interval_s` | 后端统计日志间隔（秒）。日志走 stdout，与前端 FPS 解耦 |
 | `app.autostart` | 打开页面是否自动推帧 |
 | `app.preload_frames` | GUI 启动时预载帧数。**`-1`（默认）表示全部**。设小会让「数据集帧」滑块被夹在已载入范围内 |
@@ -154,12 +158,17 @@ output_dir: output                     # output 特殊：相对**当前工作目
 |---|---|---|
 | `background` | `[0,0,0]` | 背景色。数据集原图为黑底；白底用 `[1,1,1]` |
 | `scaling_modifier` | `1.0` | 高斯缩放系数 |
+| `scale` | `1.0` | 输出分辨率比例（1.0 = 原生）。**显存不足时最有效的帧率旋钮** |
+| `target_fps` | `60` | **帧数上限**：每秒最多渲染几帧。同时决定播放推进速度（30 时动作比 60 慢一倍）。`0` 表示不限 |
+| `status_interval_s` | `0.25` | `status` 消息推送间隔。前端据此更新帧号条；太小占满通道，太大帧号一跳一跳 |
 | `sh_degree` | `0` | 球谐阶数。本项目只用 DC 项 |
 | `batch_size` | `4` | 批大小。6GB 显存建议 ≤ 4 |
 | `frames` | `20` | 默认渲染帧数；`-1` 为全部 |
 | `max_batch_size` / `max_gaussian_size` / `num_streams` | `10` / `60353` / `3` | 训练用的预分配上限（训练待接入，先保留） |
 
-> 输出**分辨率**不在此配置 —— 它由数据集相机内参决定。
+> 输出**尺寸**由这里决定：`scale × 数据集相机内参下的分辨率`。
+> 真实渲染分辨率（光栅化器输出）始终是数据集尺寸，`scale` 在渲染后缩放 ——
+> 让光栅化器直接输出小图需要改内参，容易与数据集打架。
 
 ### `model.network` —— 模型结构
 
@@ -195,6 +204,62 @@ output_dir: output                     # output 特殊：相对**当前工作目
 | `dataset.use_shape_weight` / `use_pose_weight` | 驱动参数的分段开关（与训练侧一致） |
 | `dataset.pin_memory` | 是否锁页内存 |
 | `test.dump_diff` | 渲染测试是否输出并排对比图 |
+
+## 5.5 `train.yaml` 字段
+
+### `train.pipeline` —— 完整训练（待接入）
+
+| 键 | 默认 | 说明 |
+|---|---|---|
+| `enabled` | `false` | 总开关。**关闭时训练入口直接报错退出**，而不是静默跳过 |
+| `max_frames` | `null` | 采样上限；`null` 表示全部 |
+
+### `train.online_update` —— 在线更新
+
+分成两组：**门控**决定"要不要做、做什么"，**超参**决定"做多久、多猛"。
+
+| 键 | 默认 | 类型 | 说明 |
+|---|---|---|---|
+| `enabled` | `true` | 门控 | 总开关。关闭后 GUI 与脚本都不执行 |
+| `update_color` | `true` | 门控 | 是否更新颜色（SH DC） |
+| `update_opacity` | `true` | 门控 | 是否更新不透明度（logit） |
+| `color_l1` | `false` | 门控 | 优化目标用 L1（对高光/镜面等离群像素稳健，收敛更慢） |
+| `time_budget_s` | `10.0` | 预算 | 墙钟上限，超过即停 |
+| `steps` | `300` | 预算 | 与时间预算取先到者 |
+| `lr_color` | `0.002` | 优化 | 颜色学习率 |
+| `lr_opacity` | `0.02` | 优化 | 不透明度学习率（logit，故与颜色差一个数量级） |
+| `mask_weight` | `0.0` | 优化 | 掩码外权重；0 = 只用前景 |
+| `frames` | `8` | 观测 | 取多少帧做观测 |
+| `frame_chunk` | `8` | 观测 | 每步实际用几帧 |
+
+> `update_color` 与 `update_opacity` **不能同时为 `false`** ——
+> 那样没有任何参数可优化，`UpdateConfig` 会直接报错，调用方应提前跳过。
+
+门控的实测依据见 [`ONLINE_UPDATE.md`](ONLINE_UPDATE.md) §4。
+
+## 5.6 GUI 设置面板
+
+右上角 ⚙ 打开。面板内容由 `src/live3dgsavatar/app/settings.py` 的注册表驱动，
+**前端不硬编码控件** —— 否则前后端各写一份，可编辑性与范围必然漂移。
+
+| 行为 | 说明 |
+|---|---|
+| **全量展示** | 包括锁定项：用户需要看到"有哪些参数、为什么不能改" |
+| **可编辑项** | 改动后点「保存并应用」→ 立即生效 + 写入 `local.yaml` |
+| **锁定项** | 只读文本 + 🔒 + 原因。不做成禁用输入框——那会被误认为"以后能改" |
+| **排序** | 渲染 → 训练 → 系统；组内按常用度排序（不是字母序） |
+
+即时生效的项：`render.background`、`render.scaling_modifier`、`render.scale`、
+`render.target_fps`、`render.status_interval_s`、`app.stats_log_interval_s`，
+以及全部 `train.online_update.*`（下一次更新时生效）。
+
+锁定的原因分三类：
+
+| 类别 | 例子 | 为什么锁 |
+|---|---|---|
+| 模型结构 | `model.network.*`、`render.sh_degree` | 必须与 `.ply` 匹配，改了会读错列 |
+| 路径 / 设备 | `paths.*`、`runtime.device` | 加载时解析；改了需重载或重启 |
+| 服务端点 | `app.host`、`app.port` | 绑定在启动时确定 |
 
 ## 6. 脚本参数：只保留关键可调项
 

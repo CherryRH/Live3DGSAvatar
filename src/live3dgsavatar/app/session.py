@@ -104,7 +104,8 @@ class Session:
         self.params = RenderParams(
             background=[float(x) for x in cfg.get("render.background", [0, 0, 0])],
             scaling_modifier=float(cfg.get("render.scaling_modifier", 1.0)),
-            target_fps=float(cfg.get("app.target_fps", 60)),
+            scale=float(cfg.get("render.scale", 1.0)),
+            target_fps=float(cfg.get("render.target_fps", 60)),
         )
         # 运行设备：模型/数据集/相机/背景必须**全在同一个设备上**，
         # 否则 `mesh.verts[:, mesh.faces[...]]` 这类索引会抛设备不匹配。
@@ -220,6 +221,39 @@ class Session:
         return out
 
     # ------------------------------------------------------------ 出帧 --
+
+    # ---------------------------------------------------------- 设置应用 --
+    #: 设置项 → `RenderParams` 字段的映射。
+    #: 只有这些**同时**写进 cfg 与运行参数，其余只改 cfg（下次读取时生效）。
+    _RENDER_MIRROR = {
+        "render.background": "background",
+        "render.scaling_modifier": "scaling_modifier",
+        "render.scale": "scale",
+        "render.target_fps": "target_fps",
+    }
+
+    def apply_settings(self, patch: dict) -> list[str]:
+        """把一批**已校验**的设置写进配置，并让可即时生效的项立刻起作用。
+
+        调用方负责校验（`app.settings.validate_patch`）—— 这里不再重复。
+
+        Args:
+            patch: 点分路径 → 值（已转换类型）
+
+        Returns:
+            实际即时生效的键（供前端提示"哪些立刻变了"）
+        """
+        applied: list[str] = []
+        for key, value in patch.items():
+            self.cfg.set(key, value)
+            field = self._RENDER_MIRROR.get(key)
+            if field is not None:
+                setattr(self.params, field,
+                        list(value) if field == "background" else float(value))
+                applied.append(key)
+        # 背景色与缩放会在下一帧的 `render()` 里被读取；
+        # `scaling_modifier` 由 `render()` 每帧同步到光栅化器，无需重建。
+        return applied
 
     @property
     def ready(self) -> bool:

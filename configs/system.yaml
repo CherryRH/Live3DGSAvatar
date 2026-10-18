@@ -1,6 +1,7 @@
 # Live3DGSAvatar —— 系统配置
 #
-# 本文件集中存放**路径类与设备类**配置；渲染参数见 configs/render.yaml。
+# 本文件集中存放**路径类与设备类**配置；
+# 渲染参数见 configs/render.yaml，训练/在线更新见 configs/train.yaml。
 # 字段说明见 docs/CONFIG.md。所有路径支持三种写法：
 #   1. 绝对路径                     /home/you/Datasets/INSTA
 #   2. 以 ~ 开头                     ~/Datasets/INSTA
@@ -72,24 +73,6 @@ paths:
   # 用作 PSNR 的 GT。
   image_subdir: images
 
-# 在线更新（热更新）。见 docs/ARCHITECTURE.md §11.1 与 docs/ONLINE_UPDATE.md
-online_update:
-  # 墙钟预算（秒）。通话开始时的一段观测用来微调外观，**不能超过这个时间**。
-  # 目标 10 s；本机 GPU 较弱时可适当放宽。
-  time_budget_s: 10.0
-  # 最大迭代数（与 time_budget_s 取先到者）
-  steps: 300
-  # 颜色（SH DC）与不透明度（logit）的学习率。
-  # 颜色量级小、不透明度是 logit，两者差一个数量级，必须分开设。
-  lr_color: 0.002
-  lr_opacity: 0.02
-  # 是否更新不透明度。关闭则只改颜色（更稳，但无法修正"该透明的地方不透明"）
-  update_opacity: true
-  # 掩码外像素权重。0 = 只用前景（背景通常预测不准，忽略它能改善拟合）
-  mask_weight: 0.0
-  # 用于更新的帧数
-  frames: 8
-
 # 运行设备与精度。
 runtime:
   device: cuda          # cuda | cpu（cpu 仅供不依赖 CUDA 内核的自检）
@@ -105,14 +88,8 @@ app:
   # 局域网访问再改成 0.0.0.0（注意本服务无鉴权）。
   host: localhost
   port: 8000
-  # 服务端推帧的目标帧率。超过显示器刷新率没有意义，
-  # 且是显存/功耗的主要旋钮。0 表示不限（全速推送）。
-  target_fps: 60
   # 打开页面时是否自动开始推帧。
   autostart: true
-  # `status` 消息的推送间隔（秒）。前端据此更新帧号条与耗时显示；
-  # 太小会占满控制通道，太大会让播放时的帧号看起来一跳一跳。
-  status_interval_s: 0.25
   # 后端统计日志的间隔（秒）。日志走 stdout，**与前端 FPS 解耦**：
   # 前端算"对方实际看到的"，后端记"服务端真实渲染吞吐"。
   stats_log_interval_s: 10.0

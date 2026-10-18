@@ -17,6 +17,7 @@ import { RenderClient } from "./client.js";
 import { MockSource } from "./mock.js";
 import { FrameView } from "./view.js";
 import { Controls } from "./controls.js";
+import { SettingsPanel } from "./settings.js";
 import { FpsMeter } from "./fps.js";
 import { BUILD_TAG } from "./protocol.js";
 
@@ -97,12 +98,28 @@ function updateStats(status) {
     controls.setPaused(paused);
   }
   // 帧号与播放状态以**后端**为准，避免两端各记一份而漂移。
-  // 后端按 app.status_interval_s（默认 4 Hz）周期推 status，
+  // 后端按 render.status_interval_s（默认 4 Hz）周期推 status，
   // 因此播放时帧号条会平滑推进（只在控制消息后回 status 则不会动）。
   if (typeof status.frame === "number" || typeof status.playing === "boolean") {
     controls.applyPlayback({ frame: status.frame, playing: status.playing });
   }
 }
+
+// -------------------------------------------------------------- 设置浮窗 --
+
+// 面板自己按后端下发的 schema 渲染控件；这里只负责"应用之后同步右侧快捷控件"。
+// 两处都能改渲染参数（例如背景色），保存后必须让快捷控件跟上，
+// 否则界面会显示旧值 —— 而实际渲染已经用了新值。
+const settings = new SettingsPanel(document, {
+  onApplied(body) {
+    // `render` 是渲染参数的权威值（与 /api/state 同构）。
+    // 目前右侧面板不再镜像这些参数，保留这条同步是为了将来加控件时不必再想一遍。
+    if (body?.render) controls.applyState({ render: body.render });
+  },
+  onError(err) {
+    console.warn("[main] 设置面板不可用：", err.message);
+  },
+});
 
 // ------------------------------------------------------------------ 控件 --
 

@@ -392,7 +392,7 @@ class Session:
 | **环境与基线** | 单条命令建环境；`scripts/env_check.py` 全绿 | `setup_env.sh` 幂等可重跑 |
 | **`core/` 渲染内核** | 与数据集原图的 **PSNR（前景掩码内）** | 见 9.2 |
 | **GUI（前后端）** | 读取模型并实时预览 | 见 `docs/GUI_PROTOCOL.md` |
-| **在线更新** | 修复前后 PSNR 提升 | 见 `docs/ONLINE_UPDATE.md` |
+| **在线更新** | 修复前后 PSNR 提升 | `crh_1` 8 帧：**31.37 → 32.52 dB（+1.15）**，182 步 / 10.2 s；约 50 步即收敛（见 `docs/ONLINE_UPDATE.md` §4） |
 
 ### 9.2 渲染质量与性能
 

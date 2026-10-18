@@ -93,7 +93,7 @@ node web/tests/all.mjs
 
 **刻意不互相塞数字**：后端不提供 `fps` 字段。
 
-`status` 消息由后端按 `app.status_interval_s`（默认 4 Hz）**周期推送**，
+`status` 消息由后端按 `render.status_interval_s`（默认 4 Hz）**周期推送**，
 前端据此更新帧号条与耗时显示。
 
 ### 排查「连不上」/「看不到变化」

@@ -5,16 +5,15 @@
  * - **控件只负责"读值"**；消息统一在 `_emitParams` 里装配，避免每个控件各写一遍。
  * - **帧号与播放状态以服务端为准**（`status.frame` / `status.playing`），
  *   前端只回填，不自己维护一份 —— 否则两端必然漂移。
+ * - **这里只管"不持久化的实时操作"**：播放、单步、数据源、扰动、暂停、截图。
+ *   渲染参数（背景色/缩放/分辨率/帧数上限）在设置面板里，走 `/api/settings`
+ *   并持久化到 `configs/local.yaml`。两边同时管会互相覆盖 —— 曾经就是这样。
  *
  * 见 docs/GUI_PROTOCOL.md §3.2。
  */
 
 /** 面板默认值。 */
 export const DEFAULTS = {
-  background: [0, 0, 0],
-  scalingModifier: 1.0,
-  scale: 1.0,
-  targetFps: 60,
   sourceKind: "checkpoint",
   frame: 0,
   playing: false,
@@ -37,12 +36,6 @@ export class Controls {
       workName: root.querySelector("#f-work-name"),
       loadModel: root.querySelector("#btn-load"),
       modelInfo: root.querySelector("#model-info"),
-      // 渲染
-      bg: root.querySelector("#f-bg"),
-      scaling: root.querySelector("#f-scaling"),
-      scalingOut: root.querySelector("#o-scaling"),
-      scale: root.querySelector("#f-scale"),
-      scaleOut: root.querySelector("#o-scale"),
       // 播放条
       player: root.querySelector("#player"),
       play: root.querySelector("#btn-play"),
@@ -52,8 +45,6 @@ export class Controls {
       frameOut: root.querySelector("#o-frame"),
       total: root.querySelector("#o-total"),
       source: root.querySelector("#f-source"),
-      fps: root.querySelector("#f-fps"),
-      fpsOut: root.querySelector("#o-fps"),
       amp: root.querySelector("#f-amp"),
       ampOut: root.querySelector("#o-amp"),
       perturb: root.querySelector("#f-perturb"),
@@ -84,16 +75,8 @@ export class Controls {
         `${model.num_gaussians ?? "?"} 高斯 · K=${model.num_basis ?? "?"} · ` +
         `D=${model.num_basis_in ?? "?"} · tex=${model.tex_size ?? "?"}`);
     }
-    const render = state.render;
-    if (render) {
-      if (Array.isArray(render.background)) {
-        const key = render.background.join(",");
-        if ([...el.bg.options].some((o) => o.value === key)) el.bg.value = key;
-      }
-      if (render.scaling_modifier !== undefined) el.scaling.value = render.scaling_modifier;
-      if (render.scale !== undefined) el.scale.value = render.scale;
-      if (render.target_fps !== undefined) el.fps.value = render.target_fps;
-    }
+    // ⚠️ 不再回填 render.* —— 这些参数的唯一 UI 在设置面板，
+    //    这里若也写一份，两边会互相覆盖（历史 bug）。
     const drive = state.drive;
     if (drive) {
       if (typeof drive.frame === "number") el.frame.value = String(drive.frame);
@@ -156,11 +139,6 @@ export class Controls {
       this.handlers.onLoadModel({ subject, work_name: workName });
     });
 
-    // ---- 渲染参数 ----
-    el.bg.addEventListener("change", () => this._emitParams());
-    el.scaling.addEventListener("input", () => { this._renderOutputs(); this._emitParams(); });
-    el.scale.addEventListener("input", () => { this._renderOutputs(); this._emitParams(); });
-
     // ---- 播放条 ----
     el.play.addEventListener("click", () => this._setPlaying(!this._playing));
 
@@ -188,9 +166,6 @@ export class Controls {
       this._renderOutputs();
       this._emitParams();
     });
-    // 帧数上限：同时是"每秒渲染几帧"与"播放推进速度"
-    el.fps.addEventListener("input", () => { this._renderOutputs(); this._emitParams(); });
-
     el.perturb.addEventListener("change", () => {
       this._renderOutputs();
       this._emitParams();
@@ -224,7 +199,6 @@ export class Controls {
 
   /** 组装并发送一条 `params` 消息。 */
   _emitParams() {
-    const [r, g, b] = this.el.bg.value.split(",").map(Number);
     const live = this.el.source.value === "live";
 
     const drive = {};
@@ -237,24 +211,17 @@ export class Controls {
       drive.amplitude = Number(this.el.amp.value);
     }
 
+    // **不发 render**：渲染参数由设置面板经 `/api/settings` 修改。
+    // 若这里也发，会在用户拖动播放条时把设置面板刚存的值覆盖回旧值。
     this.handlers.onParams({
       type: "params",
       source: { kind: this.el.source.value },
-      render: {
-        background: [r, g, b],
-        scaling_modifier: Number(this.el.scaling.value),
-        scale: Number(this.el.scale.value),
-        target_fps: Number(this.el.fps.value),
-      },
       drive,
     });
   }
 
   _renderOutputs() {
     const el = this.el;
-    el.scalingOut.textContent = Number(el.scaling.value).toFixed(2);
-    el.scaleOut.textContent = `${Math.round(Number(el.scale.value) * 100)}%`;
-    el.fpsOut.textContent = el.fps.value;
     el.frameOut.textContent = el.frame.value;
     el.ampOut.textContent = Number(el.amp.value).toFixed(2);
 

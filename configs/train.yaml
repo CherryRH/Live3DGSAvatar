@@ -1,0 +1,56 @@
+# Live3DGSAvatar —— 训练与在线更新配置
+#
+# 本文件集中存放**训练相关**的默认量；路径与设备见 configs/system.yaml，
+# 渲染相关见 configs/render.yaml。字段说明见 docs/CONFIG.md。
+#
+# 这些参数都可以在 GUI 的「设置」浮窗里改并保存（写入 configs/local.yaml），
+# 但只有标记为可编辑的才会真正作用到运行中的服务 —— 见 app/settings.py。
+
+train:
+  # 完整训练管线（待接入协作者的训练代码）。
+  # 关闭时，任何训练入口都应直接报错退出，而不是静默跳过 ——
+  # 静默跳过会让人以为"训练过了"。
+  pipeline:
+    enabled: false
+    # 训练产物写到 <output_dir>/train/<subject>/<work_name>/
+    # 采样与容量上限（与 render.yaml 的 render.max_* 对应，二者取小）
+    max_frames: null
+
+  # 在线更新（热更新）：通话开始时用一小段观测微调外观。
+  # 见 docs/ONLINE_UPDATE.md。
+  online_update:
+    # ---- 门控 ----
+    # 总开关。关闭后 GUI / 脚本都不会执行在线更新。
+    enabled: true
+    # 是否更新不透明度（logit）。关闭则只改颜色：更稳，
+    # 但无法修正"该透明的地方不透明"这类误差。
+    update_opacity: true
+    # 颜色损失用 L1 而不是 L2。
+    # L1 对少量离群像素更稳健（高光、镜面反射、跟踪抖动的边缘），
+    # 但收敛更慢；调试外观偏差时可以先试 L1。
+    color_l1: false
+    # 是否更新颜色（SH DC）。两个颜色/不透明度门控都关掉时，
+    # 在线更新等价于空操作，此时应当直接跳过（不浪费预算）。
+    update_color: true
+
+    # ---- 预算 ----
+    # 墙钟预算（秒）。**不能超过这个时间** —— 通话已经开始，用户不会等。
+    # 实测 50 步即收敛，10 s 是宽松上限；本机 GPU 较弱时可放宽。
+    time_budget_s: 10.0
+    # 最大迭代数（与 time_budget_s 取先到者）
+    steps: 300
+
+    # ---- 优化 ----
+    # 颜色（SH DC）与不透明度（logit）的学习率。
+    # 颜色量级小、不透明度是 logit，两者差一个数量级，必须分开设。
+    lr_color: 0.002
+    lr_opacity: 0.02
+    # 掩码外像素权重。0 = 只用前景（背景通常预测不准，忽略它能改善拟合）
+    mask_weight: 0.0
+
+    # ---- 观测 ----
+    # 用于更新的帧数（从数据集/摄像头取多少帧）
+    frames: 8
+    # 每次迭代实际用几帧。小于 frames 时只用前若干帧 ——
+    # 真实场景下帧是陆续到达的，不该假设能一次看完全部。
+    frame_chunk: 8

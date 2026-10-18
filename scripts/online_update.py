@@ -44,15 +44,23 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="掩码外像素权重（0 = 只用前景）")
     p.add_argument("--dry-run", action="store_true",
                    help="只测闭式颜色校正（不需要 GPU）")
+    p.add_argument("--force", action="store_true",
+                   help="即使 train.online_update.enabled=false 也运行")
+    p.add_argument("--l2", action="store_true",
+                   help="用 L2 而非配置里的 L1（覆盖 train.online_update.color_l1）")
+    p.add_argument("--no-color", action="store_true",
+                   help="不更新颜色（覆盖 train.online_update.update_color）")
+    p.add_argument("--frames-chunk", type=int, default=None,
+                   help="每步用几帧（覆盖 train.online_update.frame_chunk）")
     p.add_argument("--dump", type=Path, default=None,
                    help="把更新增量存成 npz")
     return p.parse_args(argv)
 
 
 def _cfg_get(args, cfg, name, key, default):
-    """命令行优先，其次配置，最后兜底默认值。"""
+    """命令行优先，其次配置（`train.online_update.*`），最后兜底默认值。"""
     v = getattr(args, name.replace("-", "_"), None)
-    return v if v is not None else cfg.get(f"online_update.{key}", default)
+    return v if v is not None else cfg.get(f"train.online_update.{key}", default)
 
 
 def _setup(args):
@@ -165,6 +173,23 @@ def main() -> int:
               "获取准确的出错位置")
 
     cfg, data_dir, ply = _setup(args)
+
+    # ---- 门控：总开关 ----
+    enabled = bool(cfg.get("train.online_update.enabled", True))
+    if not enabled and not args.force:
+        print("[skip] 在线更新已关闭（train.online_update.enabled = false）。\n"
+              "       命令行加 --force 可强制运行一次。")
+        return 0
+
+    update_color = bool(cfg.get("train.online_update.update_color", True)) \
+        and not args.no_color
+    update_opacity = (not args.no_opacity) and bool(
+        cfg.get("train.online_update.update_opacity", True))
+    if not update_color and not update_opacity:
+        print("[skip] 颜色与不透明度都被关闭 —— 在线更新是空操作。\n"
+              "       检查 train.online_update.update_color / update_opacity。")
+        return 0
+
     print(f"model = {ply.relative_to(REPO_ROOT)}")
     print(f"data  = {data_dir}")
 
@@ -172,6 +197,11 @@ def main() -> int:
     n_frames = int(_cfg_get(args, cfg, "frames", "frames", 8))
     batch = _load_observations(cfg, data_dir, n_frames, device)
     print(f"观测: {len(batch)} 帧  {batch.camera.width}x{batch.camera.height}")
+    use_l1 = (False if args.l2
+              else bool(cfg.get("train.online_update.color_l1", False)))
+    print(f"门控  : 颜色={'on' if update_color else 'off'}  "
+          f"不透明度={'on' if update_opacity else 'off'}  "
+          f"损失={'L1' if use_l1 else 'L2'}")
 
     from live3dgsavatar.config import resolve_model_config
     mcfg = yaml.safe_load(open(resolve_model_config(cfg)))
@@ -188,9 +218,11 @@ def main() -> int:
         time_budget_s=float(_cfg_get(args, cfg, "time-budget", "time_budget_s", 10.0)),
         lr_color=float(_cfg_get(args, cfg, "lr-color", "lr_color", 2e-3)),
         lr_opacity=float(_cfg_get(args, cfg, "lr-opacity", "lr_opacity", 2e-2)),
-        update_opacity=(not args.no_opacity) and bool(
-            cfg.get("online_update.update_opacity", True)),
-        mask_weight=float(_cfg_get(args, cfg, "mask-weight", "mask_weight", 0.0))))
+        update_opacity=update_opacity,
+        update_color=update_color,
+        mask_weight=float(_cfg_get(args, cfg, "mask-weight", "mask_weight", 0.0)),
+        color_l1=use_l1,
+        frame_chunk=int(_cfg_get(args, cfg, "frames-chunk", "frame_chunk", 8))))
 
     report, state = updater.fit(batch, background=bg)
     print(f"\n{report.summary()}")

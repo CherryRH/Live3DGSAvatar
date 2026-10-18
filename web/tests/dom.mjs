@@ -96,10 +96,6 @@ function makeRoot() {
     "#f-subject": el("input", { value: "duda" }),
     "#f-work-name": el("input", { value: "test" }),
     "#btn-load": el("button"), "#model-info": el("p"),
-    // 渲染
-    "#f-bg": el("select", { value: "0,0,0" }),
-    "#f-scaling": el("input", { value: "1" }), "#o-scaling": el("output"),
-    "#f-scale": el("input", { value: "1" }), "#o-scale": el("output"),
     // 播放条
     "#player": el("div"),
     "#btn-play": el("button"),
@@ -107,7 +103,6 @@ function makeRoot() {
     "#f-frame": el("input", { value: "0" }), "#o-frame": el("output"),
     "#o-total": el("span"),
     "#f-source": el("select", { value: "checkpoint" }),
-    "#f-fps": el("input", { value: "60" }), "#o-fps": el("output"),
     "#f-amp": el("input", { value: "0.1" }), "#o-amp": el("output"),
     "#f-perturb": el("input", { checked: false }),
     // 操作
@@ -132,22 +127,18 @@ function makeControls(root, over = {}) {
 }
 
 console.log("\ncontrols.js");
-t("_emitParams 装配出协议要求的两层结构", () => {
+t("_emitParams 装配出协议要求的层级（且不再发 render）", () => {
   const root = makeRoot(); let sent = null;
   const c = makeControls(root, { onParams: (m) => { sent = m; } });
-  root._map["#f-bg"].value = "1,1,1";
-  root._map["#f-scaling"].value = "1.25";
-  root._map["#f-scale"].value = "0.5";
-  root._map["#f-fps"].value = "90";
   root._map["#f-frame"].value = "42";
   c._emitParams();
   eq(sent.type, "params");
   eq(sent.source.kind, "checkpoint", "数据源层级");
   ok(!("mode" in sent.drive), "不应再有 drive.mode（语义已并入 playing）");
-  eq(sent.render.scaling_modifier, 1.25);
-  eq(sent.render.scale, 0.5);
-  eq(sent.render.target_fps, 90);
   eq(sent.drive.frame, 42);
+  // **渲染参数不再由这里发送**：它们走 /api/settings 并持久化。
+  // 若这里也发，会在拖动播放条时把设置面板刚存的值覆盖回旧值。
+  ok(!("render" in sent), `不应发送 render，实际：${JSON.stringify(sent.render)}`);
   c.destroy();
 });
 
@@ -267,9 +258,10 @@ t("暂停时仍发送 playing=false（渲染继续，只是帧号停住）", () 
   eq(sent[0].drive.playing, true);
   root._map["#btn-play"]._fire("click");     // 暂停
   eq(sent[1].drive.playing, false);
-  // 暂停后仍应带完整参数（后端据此继续渲染同一帧，而不是停掉渲染）
+  // 暂停后仍应带完整驱动参数（后端据此继续渲染同一帧，而不是停掉渲染）
   ok("frame" in sent[1].drive, "暂停时仍应带 frame");
-  ok("render" in sent[1], "暂停时仍应带渲染参数");
+  // 渲染参数不再随本消息发送（见「_emitParams 装配出协议要求的层级」）
+  ok(!("render" in sent[1]), "不应发送 render");
   c.destroy();
 });
 

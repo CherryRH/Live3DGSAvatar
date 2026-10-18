@@ -223,3 +223,197 @@ button:active { background: var(--bg); }
   main { flex-direction: column; }
   .panel { width: auto; border-left: none; border-top: 1px solid var(--line); max-height: 45vh; }
 }
+
+/* ---------------------------------------------------------------- 设置浮窗 --
+ *
+ * 三个视觉层次要一眼可分：
+ *   - 分组标题：说明"这一类是什么"
+ *   - 可编辑行：输入控件在右，边界清晰
+ *   - 锁定行：整行降透明度 + 锁图标 + 原因文字
+ *
+ * 锁定行**不做成禁用控件**，而是纯文本：禁用控件仍会被误认为"以后能改"，
+ * 纯文本 + 原因更明确。
+ */
+
+.topbar__gear {
+  margin-left: 12px;
+  font-size: 15px;
+  line-height: 1;
+  padding: 5px 9px;
+}
+.topbar__gear[aria-expanded="true"] {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.dialog {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: rgba(0, 0, 0, .55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+.dialog[hidden] { display: none; }
+
+.dialog__panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  width: min(880px, 100%);
+  max-height: min(760px, 100%);
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, .45);
+}
+
+.dialog__head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--line);
+}
+.dialog__head h2 { margin: 0; font-size: 15px; font-weight: 600; }
+.dialog__head .hint { font-family: ui-monospace, monospace; font-size: 11px; }
+
+.dialog__body {
+  overflow-y: auto;
+  padding: 8px 16px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.dialog__foot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px;
+  border-top: 1px solid var(--line);
+}
+.dialog__foot .hint { flex: 0 1 auto; }
+.dialog__foot .hint.is-error { color: #ff8b8b; }
+button.primary {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+button.primary:hover { background: rgba(90, 169, 255, .12); }
+button:disabled { opacity: .5; cursor: default; }
+
+/* ---- 分组 ---- */
+.sgroup { display: flex; flex-direction: column; gap: 2px; }
+.sgroup__title {
+  margin: 0 0 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg);
+  letter-spacing: .02em;
+}
+.sgroup__hint {
+  font-weight: 400;
+  font-size: 11px;
+  color: var(--fg-dim);
+  margin-left: 6px;
+}
+
+/* ---- 行 ---- */
+.srow {
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) minmax(120px, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 7px 8px;
+  border-radius: 5px;
+}
+.srow:hover { background: var(--panel-2); }
+.srow--locked { opacity: .62; }
+
+.srow__label { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.srow__name { font-size: 13px; }
+.srow__help { font-size: 11px; color: var(--fg-dim); }
+.srow__reason {
+  font-size: 11px;
+  color: #d8a33a;
+  margin-top: 2px;
+}
+
+.srow__value { display: flex; justify-content: flex-end; }
+.srow__value input[type="number"],
+.srow__value input[type="text"],
+.srow__value select { width: 100%; max-width: 220px; }
+
+.srow__readonly {
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+  color: var(--fg-dim);
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+.srow__key {
+  font-family: ui-monospace, monospace;
+  font-size: 10px;
+  color: var(--fg-dim);
+  opacity: .55;
+  max-width: 210px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 颜色三分量 / 带单位的数字 */
+.scolor { display: flex; gap: 6px; }
+.scolor input { width: 62px; }
+.sunit { display: flex; align-items: center; gap: 6px; width: 100%; max-width: 220px; }
+.sunit__suffix { font-size: 11px; color: var(--fg-dim); }
+
+@media (max-width: 760px) {
+  .dialog { padding: 8px; }
+  .srow { grid-template-columns: minmax(0, 1fr) auto; }
+  .srow__key { display: none; }
+}
+
+/* ------------------------------------------------------------ 设置页签 --
+ *
+ * 每个配置文件一个页签。三个 config 全展开会有 50+ 行，一屏放不下；
+ * 页签让"改哪个文件的东西"一目了然，也避免长滚动。
+ */
+
+.tabs {
+  display: flex;
+  gap: 2px;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--line);
+  overflow-x: auto;
+}
+
+.tab {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  align-items: flex-start;
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  padding: 9px 12px 8px;
+  color: var(--fg-dim);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.tab:hover { color: var(--fg); border-bottom-color: var(--line); }
+.tab--active { color: var(--accent); border-bottom-color: var(--accent); }
+
+.tab__title { font-size: 13px; }
+.tab__file {
+  font-family: ui-monospace, monospace;
+  font-size: 10px;
+  opacity: .7;
+}
+.tab__count {
+  font-size: 10px;
+  opacity: .55;
+}

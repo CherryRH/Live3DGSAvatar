@@ -51,6 +51,9 @@ class UpdateConfig:
         mask_weight: 掩码外像素的权重（0 = 完全忽略背景）
         log_every: 每多少步记录一次
         frame_chunk: 每步用几帧（1 表示逐帧；受显存限制时调小）
+        color_l1: 优化目标用 L1（对离群像素稳健，收敛更慢）
+        update_color: 是否更新颜色。与 `update_opacity` 不能同时为 False
+            （那样在线更新是空操作，应在上层就跳过）
     """
 
     steps: int = 300
@@ -61,6 +64,8 @@ class UpdateConfig:
     mask_weight: float = 0.0
     log_every: int = 50
     frame_chunk: int = 1
+    color_l1: bool = False
+    update_color: bool = True
 
     def __post_init__(self) -> None:
         if self.steps <= 0:
@@ -69,6 +74,10 @@ class UpdateConfig:
             raise ValueError(f"time_budget_s 必须 > 0，实际 {self.time_budget_s}")
         if self.frame_chunk <= 0:
             raise ValueError(f"frame_chunk 必须 > 0，实际 {self.frame_chunk}")
+        if not self.update_color and not self.update_opacity:
+            raise ValueError(
+                "update_color 与 update_opacity 不能同时为 False —— "
+                "那样没有任何参数可优化；调用方应直接跳过在线更新")
 
 
 @dataclass
@@ -177,7 +186,8 @@ class OnlineUpdater:
         self.rasterizer = rasterizer
         self.config = config or UpdateConfig()
         self.loss_fn = loss_fn or PhotometricLoss(
-            mask_weight=(config.mask_weight if config else 0.0))
+            mask_weight=(config.mask_weight if config else 0.0),
+            l1=(config.color_l1 if config else False))
 
     # ------------------------------------------------------------ 对外 --
     def fit(
@@ -205,7 +215,11 @@ class OnlineUpdater:
         #    表现为两轮的 `state.step` 混在一起、无法比较前后差异。
         st = (state.snapshot() if state is not None
               else UpdateState.zeros(self.avatar, update_opacity=cfg.update_opacity))
-        params = [{"params": [st.color_delta], "lr": cfg.lr_color}]
+        # 只把**开启的**参数放进优化器：Adam 会更新 groups 里的全部张量，
+        # 若把关闭项也放进去，它照样会被改（学习率只是 0 才不动）。
+        params = []
+        if cfg.update_color:
+            params.append({"params": [st.color_delta], "lr": cfg.lr_color})
         if st.opacity_delta is not None:
             params.append({"params": [st.opacity_delta], "lr": cfg.lr_opacity})
         opt = torch.optim.Adam(params)

@@ -89,6 +89,40 @@ class _Fixture:
         return result
 
 
+class _Raises:
+    """零依赖的 `pytest.raises` 替身。
+
+    支持两种写法::
+
+        with pytest.raises(ValueError):
+            ...
+
+        with pytest.raises(ValueError, match="子串") as exc:
+            ...
+            assert "子串" in str(exc.value)
+    """
+
+    def __init__(self, exc_type, match=None) -> None:
+        self.exc_type = exc_type
+        self.match = match
+        self.value = None
+
+    def __enter__(self) -> "_Raises":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        if exc_type is None:
+            raise AssertionError(
+                f"期望抛出 {self.exc_type.__name__}，但没有抛出")
+        if not issubclass(exc_type, self.exc_type):
+            return False                      # 其它异常照常向上抛
+        if self.match is not None and self.match not in str(exc):
+            raise AssertionError(
+                f"异常信息不含 {self.match!r}：{exc}")
+        self.value = exc
+        return True
+
+
 def _install_pytest_stub() -> None:
     """若环境未安装 pytest，注入最小替身，使测试模块可导入。"""
     if "pytest" in sys.modules:
@@ -109,11 +143,15 @@ def _install_pytest_stub() -> None:
             return lambda f: f
         return func
 
+    def raises(exc_type, match=None):
+        """`pytest.raises` 的最小实现（支持 `as e` 与可选的 `match` 正则）。"""
+        return _Raises(exc_type, match)
+
     stub.fixture = fixture
     stub.mark = _Mark()
     stub.approx = lambda v, **k: v
     stub.skip = skip
-    stub.raises = None
+    stub.raises = raises
     sys.modules["pytest"] = stub
     # 同时提供顶层 `skip`，便于 `from pytest import skip`
     stub.Skipped = Skipped
@@ -185,7 +223,18 @@ def run(paths: list[Path]) -> int:
 
         for name, func in sorted(tests):
             sig = inspect.signature(func)
-            supported = set(fixtures) | BUILTIN_FIXTURES
+            # `_parametrize` 是「装饰器 → 用例组」的列表；这里展平。
+            # 多层 parametrize 的真实语义是笛卡尔积，本运行器只做展平 ——
+            # 够用，且比"悄悄少跑用例"安全（会在下方因未知夹具而显式失败）。
+            _groups = getattr(func, "_parametrize", None) or []
+            cases = [c for group in _groups for c in group] or [{}]
+            # 被 `parametrize` 覆盖的形参不是夹具 —— 必须先排除它们，
+            # 否则参数化测试会被误判成「未知夹具」而直接失败。
+            parametrized = set()
+            for case in cases:
+                parametrized |= set(case)
+
+            supported = set(fixtures) | BUILTIN_FIXTURES | parametrized
             unknown = [p for p in sig.parameters if p not in supported]
             if unknown:
                 # 显式失败而非静默跳过：否则测试会「看起来通过」
@@ -195,7 +244,6 @@ def run(paths: list[Path]) -> int:
                 print(f"  \033[1;31m[失败]\033[0m {name}: {msg}")
                 continue
 
-            cases = getattr(func, "_parametrize", None) or [{}]
             for case in cases:
                 label = name + (
                     f"[{', '.join(f'{k}={v!r}' for k, v in case.items())}]" if case else "")

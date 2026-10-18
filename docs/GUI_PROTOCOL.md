@@ -68,7 +68,7 @@ loop:
 所以静态时传的是重复字节 —— 这是有意为之：链路始终活着，
 丢帧/背压/统计都在真实工作，接上实时采集时才不会暴露出新问题。
 
-**`status` 按 `app.status_interval_s`（默认 0.25 s，即 4 Hz）周期推送**，
+**`status` 按 `render.status_interval_s`（默认 0.25 s，即 4 Hz）周期推送**，
 前端据此更新帧号条、单帧耗时与显存。
 
 > 早先只在控制消息后才回 `status`，结果是**播放时帧号条不动、暂停时才突然跳**
@@ -117,6 +117,53 @@ loop:
 
 成功返回新的 `/api/state` 同构对象；失败返回 `400` + `{"error": "..."}`。
 **切换模型会重建渲染器**，期间帧流暂停。
+
+### `GET /api/settings`
+
+返回**全部**配置项（含锁定项）+ 分组元数据。字段元数据的唯一来源是
+`src/live3dgsavatar/app/settings.py`，前端只负责按它画控件。
+
+```json
+{
+  "groups": [{"key": "render", "title": "渲染", "help": "…", "order": 10}],
+  "fields": [{
+    "key": "render.background", "label": "背景色", "group": "render",
+    "order": 10, "kind": "color", "editable": true, "reason": "",
+    "help": "…", "unit": "", "minimum": null, "maximum": null,
+    "step": 0.05, "choices": [], "requires": null, "value": [0, 0, 1]
+  }],
+  "overrides_path": "/…/configs/local.yaml",
+  "overrides": {"render.target_fps": 30}
+}
+```
+
+`fields` 已按「分组 → 组内 order」排好序，前端不需要再排。
+
+### `POST /api/settings`
+
+```json
+{"patch": {"render.target_fps": 30, "train.online_update.color_l1": true}}
+```
+
+三步：**校验 → 即时应用 → 写入 `configs/local.yaml`**。
+
+| 情况 | 响应 |
+|---|---|
+| 成功 | `200` + `{ok, applied, saved_to, warning, groups, fields, render, status}` |
+| 未知键 / 锁定键 / 越界 / 空 patch | `400` + `{detail: "..."}`，**整批拒绝** |
+
+**整批拒绝**是刻意的：一批里有一项非法时，不能出现"前两项改了、第三项失败"的
+中间状态 —— 那种状态没人能推理清楚。
+
+**存盘失败不回滚**：若 `local.yaml` 写不进去（只读文件系统），修改仍然生效，
+但响应里 `saved_to: null` 且 `warning` 说明"重启后会丢"。
+
+`applied` 只列出**立即生效**的项（渲染参数与两个间隔）；其余项（如
+`train.online_update.*`）已写入配置，在下次被读取时生效。
+
+`render` 是渲染参数的**权威值**（与 `/api/state` 的 `render` 同构），
+供前端同步镜像控件。它**不**放进 `status`：`status` 每 4 Hz 推一次，
+而这些值很少变，塞进去既是带宽浪费、也混淆了"状态"与"配置"两种语义。
 
 ### `GET /healthz`
 
@@ -292,6 +339,15 @@ URL 加 `?mock=1` 强制 mock，`?mock=0` 强制连真后端。
 ---
 
 ## 5. 与配置的关系
+
+GUI 设置面板的**参数元数据**（可编辑性、范围、分组、排序）集中在
+`src/live3dgsavatar/app/settings.py` —— 那是唯一事实来源。
+前端 `web/js/settings.js` 只按 schema 画控件、只发**差异**。
+
+为什么只发差异：后端把 patch 写进 `local.yaml` 作为覆盖项。若每次保存都写全部字段，
+`local.yaml` 会变成整份配置的副本，之后改默认值会被它永久盖住，而且没人看得出
+"哪些是我改的"。
+
 
 后端的默认值一律来自 `configs/*.yaml`（见 `docs/CONFIG.md`）：
 

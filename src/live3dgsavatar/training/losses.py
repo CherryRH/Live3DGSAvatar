@@ -45,6 +45,18 @@ def masked_mse(
     return (diff2 * m).sum() / denom
 
 
+def masked_l1(prediction: torch.Tensor, target: torch.Tensor,
+              mask: torch.Tensor | None = None) -> torch.Tensor:
+    """掩码内的平均绝对误差（L1）。`mask` 为 None 时用全图。"""
+    diff = (prediction - target).abs()
+    if mask is None:
+        return diff.mean()
+    m = mask.to(diff.dtype)
+    denom = m.sum().clamp(min=1.0)
+    # diff: [B,3,H,W]，mask: [B,1,H,W] → 广播后按像素数归一
+    return (diff * m).sum() / (denom * diff.shape[1])
+
+
 def masked_psnr(
     prediction: torch.Tensor,
     target: torch.Tensor,
@@ -68,9 +80,14 @@ class PhotometricLoss:
     Attributes:
         mask_weight: 掩码外像素的权重（0 表示完全忽略背景）。
             背景通常预测不准，忽略它能显著改善前景拟合。
+        l1: 优化目标用 L1 而不是 L2。
+            L1 对少量离群像素更稳健（高光、镜面反射、跟踪抖动的边缘），
+            但收敛更慢。**只影响优化目标**；验收用的 PSNR 始终由 MSE 计算 ——
+            否则"优化目标"与"验收判据"会错位。
     """
 
     mask_weight: float = 0.0
+    l1: bool = False
 
     def __call__(
         self,
@@ -82,16 +99,19 @@ class PhotometricLoss:
         target = observation.target
         mask = observation.mask
 
+        def core(pred, tgt, m):
+            return masked_l1(pred, tgt, m) if self.l1 else masked_mse(pred, tgt, m)
+
         if mask is None or self.mask_weight >= 1.0:
-            loss = masked_mse(color, target, mask)
+            loss = core(color, target, mask)
         else:
             # 掩码内为主，掩码外按 mask_weight 加权（默认 0 = 完全忽略）
-            inside = masked_mse(color, target, mask)
+            inside = core(color, target, mask)
             outside_m = (~mask.to(torch.bool)).to(color.dtype)
             if float(outside_m.sum()) <= 0:
                 loss = inside
             else:
-                outside = masked_mse(color, target, outside_m)
+                outside = core(color, target, outside_m)
                 loss = inside + self.mask_weight * outside
 
         mse = float(masked_mse(color.detach(), target.detach(), mask))

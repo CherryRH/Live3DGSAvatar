@@ -25,6 +25,8 @@
     <span>丢帧 <b id="stat-dropped">0</b></span>
     <span>显存 <b id="stat-mem">–</b> MiB</span>
   </div>
+  <button id="btn-settings" class="icon topbar__gear" aria-expanded="false"
+          title="设置（全量配置：可改的即时生效，锁定的展示原因）">⚙</button>
 </header>
 
 <main>
@@ -54,10 +56,6 @@
             <option value="live" disabled>实时采集（live）· 待接入</option>
           </select>
         </label>
-        <label class="inline" title="每秒最多渲染几帧；也是播放时帧号推进的速度">
-          帧数上限 <output id="o-fps">60</output>
-          <input id="f-fps" type="range" min="5" max="120" step="5" value="60">
-        </label>
         <label class="inline">
           <input id="f-perturb" type="checkbox"> 调试·随机扰动
         </label>
@@ -70,6 +68,11 @@
   </section>
 
   <aside class="panel">
+    <p class="hint panel__note">
+      右侧只放**不影响持久化**的实时操作。渲染参数（背景色、高斯缩放、
+      分辨率比例、帧数上限）在右上角 <b>⚙ 设置</b> 里，改完会保存。
+    </p>
+
     <details open>
       <summary>模型</summary>
       <div class="fields">
@@ -77,26 +80,6 @@
         <label>work_name<input id="f-work-name" type="text" value="test"></label>
         <button id="btn-load">加载模型</button>
         <p class="hint" id="model-info">–</p>
-      </div>
-    </details>
-
-    <details open>
-      <summary>渲染</summary>
-      <div class="fields">
-        <label>背景色
-          <select id="f-bg">
-            <option value="0,0,0">黑</option>
-            <option value="1,1,1">白</option>
-            <option value="0.5,0.5,0.5">灰</option>
-          </select>
-        </label>
-        <label>高斯缩放系数 <output id="o-scaling">1.00</output>
-          <input id="f-scaling" type="range" min="0.2" max="2" step="0.05" value="1">
-        </label>
-        <label>分辨率比例 <output id="o-scale">100%</output>
-          <input id="f-scale" type="range" min="0.25" max="1" step="0.05" value="1"
-                 title="6GB 显存下这是最有效的帧率旋钮">
-        </label>
       </div>
     </details>
 
@@ -115,6 +98,26 @@
     </p>
   </aside>
 </main>
+
+<!-- 设置浮窗：内容由 app/settings.py 的注册表驱动，前端不硬编码控件 -->
+<div class="dialog" id="settings-dialog" hidden>
+  <div class="dialog__panel" role="dialog" aria-modal="true" aria-label="设置">
+    <header class="dialog__head">
+      <h2>设置</h2>
+      <span class="hint" id="settings-source">–</span>
+      <span class="spacer"></span>
+      <button id="btn-settings-close" class="icon" title="关闭（Esc）">✕</button>
+    </header>
+    <nav class="tabs" id="settings-tabs" role="tablist"></nav>
+    <div class="dialog__body" id="settings-body"></div>
+    <footer class="dialog__foot">
+      <button id="btn-settings-reset">放弃修改</button>
+      <span class="hint" id="settings-status">–</span>
+      <span class="spacer"></span>
+      <button id="btn-settings-save" class="primary">保存并应用</button>
+    </footer>
+  </div>
+</div>
 
 <script type="module" src="js/main.js"></script>
 </body>

@@ -64,16 +64,17 @@ _FALLBACK: dict[str, Any] = {
     "runtime.device": "cuda",
     "app.host": "localhost",
     "app.port": 8000,
-    "app.target_fps": 60,
     "app.autostart": True,
     "app.preload_frames": -1,
     "app.stats_log_interval_s": 10.0,
-    "app.status_interval_s": 0.25,
     "runtime.split": "all",
     "smoke.max_frames": None,
     "render.background": [0.0, 0.0, 0.0],
     "render.scaling_modifier": 1.0,
     "render.sh_degree": 0,
+    "render.target_fps": 60,
+    "render.status_interval_s": 0.25,
+    "render.scale": 1.0,
     "render.batch_size": 1,
     "render.frames": 1,
     "render.max_batch_size": 10,
@@ -88,6 +89,20 @@ _FALLBACK: dict[str, Any] = {
     "dataset.use_pose_weight": True,
     "dataset.pin_memory": False,
     "test.dump_diff": False,
+    # ---- 训练 / 在线更新（configs/train.yaml）----
+    "train.pipeline.enabled": False,
+    "train.pipeline.max_frames": None,
+    "train.online_update.enabled": True,
+    "train.online_update.update_opacity": True,
+    "train.online_update.color_l1": False,
+    "train.online_update.update_color": True,
+    "train.online_update.time_budget_s": 10.0,
+    "train.online_update.steps": 300,
+    "train.online_update.lr_color": 0.002,
+    "train.online_update.lr_opacity": 0.02,
+    "train.online_update.mask_weight": 0.0,
+    "train.online_update.frames": 8,
+    "train.online_update.frame_chunk": 8,
 }
 
 # 需要解析为绝对路径的字段（相对路径按**仓库根**解析，而非 cwd）
@@ -228,7 +243,8 @@ def _resolve_path(value: Any, field: str) -> Any:
 
 def load_config(
     config_dir: Path | str | None = None,
-    files: Iterable[str] = ("system.yaml", "render.yaml", "local.yaml"),
+    files: Iterable[str] = ("system.yaml", "render.yaml", "train.yaml",
+                            "local.yaml"),
     env: bool = True,
 ) -> Config:
     """加载配置。
@@ -294,11 +310,11 @@ def _validate(cfg: Config) -> None:
         raise ValueError(f"app.port 应为 int，实际 {cfg.get('app.port')!r}")
     if not (1 <= cfg.get("app.port") <= 65535):
         raise ValueError(f"app.port 越界：{cfg.get('app.port')}")
-    if int(cfg.get("app.target_fps", 0)) < 0:
-        raise ValueError(f"app.target_fps 不能为负：{cfg.get('app.target_fps')}")
-    sti = float(cfg.get("app.status_interval_s", 0.25))
+    if float(cfg.get("render.target_fps", 0)) < 0:
+        raise ValueError(f"render.target_fps 不能为负：{cfg.get('render.target_fps')}")
+    sti = float(cfg.get("render.status_interval_s", 0.25))
     if sti <= 0:
-        raise ValueError(f"app.status_interval_s 必须 > 0，实际 {sti}")
+        raise ValueError(f"render.status_interval_s 必须 > 0，实际 {sti}")
     si = float(cfg.get("app.stats_log_interval_s", 10.0))
     if si <= 0:
         raise ValueError(f"app.stats_log_interval_s 必须 > 0，实际 {si}")

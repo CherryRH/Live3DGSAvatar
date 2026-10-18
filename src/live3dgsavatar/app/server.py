@@ -38,6 +38,7 @@ from .protocol import (
     pack_frame,
     sleep_after,
 )
+from . import settings as settings_mod
 from .session import Session
 
 logger = logging.getLogger("live3dgsavatar.app")
@@ -64,6 +65,64 @@ def _install_routes(app: FastAPI, session: Session) -> None:
     @app.get("/api/state")
     async def api_state() -> dict:
         return session.state()
+
+    @app.get("/api/settings")
+    async def api_settings() -> dict:
+        """全部配置项（含**锁定项**）+ 分组元数据。
+
+        全量下发是刻意的：用户需要看到"有哪些参数、为什么不能改"，
+        而不是在面板里找不到它们。
+        """
+        return {
+            "groups": settings_mod.groups_payload(),
+            "fields": settings_mod.snapshot(session.cfg),
+            "overrides_path": str(settings_mod.overrides_path()),
+            "overrides": settings_mod.load_overrides(),
+        }
+
+    @app.post("/api/settings")
+    async def api_settings_save(payload: dict) -> JSONResponse:
+        """校验 → 即时应用 → 持久化到 `configs/local.yaml`。
+
+        三步都要做：只应用不持久化，重启就丢；只持久化不应用，
+        用户改了却看不到变化。校验失败的项**整批拒绝**（不做部分应用），
+        避免"改了一半"的中间状态。
+        """
+        patch = (payload or {}).get("patch")
+        if not isinstance(patch, dict) or not patch:
+            raise HTTPException(status_code=400,
+                                detail="需要 {\"patch\": {键: 值}} 且不能为空")
+        try:
+            clean = settings_mod.validate_patch(patch)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+
+        applied = session.apply_settings(clean)
+
+        saved_to = None
+        warning = None
+        try:
+            path = await asyncio.to_thread(settings_mod.save_overrides, clean)
+            saved_to = str(path)
+        except OSError as e:
+            # 存盘失败（只读文件系统等）不该让"已经生效的修改"回滚，
+            # 但要明确告诉用户"这次重启后会丢"。
+            warning = f"已应用，但保存失败：{e}"
+            logger.warning("保存设置失败：%s", e)
+
+        return JSONResponse({
+            "ok": True,
+            "applied": applied,
+            "saved_to": saved_to,
+            "warning": warning,
+            "groups": settings_mod.groups_payload(),
+            "fields": settings_mod.snapshot(session.cfg),
+            # 渲染参数的**权威值**（与 /api/state 的 render 同构）。
+            # 前端据此同步任何镜像控件；不塞进 4 Hz 的 status ——
+            # 这些值很少变，每次推是浪费。
+            "render": session.params.to_dict(),
+            "status": _status_payload(session),
+        })
 
     @app.post("/api/model")
     async def api_model(payload: dict) -> JSONResponse:
@@ -122,7 +181,7 @@ async def _serve_client(app: FastAPI, ws: WebSocket, session: Session) -> None:
     # ⚠️ 必须周期性推：只在控制消息后回 status 会让播放时的帧号条不动。
     # 4 Hz：人手感知足够，又不至于刷满控制通道。
     status_interval_s = max(0.05, float(
-        session.cfg.get("app.status_interval_s", 0.25)))
+        session.cfg.get("render.status_interval_s", 0.25)))
 
     # 后端自己的吞吐统计（**与前端解耦**：前端算它看到的，后端记它渲染的）。
     # 前端 FPS 由 web/js 自己按帧到达间隔计算；后端指标走 stdout 周期日志。
@@ -189,6 +248,12 @@ async def _serve_client(app: FastAPI, ws: WebSocket, session: Session) -> None:
                         pass
 
             # 周期性推 status：前端据此更新帧号条、耗时与显存
+            # ⚠️ 每帧从 cfg 重读间隔：设置面板改了要**立刻**生效，
+            #    而不是等下一次重建连接。
+            status_logger.interval_s = max(0.05, float(
+                session.cfg.get("render.status_interval_s", 0.25)))
+            logger_.interval_s = max(1.0, float(
+                session.cfg.get("app.stats_log_interval_s", 10.0)))
             now = loop.time()
             if status_logger.due(now):
                 with contextlib.suppress(Exception):
@@ -458,7 +523,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.work_name is not None:
         cfg.set("work_name", args.work_name)
     if args.target_fps is not None:
-        cfg.set("app.target_fps", args.target_fps)
+        cfg.set("render.target_fps", args.target_fps)
 
     host = args.host or str(cfg.get("app.host", "127.0.0.1"))
     port = args.port or int(cfg.get("app.port", 8000))

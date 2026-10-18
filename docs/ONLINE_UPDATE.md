@@ -85,17 +85,40 @@ print(report.summary())      # PSNR before → after
 - `time_budget_s` 是硬约束：到点即停，保证通话不被卡住
 - 支持流式：`fit(state=上一轮)` 从已有增量继续
 
-## 4. 验收判据
+## 4. 验收判据与实测结果
 
-**PSNR（掩码内）**，与渲染测试一致：
+**PSNR（掩码内）**，与渲染测试一致。
 
-| | 数值 |
+### 实测（`crh_1`，8 帧，512²，RTX 3090）
+
+```bash
+CUDA_LAUNCH_BLOCKING=1 python scripts/online_update.py --frames 8 --time-budget 10
+```
+
+```
+热更新 182 步 / 10.24s：PSNR 31.37 → 32.52 dB (+1.15)
+  过程: @50:32.55, @100:32.60, @150:32.56
+```
+
+**收敛很快**：第 50 步就到 32.55，之后 132 步只再涨 0.05 dB 且略有回落。
+即 **~3 秒能拿到几乎全部收益**，10 秒预算对质量没有额外贡献。
+
+单步约 56 ms（8 帧 × ~7 ms 前向+反向）。
+
+> ⚠️ `elapsed_s` 包含收尾的 `after` 评估，所以它略高于纯迭代耗时。
+> `--time-budget` 在**每步开始前**检查，因此实际耗时最多超出一个 step + 一次 eval。
+
+### 与渲染测试基线的关系
+
+| 数值 | 口径 |
 |---|---|
-| 基线（`crh_1`，数据集帧，512²） | **30.71 dB** |
-| 目标 | 显著高于基线 |
+| 30.71 dB | 20 帧，PSNR 的**中位数**（`render_test`） |
+| 31.37 dB | 8 帧，PSNR 的**均值**（`online_update` 的 before） |
+
+两者**统计口径不同**，不可直接比较；热更新的验收看**同一批帧上的前后差值**。
 
 ⚠️ 注意基线是**训练数据上**的结果；摄像头链路的基线会更低（光照/跟踪精度差异），
-**不能用 30.71 当起点**。
+**不能用上述数值当起点**。
 
 ## 5. 使用
 
@@ -107,7 +130,20 @@ python scripts/online_update.py --dry-run
 python scripts/online_update.py --frames 8 --time-budget 10
 ```
 
-配置见 `configs/system.yaml` 的 `online_update` 节。
+配置见 `configs/train.yaml` 的 `train.online_update` 节；GUI 设置面板也能改
+（「训练 / 在线更新」分组）。
+
+### 门控
+
+| 门控 | 关闭时的行为 |
+|---|---|
+| `enabled` | 脚本打印 `[skip]` 并退出（加 `--force` 可强制跑一次）；GUI 不触发更新 |
+| `update_color` | 颜色不进优化器（`color_delta` 保持为零） |
+| `update_opacity` | 不透明度不进优化器 |
+| `color_l1` | 用 L2（默认）而非 L1 |
+
+`update_color` 与 `update_opacity` **同时关闭**时，脚本直接跳过并说明原因 ——
+那种配置下在线更新是空操作，跑它只会白等预算。
 
 ## 6. 已知限制
 
@@ -122,6 +158,7 @@ python scripts/online_update.py --frames 8 --time-budget 10
 
 | 方向 | 说明 |
 |---|---|
+| **减少默认步数** | 实测 50 步即收敛，`online_update.steps` 可从 300 降到 ~60（约 3.4 s） |
 | 回归模型加速 | 用大量热更新结果训练"观测 → 修正量"的回归器，把 10 s 压到 0.1 s |
 | 对称先验 | 用左右对称补未观测区域 |
 | 与摄像头串联 | RDF → 129 维 → 本模块（需要先解决平移标定） |
