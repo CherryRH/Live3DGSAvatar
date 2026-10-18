@@ -116,9 +116,13 @@ class _Raises:
                 f"期望抛出 {self.exc_type.__name__}，但没有抛出")
         if not issubclass(exc_type, self.exc_type):
             return False                      # 其它异常照常向上抛
-        if self.match is not None and self.match not in str(exc):
-            raise AssertionError(
-                f"异常信息不含 {self.match!r}：{exc}")
+        if self.match is not None:
+            # 与 pytest 一致：`match` 是**正则**（re.search）。
+            # 早先实现成子串匹配，导致 `match="\\[N,3\\]"` 这类写法静默不匹配。
+            import re as _re
+            if _re.search(self.match, str(exc)) is None:
+                raise AssertionError(
+                    f"异常信息不匹配 {self.match!r}：{exc}")
         self.value = exc
         return True
 
