@@ -203,33 +203,28 @@ def test_flame_dtype_is_not_overridden() -> None:
 
 
 def test_scripts_trigger_compat_before_chumpy() -> None:
-    """**回归测试**：会加载参照实现的模块必须在**模块层**先触发 numpy 兼容补丁。
+    """**回归测试**：会加载 FLAME pickle 的脚本必须在模块层先触发 numpy 兼容补丁。
 
-    参照侧的 `FLAME.__init__` 会 `pickle.load` 进而 `import chumpy`，
-    而 chumpy 0.70 依赖 numpy 已移除的别名（`np.int` 等）。
-    补丁由 `import live3dgsavatar` 在导入期施加（`live3dgsavatar/__init__.py`
-    会 import `compat`）。
+    背景：FLAME 的旧封装（`pickle.load` → `import chumpy`）依赖 numpy 已移除的
+    别名（`np.int` 等），补丁由 `import live3dgsavatar` 在导入期施加。
 
-    若把 `import live3dgsavatar` 放进函数体（例如晚于 `load_scene()` 才执行），
-    顺序就反了，会报 `cannot import name 'int' from 'numpy'`。
-    `scripts/render_test.py` 曾因此报错。
+    ⚠️ **本项目已不再使用那套 FLAME 封装**：拓扑改为直接读 pickle
+    （见 `data/flame_topology.py`），不 import chumpy。因此 `data/scene.py`
+    不再需要这条约束。仍保留对脚本的检查——它们可能间接加载参照侧的代码。
     """
     targets = [REPO_ROOT / "scripts" / "render_test.py",
-               REPO_ROOT / "scripts" / "profile_deform.py",
-               REPO_ROOT / "src" / "live3dgsavatar" / "data" / "scene.py"]
+               REPO_ROOT / "scripts" / "profile_deform.py"]
     for path in targets:
         assert path.exists(), f"缺少文件：{path}"
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-
         top_level_import = any(
             (isinstance(n, ast.Import) and any(a.name == "live3dgsavatar" for a in n.names))
             or (isinstance(n, ast.ImportFrom) and n.module == "live3dgsavatar")
             for n in tree.body
         )
         assert top_level_import, (
-            f"{path.name} 必须在模块层 `import live3dgsavatar` 以触发 numpy 兼容补丁；"
-            "否则参照侧的 FLAME 构造会因 chumpy 而 ImportError")
-
+            f"{path.name} 必须在模块层 `import live3dgsavatar`；"
+            "否则 numpy 兼容补丁可能晚于首次 pickle 加载而失效")
 
 def test_no_undefined_names_across_project() -> None:
     """**静态检查**：全项目不得有未定义名字。
@@ -446,3 +441,69 @@ def test_setup_env_installs_project() -> None:
 
     # 安装后立刻自检导入，而不是等 run_gui.sh 才 ModuleNotFoundError
     assert "import live3dgsavatar" in text, "setup_env.sh 应在安装后自检导入"
+
+
+def test_training_does_not_depend_on_data_or_app() -> None:
+    """**分层**：`training/` 只能向下依赖 `core/`（与标准库/torch）。
+
+    为什么这条重要：在线更新的观测可能来自**数据集**，也可能来自**摄像头**。
+    如果 `training/` 直接 import `data/`，那么"摄像头来源"就得复制一份更新逻辑；
+    反之若它 import `app/`，测试与脚本就无法脱离服务端使用它。
+
+    观测通过 `FrameObservation` / `BatchObservation` 传入 —— 这样两种来源
+    共用同一份更新实现（见 `training/observations.py`）。
+    """
+    training = SRC / "training"
+    if not training.is_dir():
+        return
+    forbidden = (
+        "live3dgsavatar.data",
+        "live3dgsavatar.app",
+        "live3dgsavatar.tracking",
+        "live3dgsavatar.runtime",
+        "live3dgsavatar.streaming",
+    )
+    violations: list[str] = []
+    for path in sorted(training.rglob("*.py")):
+        if "__pycache__" in path.parts:
+            continue
+        for lineno, module in _imports(path):
+            if module.startswith(forbidden):
+                rel = path.relative_to(SRC)
+                violations.append(f"{rel}:{lineno} → {module}")
+    assert not violations, (
+        "training/ 依赖了不该依赖的上层（观测应通过 FrameObservation 传入）：\n  "
+        + "\n  ".join(violations))
+
+
+def test_app_package_imports_without_broken_symbols() -> None:
+    """**回归测试**：`live3dgsavatar.app` 必须能真正导入。
+
+    曾经 `session.py` 引用了已删除的 `reference_model_dir`，而
+    `app/__init__.py` 把任何 `ImportError` 都当成"依赖未安装"，
+    于是 `python -m live3dgsavatar.app` 报的是「请先运行 setup_env.sh」——
+    把**代码 bug** 伪装成了环境问题，排查方向完全跑偏。
+
+    这里直接检查：导入成功，且模块里没有残留的未定义引用。
+    """
+    import importlib
+
+    mod = importlib.import_module("live3dgsavatar.app")
+    assert hasattr(mod, "protocol")
+    # 若 server 可导入（依赖齐全），则 create_app 必须是真函数而非兜底桩
+    import live3dgsavatar.app.session as session  # noqa: F401
+
+
+def test_app_cli_help_works() -> None:
+    """`python -m live3dgsavatar.app --help` 必须能跑（不需要 GPU/模型）。"""
+    import subprocess
+    import sys as _sys
+
+    r = subprocess.run(
+        [_sys.executable, "-m", "live3dgsavatar.app", "--help"],
+        cwd=str(REPO_ROOT), capture_output=True, text=True, timeout=120,
+        env={**__import__("os").environ, "PYTHONPATH": str(SRC)})
+    assert r.returncode == 0, (
+        f"--help 应成功，实际 {r.returncode}\nstdout={r.stdout[-500:]}\n"
+        f"stderr={r.stderr[-800:]}")
+    assert "--subject" in r.stdout

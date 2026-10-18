@@ -22,12 +22,22 @@ try:                                     # pragma: no cover - 依赖环境
 except ImportError as _e:                # 缺 fastapi / uvicorn 等
     _IMPORT_ERROR = _e
 
+    # ⚠️ 只在**缺第三方包**时才说"依赖未安装"。本项目自身的导入错误
+    #    （例如某个符号被删了）同样抛 ImportError，一律当依赖问题会掩盖真 bug。
+    _name = getattr(_e, "name", "") or ""
+    _is_dependency = _name.startswith(
+        ("fastapi", "uvicorn", "starlette", "torch",
+         "diff_gaussian_rasterization")) or not _name
+
+    def _explain(action: str) -> str:
+        if _is_dependency:
+            return f"{action}：GUI 后端依赖未安装（{_e}）。请先运行：bash setup_env.sh"
+        return f"{action}：本项目内部导入错误（{_e}）——不是依赖问题，请检查代码"
+
     def create_app(*_a, **_k):           # type: ignore[misc]
-        raise ImportError(
-            f"GUI 后端依赖未安装（{_e}）。请先运行：bash setup_env.sh")
+        raise ImportError(_explain("无法启动"))
 
     def main(*_a, **_k) -> int:          # type: ignore[misc]
-        raise ImportError(
-            f"GUI 后端依赖未安装（{_e}）。请先运行：bash setup_env.sh")
+        raise ImportError(_explain("无法启动"))
 
     __all__ += ["create_app", "main"]

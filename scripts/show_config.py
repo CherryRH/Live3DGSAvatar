@@ -88,7 +88,6 @@ def _warn_missing(data: dict) -> None:
     """对关键路径做存在性提醒 —— 只是提醒，不当成错误。"""
     checks = [
         ("paths.data_root", "数据集根目录"),
-        ("paths.reference_root", "参照仓库"),
         ("paths.model_ply", "预训练模型"),
     ]
     missing = []

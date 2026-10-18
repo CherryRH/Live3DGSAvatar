@@ -30,7 +30,7 @@ from typing import Any, Iterable
 
 __all__ = [
     "Config", "load_config", "repo_root", "CONFIG_DIR",
-    "model_dir", "reference_model_dir", "resolve_model_ply",
+    "model_dir", "resolve_model_ply",
     "resolve_model_config",
 ]
 
@@ -42,7 +42,6 @@ CONFIG_DIR = REPO_ROOT / "configs"
 _ENV_OVERRIDES = {
     "LIVE3DGS_DATA_ROOT": "paths.data_root",
     "LIVE3DGS_OUTPUT_DIR": "paths.output_dir",
-    "LIVE3DGS_REFERENCE_ROOT": "paths.reference_root",
     "LIVE3DGS_MODELS_DIR": "paths.models_dir",
     "LIVE3DGS_SUBJECT": "subject",
     "LIVE3DGS_WORK_NAME": "work_name",
@@ -57,8 +56,8 @@ _FALLBACK: dict[str, Any] = {
     "paths.data_root": "data/INSTA",
     "paths.data_dir": None,
     "paths.output_dir": "output",
-    "paths.reference_root": None,
     "paths.models_dir": "models",
+    "paths.flame_dir": None,
     "paths.model_ply": None,
     "paths.models_config": None,
     "paths.image_subdir": "images",
@@ -96,7 +95,6 @@ _PATH_FIELDS = (
     "paths.data_root",
     "paths.data_dir",
     "paths.output_dir",
-    "paths.reference_root",
     "paths.models_dir",
     "paths.model_ply",
     "paths.models_config",
@@ -332,34 +330,21 @@ def model_dir(cfg: "Config" | None = None) -> Path:
     return Path(cfg.paths.models_dir) / str(cfg.subject) / str(cfg.work_name)
 
 
-def reference_model_dir(cfg: "Config" | None = None) -> Path | None:
-    """参照实现的同名模型目录：`<reference_root>/output/<subject>/<work_name>/`。
-
-    参照仓库不存在时返回 ``None``。
-    """
-    cfg = cfg or load_config()
-    if cfg.paths.reference_root is None:
-        return None
-    return (Path(cfg.paths.reference_root) / "output"
-            / str(cfg.subject) / str(cfg.work_name))
-
-
 def resolve_model_ply(cfg: "Config" | None = None,
                       must_exist: bool = True) -> Path:
     """解析模型 `.ply` 路径。
 
-    查找顺序（与 RGBAvatar 的目录约定保持一致）：
+    查找顺序：
 
-    1. `paths.model_ply` —— 若显式配置，直接用它
-    2. `<models_dir>/<subject>/<work_name>/model.ply` —— **本项目优先**
-    3. `<reference_root>/output/<subject>/<work_name>/model.ply` —— 回退到参照
+    1. `paths.model_ply` —— 显式配置，直接用它
+    2. `<models_dir>/<subject>/<work_name>/model.ply`
 
     Args:
         cfg: 配置；``None`` 时读仓库根的 configs/
-        must_exist: 为真时，全部候选都不存在就报错并列出尝试过的路径
+        must_exist: 为真时，候选不存在就报错并列出尝试过的路径
 
     Raises:
-        FileNotFoundError: `must_exist` 为真且找不到任何候选
+        FileNotFoundError: `must_exist` 为真且找不到候选
     """
     cfg = cfg or load_config()
 
@@ -373,10 +358,6 @@ def resolve_model_ply(cfg: "Config" | None = None,
         return path
 
     candidates = [model_dir(cfg) / "model.ply"]
-    ref_dir = reference_model_dir(cfg)
-    if ref_dir is not None:
-        candidates.append(ref_dir / "model.ply")
-
     for path in candidates:
         if path.exists():
             return path
@@ -386,31 +367,23 @@ def resolve_model_ply(cfg: "Config" | None = None,
         raise FileNotFoundError(
             f"找不到模型（subject={cfg.subject}, "
             f"work_name={cfg.work_name}）。尝试过：\n{tried}\n"
-            "请把模型放到本项目 models/ 下，或改 configs/system.yaml，"
-            "或用 --ply 指定。")
+            "请把模型放到 models/<subject>/<work_name>/ 下，"
+            "或改 configs/system.yaml，或用 --ply 指定。")
     return candidates[0]
 
 
 def resolve_model_config(cfg: "Config" | None = None) -> Path | None:
-    """解析模型随附的 `config.yaml`（RGBAvatar 在模型目录放了它）。
+    """解析模型随附的 `config.yaml`。
 
-    查找顺序：`paths.models_config` → `<models_dir>/.../config.yaml`
-    → `<reference_root>/output/.../config.yaml`。找不到返回 ``None``。
+    查找顺序：`paths.models_config` → `<models_dir>/<subject>/<work_name>/config.yaml`。
+    找不到返回 ``None``。
     """
     cfg = cfg or load_config()
     explicit = cfg.get("paths.models_config")
     if explicit is not None:
         return Path(explicit)
-
-    candidates = [model_dir(cfg) / "config.yaml"]
-    ref_dir = reference_model_dir(cfg)
-    if ref_dir is not None:
-        candidates.append(ref_dir / "config.yaml")
-
-    for path in candidates:
-        if path.exists():
-            return path
-    return None
+    path = model_dir(cfg) / "config.yaml"
+    return path if path.exists() else None
 
 
 def resolve_data_dir(cfg: Config) -> Path:

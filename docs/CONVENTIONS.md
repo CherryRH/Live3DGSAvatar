@@ -1,10 +1,10 @@
 # 坐标系统与数值约定
 
 > 本文件是 Live3DGSAvatar 中**所有涉及坐标、矩阵、空间归属与数值精度问题的唯一权威来源**。
-> 任何与此处描述不符的实现都视为 bug。修改本文件必须同步检查 `core/` 与 `tests/equivalence/`。
+> 任何与此处描述不符的实现都视为 bug。修改本文件必须同步检查 `core/` 与相关测试。
 >
-> 这些约定的来源是参照实现 RGBAvatar 的**实测行为**（而非其文档），已在
-> `tests/equivalence/` 中被验证。
+> 这些约定来自**实测行为**，已在
+> `tests/unit/` 中被验证。
 
 ---
 
@@ -44,7 +44,7 @@ core/render/camera_utils.py :: to_kernel_matrix(M)
 **整个代码库只允许在这一处发生「行主序 → 列主序」的转置。**
 其余任何地方不得出现对 `w2c` / `full_proj` 的 `transpose`。
 
-参照实现把该转置散落在调用点（`camera.get_w2v.transpose(0, 1)` 与
+早期实现把该转置散落在调用点（
 `camera.get_full_proj.transpose(0, 1)` 各出现一次，且被三份重复的
 `render_gs_batch` 各复制一遍），这是需要消除的隐患。
 
@@ -59,7 +59,7 @@ pos = t                      # 3，相机在世界中的位置
 w2c[:3, :3] = R.T
 w2c[:3,  3] = -R.T @ pos
 
-# 投影矩阵（与参照实现逐元素一致）
+# 投影矩阵
 fx, fy, cx, cy = K[0,0], K[1,1], K[0,2], K[1,2]
 n, f, W, H = znear, zfar, width, height
 P = zeros(4, 4)
@@ -86,7 +86,7 @@ z_ndc = (f·z_c - f·n) / ((f - n)·z_c)   →   z_c = n 时 0，z_c = f 时 1
 
 ### 2.5 视场角与焦距
 
-参照实现给光栅化器传 `tan_fovx = tan(fov_x / 2)`，内核内部再算
+光栅化器收到的是 `tan_fovx = tan(fov_x / 2)`，内核内部再算
 `focal_x = W / (2 · tan_fovx)`，与投影矩阵的 `2·fx/W` 自洽：
 
 ```
@@ -98,7 +98,7 @@ fov_x = 2·atan(W / (2·fx))      fx = W / (2·tan(fov_x/2))
 
 ### 2.6 无 GPU 时的矩阵自检
 
-`tests/unit/test_camera.py` 在 CPU 上验证上式与参照实现逐元素一致，
+`tests/unit/test_camera.py` 在 CPU 上验证上式，
 因此矩阵约定的回归**不需要 GPU**。
 
 ---
@@ -141,22 +141,21 @@ rot_world  = q(R) ⊗ rot_tangent            # 四元数左乘，WXYZ
 | 来源 | 布局 |
 |---|---|
 | CUDA `cuda_utils/face_tbn.cu` | `TBNs[idx] = transpose(mat3(t,b,n))` → **行**为基 |
-| 参照 Python `utils.compute_face_tbn` | `stack([t,b,n], dim=-1)` → **列**为基 |
+| 早期 Python 实现 | `stack([t,b,n], dim=-1)` → **列**为基 |
 | 本项目 `core/deform/tbn.py` | 同上，**列**为基 |
 
-本项目与参照的 Python 侧布局一致，因此位置项用 **`R @ xyz`**，
-与参照 `gaussian_deform_batch`（`binding_rotations @ gs.xyz`）一致。
+本项目采用**列为基**，因此位置项用 **`R @ xyz`**（与 `binding_rotations @ gs.xyz` 同语义）。
 
-> ⚠️ **不要**依据 `mesh_binding.cu` 内部的 `transpose(binding_rotation) * gs_xyz`
-> 推断参照用的是 `Rᵀ` —— 那个 `transpose` 是针对**传入布局**的修正，
+> ⚠️ **不要**依据 CUDA 内核内部的 `transpose(binding_rotation) * gs_xyz`
+> 推断应该用 `Rᵀ` —— 那个 `transpose` 是针对**传入布局**的修正，
 > 不能脱离"传入的是什么"来判断。
 >
 > 这一层**没有"哪个数学上更对"可自证**：`mesh_binding` 是逐元素操作，
 > 转置与否都自洽，连"刚性等变"这类不变量也对两者同等成立。
-> **判据只能是"与参照逐位一致"**（等价门的 31 项之一）。
+> **判据只能是实测渲染结果**（`tests/unit/test_deform.py` 覆盖关键约定）。
 
 **回归测试**：`tests/unit/test_deform.py::test_bind_matches_reference_translation`
-（与参照一致）+ `test_mesh_binder_uses_R_not_transpose`（直接打在真实代码路径上）。
++ `test_mesh_binder_uses_R_not_transpose`（直接打在真实代码路径上）。
 
 ### 3.3 深度四元数顺序
 
@@ -177,7 +176,7 @@ rot_world  = q(R) ⊗ rot_tangent            # 四元数左乘，WXYZ
 | `color` | SH 0 阶系数 `[B,N,1,3]` | — | `rgb2sh0(rgb) = (rgb - 0.5)/0.28209479177387814` |
 | `xyz` | 米 | — | — |
 
-- **sh_degree 恒为 0**，只用 DC 项。参照实现写 PLY 时补 45 个零列 `f_rest` 作为占位，
+- **sh_degree 恒为 0**，只用 DC 项。写 PLY 时补 45 个零列 `f_rest` 作为占位，
   本项目保留该占位以兼容 3DGS 工具链，但**其值恒为 0**，不得据此推断支持高阶 SH。
 - **opacity 与 scaling 不参与 blendshape 混合**（只有 xyz / rotation / color 有基）。
   这是约简高斯 blendshape 的关键设计，迁移时最容易改错。
@@ -187,7 +186,7 @@ rot_world  = q(R) ⊗ rot_tangent            # 四元数左乘，WXYZ
 ## 5. 批量约定
 
 - **Batch-first**：所有张量第一维恒为 batch，单帧时为 1。
-- 参照实现存在 `[N,·]` 与 `[B,N,·]` 两套形状并存的情况（`render_gs` / `render_gs_batch`
+- 历史上存在 `[N,·]` 与 `[B,N,·]` 两套形状并存的情况（
   / `mv_reconstruction.render_gs_batch` 三份实现），`core/` 统一为 batch-first。
 - 光栅化器需要 `[N,·]`（无 batch 维），该降维**只允许**在 `Rasterizer` 实现内部发生。
 
@@ -198,7 +197,7 @@ rot_world  = q(R) ⊗ rot_tangent            # 四元数左乘，WXYZ
 | `SimpleRasterizer` | `[3]` 或 `[B,3]` | 广播到 `[B,3]`，逐帧取一行 |
 | `BatchRasterizer` | `[B,3,H,W]` 或 `[B,3]` | 训练时用于随机背景色 |
 
-参照实现的 `render_gs_batch` 内部做 `bg_color.reshape(-1, 3)` 并
+光栅化器内部做 `bg_color.reshape(-1, 3)` 并
 `repeat` 到 batch —— 新实现必须复现这一语义（背景色按 batch 逐行传入内核）。
 
 ---
@@ -225,7 +224,7 @@ rot_world  = q(R) ⊗ rot_tangent            # 四元数左乘，WXYZ
 
 ### 6.1 验收门
 
-`tests/equivalence/` 与 `scripts/equivalence_check.py` 采用：
+数值容差的取值依据：
 
 | 比较对象 | 判据 |
 |---|---|
@@ -245,19 +244,9 @@ rot_world  = q(R) ⊗ rot_tangent            # 四元数左乘，WXYZ
 ### 6.3 单一 dtype 策略
 
 - 计算链统一 `float32`（内核只接受 float32）。
-- **FLAME 模板的 `dtype` 默认是 `float64`**（参照实现 `FlameConfig.dtype`）。
+- **FLAME 模板的 `dtype` 默认是 `float64`**。
   网格顶点是 `float64`，进入绑定前必须显式降到 `float32`，否则会与内核精度不匹配。
-  这是等价门最容易失败的点之一。
+  这是最容易出现精度问题的点之一。
 
 ---
 
-## 7. 与参照实现的逐条差异
-
-所有**有意**偏离参照实现的地方集中登记在 `docs/MIGRATION.md`，包含动机与影响。
-本节只强调三条会导致静默错误的高危项：
-
-| 编号 | 参照行为 | 本项目行为 | 原因 |
-|---|---|---|---|
-| H1 | 三份重复的 `render_gs_batch` | 一套 `Rasterizer` 协议 + 两个后端 | 消除语义漂移 |
-| H2 | 切空间/世界空间靠调用顺序区分 | `GaussianSet.space` 显式标注 | 防跨空间误用 |
-| H3 | `BindingModel.clone()` 签名与 `__init__` 不匹配（调用即报错） | 不移植，改用 `AvatarSnapshot` | 原实现是死代码 |

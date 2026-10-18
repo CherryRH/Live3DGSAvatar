@@ -2,9 +2,7 @@
 
 **面向视频通话场景的 3DGS 人体重建 —— 实时、可驱动、可持续更新的头部数字人**
 
-以 [RGBAvatar](https://github.com/gapszju/RGBAvatar)（CVPR 2025 Highlight）的约简高斯 blendshape
-方案为起点，本项目构建一套完整可用的工程实现：加载预训练模型 → 服务端实时渲染 →
-推流到浏览器预览，并预留"通话过程中持续更新"的接入点。
+加载预训练模型 → 服务端实时渲染 → 推流到浏览器预览，并支持通话开始时的外观微调。
 
 ## 快速开始
 
@@ -27,11 +25,11 @@ bash run_gui.sh                   # 启动服务，浏览器打开 http://localh
 
 | 能力 | 说明 | 状态 |
 |---|---|---|
-| **实时渲染** | 给定驱动参数出图；与参照实现**逐位一致**（254 帧 PSNR 中位 101 dB） | ✅ |
+| **实时渲染** | 给定驱动参数出图；与数据集原图 PSNR（掩码内）中位 **30.71 dB** @ 175 FPS | ✅ |
 | **服务端渲染 + 推流** | 渲染在服务端，客户端只接收视频流；队列容量 1，永不积压 | ✅ |
 | **图形界面** | 浏览器实时预览；播放/单步/跳帧、渲染参数实时可调 | ✅ |
 | **模型接入** | 读取预训练模型（`models/<subject>/<work_name>/model.ply`） | ✅ |
-| **动态更新** | 流式到达的新帧持续优化模型 | 目标项，路线未定（见下） |
+| **在线更新（热更新）** | 通话开始时用一段观测微调外观（颜色/不透明度），~10 s | ✅ 基础能力（见 [`docs/ONLINE_UPDATE.md`](docs/ONLINE_UPDATE.md)） |
 | **训练** | 由合作方预训练提供，本项目**不自研**，仅预留接入点 | 待接入 |
 
 **动态更新**是唯一在册的后续目标。协议已留钩子（数据源 `live`，前端置灰），
@@ -44,17 +42,18 @@ bash run_gui.sh                   # 启动服务，浏览器打开 http://localh
 # 查看当前生效的配置（路径是否指对，先看这个）
 python scripts/show_config.py
 
-# 统一渲染测试：core vs 参照实现 vs 数据集原图（PSNR / FPS / 显存）
+# 渲染测试：出图与数据集原图对比（PSNR / FPS / 显存）
 python scripts/render_test.py --frames 20
 
 # 全量 + 并排对比图
 python scripts/render_test.py --frames -1 --batch-size 4 --dump-diff
 
-# 只测本项目（跳过参照，更快）
-python scripts/render_test.py --frames 20 --skip-reference
+# 无 GPU 的形状/约定自检
+python scripts/render_test.py --dry-run
 
-# 数值等价验收门（与参照逐层比对，31 项）
-python scripts/equivalence_check.py --ply <PATH>/model.ply --data <DATA_DIR> --frames 3
+# 在线更新（热更新）：先测闭式颜色校正（无需 GPU）
+python scripts/online_update.py --dry-run
+python scripts/online_update.py --frames 8 --time-budget 10
 ```
 
 ### GUI 常用参数
@@ -90,8 +89,7 @@ data/FLAME2020/generic_model.pkl     # FLAME 模板（需自行从官网获取�
 <DATA_DIR>/<SUBJECT>/images/         # 每帧图像
 ```
 
-模型按**人物名 / 工作名**两级目录存放，与 RGBAvatar 的
-`output/<subject>/<work_name>/` 约定一致：
+模型按**人物名 / 工作名**两级目录存放：
 
 ```
 models/<subject>/<work_name>/model.ply     ← 约 62 MB，不入库
@@ -102,17 +100,18 @@ models/<subject>/<work_name>/config.yaml
 
 | 格式 | 判据 | 说明 |
 |---|---|---|
+支持两种格式，按目录内容自动识别：
+
+| 格式 | 判据 | 说明 |
+|---|---|---|
 | **manifest** | 有 `render_inputs.npz` | 已算好逐帧网格/驱动参数/相机，**不需要 3DMM 参数** |
-| **checkpoint** | 有 `checkpoint/` + `images/` | 参照格式，需 FLAME 前向 |
+| **checkpoint** | 有 `checkpoint/` + `images/` | 每帧 3DMM 参数，加载时跑一次 FLAME 前向 |
 
 切换对象只改 `configs/system.yaml` 的 `subject` / `work_name`；数据集目录名不同时设 `paths.data_dir`。
 
-首次使用请从 RGBAvatar 复制，或把 `configs/system.yaml` 的 `paths.model_ply` 指向你的模型：
-
-```bash
-mkdir -p models/duda/test
-cp /path/to/RGBAvatar/output/duda/test/{model.ply,config.yaml} models/duda/test/
-```
+模型文件不入库（单个约 62 MB）。把模型与其 `config.yaml` 放到
+`models/<subject>/<work_name>/` 下即可；也可以在 `configs/system.yaml`
+用 `paths.model_ply` 显式指向别处。
 
 ## 测试
 
@@ -129,7 +128,7 @@ node web/tests/all.mjs        # 前端：36 项，无需浏览器
   因此任意表情与姿态都可直接驱动，无需重新训练。
 - **实时性**：`core/` 走**纯 PyTorch**，batch=1 单帧约 5.3 ms（deform 2.9 + rasterize 2.5），
   约 190 FPS —— 远超 30–60 FPS 的目标。这是**有意识的取舍**：
-  CUDA 版 `linear_blending` 在设备不可用时静默返回全零（见 `docs/MIGRATION.md` H4）。
+  CUDA 版 `linear_blending` 在设备不可用时静默返回全零，故默认走纯 PyTorch。
 - **训练加速**（合作方）：批并行高斯光栅化 + 颜色初始化，降低 GPU-CPU 同步开销。
 - **在线重建**：local-global 双采样池平衡"快速适应新帧"与"不遗忘历史帧"。
 
@@ -143,7 +142,7 @@ node web/tests/all.mjs        # 前端：36 项，无需浏览器
 | [`docs/CONFIG.md`](docs/CONFIG.md) | **配置说明**：路径、渲染参数、优先级、如何改 |
 | [`docs/GUI_PROTOCOL.md`](docs/GUI_PROTOCOL.md) | GUI 前后端协议（HTTP + WebSocket） |
 | [`docs/ENVIRONMENT.md`](docs/ENVIRONMENT.md) | 环境搭建、版本矩阵、排错 |
-| [`docs/MIGRATION.md`](docs/MIGRATION.md) | 与参照实现的全部差异登记 |
+| [`docs/ONLINE_UPDATE.md`](docs/ONLINE_UPDATE.md) | 在线更新（热更新）：边界、组件、判据 |
 
 ## 目录
 
@@ -162,6 +161,11 @@ output/        渲染产物（不入库）
 
 `src/` 内部分层严格单向（`core/` 不依赖其他任何层），详见
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) §2.3 —— 该约束有可执行测试守护。
+
+## 致谢
+
+本项目的渲染管线参考了 [RGBAvatar](https://github.com/gapszju/RGBAvatar)
+（CVPR 2025 Highlight）的工作。
 
 ## 许可
 

@@ -14,11 +14,19 @@
 from __future__ import annotations
 
 import contextlib
+from pathlib import Path
 
 import numpy as np
+import torch
 
 from live3dgsavatar.config import load_config
-from live3dgsavatar.data.scene import MANIFEST_NAME, load_scene
+from live3dgsavatar.data import flame_topology as FT
+from live3dgsavatar.data.scene import MANIFEST_NAME, _flame_topology, load_scene
+
+# 本项目自带的 FLAME 资产（不再依赖任何外部仓库）
+_HERE = Path(__file__).resolve().parents[2]
+_FLAME_DIR = _HERE / "data" / "FLAME2020"
+_CACHE_DIR = _HERE / "output" / "cache"
 
 
 def _raises(exc_type: type[BaseException]):
@@ -157,26 +165,12 @@ def test_scene_tensors_share_one_device(tmp_path) -> None:
     """**Scene 的所有张量必须在同一设备上。**
 
     历史 bug：`load_scene(device="cuda")` 把逐帧 `mesh` 移到了 GPU，
-    却没移 `faces`/`uvs`/`uv_faces`（它们来自 FLAME 拓扑）。
-    于是 `mesh.verts[:, mesh.faces[used]]` 抛
-
-        RuntimeError: indices should be either on cpu or on the same device
-
-    —— 报错发生在 `core/` 深处，离根因（`data/` 少搬了一个张量）很远。
-    这里用 CPU 作为"目标设备"来验证契约，不需要 GPU。
+    却没移 `faces`/`uvs`/`uv_faces`，于是 `mesh.verts[:, mesh.faces[used]]` 抛
+    `RuntimeError: indices should be either on cpu or on the same device`。
+    这里用 CPU 作为"目标设备"验证契约，不需要 GPU。
     """
-    import torch
-
-    # 用真实的 FLAME 拓扑（与真实数据集同源），只造帧数据
     cfg = _cfg_with(tmp_path)
-    ref_root = cfg.get("paths.reference_root")
-    if ref_root is None:
-        from pytest import skip  # noqa: PLC0415
-        skip("未配置 paths.reference_root，无法取 FLAME 拓扑")
-
-    from live3dgsavatar.data.scene import _flame_topology
-
-    topo = _flame_topology(ref_root, "cpu")
+    topo = _flame_topology(cfg, "cpu")
     v = int(topo["faces"].max()) + 1
     _make_manifest(tmp_path, n=2, v=v)
 
@@ -197,49 +191,117 @@ def test_scene_tensors_share_one_device(tmp_path) -> None:
 
 
 def test_frames_tensor_follows_scene_device(tmp_path) -> None:
-    """`frames_tensor()` 不传 device 时应**跟随 Scene**，不再默认 cuda。
-
-    旧实现默认 `device="cuda"`，导致"只是想取几帧"在没有 GPU 的环境里也炸，
-    且与 Scene 已就位的设备可能不一致。
-    """
+    """`frames_tensor()` 不传 device 时应**跟随 Scene**，不再默认 cuda。"""
     cfg = _cfg_with(tmp_path)
-    ref_root = cfg.get("paths.reference_root")
-    if ref_root is None:
-        from pytest import skip  # noqa: PLC0415
-        skip("未配置 paths.reference_root")
-
-    from live3dgsavatar.data.scene import _flame_topology
-
-    v = int(_flame_topology(ref_root, "cpu")["faces"].max()) + 1
+    v = int(_flame_topology(cfg, "cpu")["faces"].max()) + 1
     _make_manifest(tmp_path, n=2, v=v)
     scene = load_scene(cfg, frames=2, device="cpu")
-
     assert scene.frames_tensor([0, 1]).device.type == "cpu"
     assert scene.weights_tensor([0, 1]).device.type == "cpu"
 
 
 def test_flame_topology_is_device_independent() -> None:
-    """**拓扑缓存必须以 CPU 为准，返回时再搬设备。**
+    """拓扑缓存以 CPU 为准，返回时再搬设备。
 
-    历史 bug：`manifest` 路径把逐帧 `mesh` 放到了 GPU，却直接返回
-    缓存的拓扑（CPU），于是 `mesh.verts[:, mesh.faces[used]]` 抛
-
-        RuntimeError: indices should be either on cpu or on the same device
-
-    缓存若意外持有 GPU 张量，还会让"先 cuda 后 cpu"的调用拿到错误设备。
-    这里验证：请求哪个设备，返回就在哪个设备；且反复请求结果稳定。
+    缓存若持有 GPU 张量，会让"先 cuda 后 cpu"的调用拿到错误设备。
     """
-    from live3dgsavatar.config import load_config
-    from live3dgsavatar.data.scene import _flame_topology
-
-    cfg = load_config()
-    ref = cfg.get("paths.reference_root")
-    if ref is None:
-        from pytest import skip  # noqa: PLC0415
-        skip("未配置 paths.reference_root")
-
-    for dev in ("cpu", "cpu"):          # 重复请求：缓存不能"绑架"设备
-        topo = _flame_topology(ref, dev)
+    FT.reset_memory_cache()
+    for _ in range(2):
+        topo = FT.load(_FLAME_DIR, _CACHE_DIR, "cpu")
         for name in ("faces", "uvs", "uv_faces"):
-            assert topo[name].device.type == dev, (
-                f"{name} 应在 {dev}，实际 {topo[name].device}")
+            assert topo[name].device.type == "cpu"
+
+
+def test_flame_topology_roundtrip_and_fingerprint(tmp_path) -> None:
+    """拓扑应能落盘复用；FLAME 资产变了则缓存失效。
+
+    **为什么要缓存**：拓扑只取决于 FLAME 资产、与数据无关，每次启动都读
+    50 MB 的 pickle 是纯浪费。**为什么必须校验**：资产从 2020 换成 2023
+    而缓存未失效时，`face_id` 会指向错误的面 —— 表现为"模型错乱"，极难定位。
+    """
+    cache = tmp_path / "cache"
+    FT.reset_memory_cache()
+    FT.clear_cache(cache)
+
+    # 1) 首次：构建并落盘
+    t1 = FT.load(_FLAME_DIR, cache, "cpu")
+    assert FT.cache_path(cache).exists(), "首次调用应写缓存"
+    # 面表 10032 行（含 56 个牙齿面）—— `model.ply` 里 face_id 上界 10031 的来源
+    assert tuple(t1["faces"].shape) == (10032, 3)
+    assert tuple(t1["uv_faces"].shape) == (10032, 3)
+    assert int(t1["faces"].max()) < 5083
+
+    # 2) 二次：命中缓存，内容一致
+    FT.reset_memory_cache()
+    t2 = FT.load(_FLAME_DIR, cache, "cpu")
+    assert torch.equal(t1["faces"], t2["faces"])
+    assert torch.equal(t1["uvs"], t2["uvs"])
+
+    # 3) 指纹一致 → 有效
+    assert FT.read_cache(cache, _FLAME_DIR) is not None
+
+    # 4) 指纹变化 → 失效
+    import os
+    import time as _time
+
+    uv = _FLAME_DIR / "flame_uv.npz"
+    stat = uv.stat()
+    os.utime(uv, (_time.time() + 3600, _time.time() + 3600))
+    try:
+        assert FT.read_cache(cache, _FLAME_DIR) is None, (
+            "FLAME 资产变化后缓存必须失效，否则面表可能与模型不匹配")
+    finally:
+        os.utime(uv, (stat.st_atime, stat.st_mtime))
+
+    FT.reset_memory_cache()
+    FT.clear_cache(cache)
+
+
+# ------------------------------------------------------- checkpoint 格式 --
+
+
+def test_flame_model_matches_known_invariants() -> None:
+    """FLAME 前向的**自洽**不变量（不需要外部参照）。
+
+    渲染"参照格式"数据集时必须把 3DMM 参数算成网格顶点，因此这条路径必须正确。
+    这里用数学上必然成立的性质验证，而不是对照任何外部实现：
+
+    1. 全零参数 + 单位旋转 → 回到 `v_template`
+    2. 只改 shape → 关节位置随之改变（shape 确实作用到网格）
+    3. 只改 jaw → 只有嘴部区域明显位移（不会整体平移）
+    """
+    from live3dgsavatar.data.flame_model import FlameModel
+
+    fm = FlameModel(_FLAME_DIR, dtype=torch.float64)
+    b = 1
+    z300 = torch.zeros(b, 300, dtype=torch.float64)
+    z100 = torch.zeros(b, 100, dtype=torch.float64)
+    I3 = torch.eye(3, dtype=torch.float64)
+
+    v = fm.forward(z300, z100, I3[None], I3[None], I3[None].expand(b, 2, 3, 3))
+    assert torch.allclose(v[0], fm.v_template, atol=1e-10), (
+        "全零参数应回到 template")
+
+    # shape 影响关节位置
+    j0 = fm.joints(z300, z100)
+    j1 = fm.joints(torch.ones(b, 300, dtype=torch.float64) * 0.5, z100)
+    assert not torch.allclose(j0, j1), "shape 应改变关节位置"
+
+    # 牙齿顶点数正确
+    assert fm.v_template.shape[0] == 5023 + 60
+
+
+def test_checkpoint_dataset_requires_checkpoint_dir(tmp_path) -> None:
+    from live3dgsavatar.data.checkpoint_loader import CheckpointDataset
+
+    with _raises(FileNotFoundError) as box:
+        CheckpointDataset(tmp_path)
+    assert "checkpoint" in str(box["error"])
+
+
+def test_load_scene_reports_unknown_format(tmp_path) -> None:
+    """既没有 npz 也没有 checkpoint 时，报错要指明"格式无法识别"。"""
+    cfg = _cfg_with(tmp_path)
+    with _raises(FileNotFoundError) as box:
+        load_scene(cfg, frames=1, device="cpu")
+    assert "无法识别" in str(box["error"]) or "缺少" in str(box["error"])

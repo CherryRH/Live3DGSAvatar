@@ -14,22 +14,15 @@
 
 from __future__ import annotations
 
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 
 import torch
 
-from live3dgsavatar.config import Config, load_config, resolve_data_dir
+from live3dgsavatar.config import (Config, load_config, repo_root,
+                                   resolve_data_dir)
 
-# 仓库根：src/live3dgsavatar/data/scene.py → 上溯 4 层
-REPO_ROOT = Path(__file__).resolve().parents[3]
-if str(REPO_ROOT / "src") not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT / "src"))
-
-# ⚠️ 必须在**导入 FLAME 之前**打补丁（`FLAME.__init__` 里 pickle.load → import chumpy）。
-#    `live3dgsavatar/__init__.py` 导入即施加 numpy 兼容补丁。
-import live3dgsavatar  # noqa: E402, F401  （勿删：导入即生效）
+from . import flame_topology
 
 
 
@@ -103,92 +96,84 @@ def load_scene(
         device = str(cfg.get("runtime.device", "cuda"))
 
     data_dir = resolve_data_dir(cfg)
-    ref_root = cfg.paths.reference_root
-    if ref_root is None:
-        raise ValueError(
-            "缺少 paths.reference_root（参照仓库根目录）。"
-            "请在 configs/system.yaml 设置或设 LIVE3DGS_REFERENCE_ROOT。")
-    ref_root = Path(ref_root)
-    split = str(cfg.runtime.split)
-    if frames is None:
-        frames = int(cfg.get("render.frames", 1))
     if not data_dir.exists():
         raise FileNotFoundError(
             f"数据集目录不存在：{data_dir}\n"
             f"（由 paths.data_dir 显式给出，或 "
-            f"paths.data_root={cfg.paths.data_root} + subject={cfg.subject} 推出；"
-            "请检查 configs/system.yaml 或设 LIVE3DGS_DATA_ROOT）")
+            f"paths.data_root={cfg.get('paths.data_root')} + subject={cfg.subject} 推出）")
 
-    # 两种数据格式：优先 manifest（自包含），否则走参照的 checkpoint 格式
     manifest = data_dir / MANIFEST_NAME
     if manifest.exists():
-        scene = _load_from_manifest(cfg, data_dir, manifest, frames, ref_root, device)
+        scene = _load_from_manifest(cfg, data_dir, manifest, frames, device)
+    elif (data_dir / "checkpoint").is_dir():
+        scene = _load_from_checkpoint(cfg, data_dir, frames, device)
     else:
-        scene = _load_from_checkpoint(cfg, data_dir, frames, ref_root, split, device)
+        raise FileNotFoundError(
+            f"数据集格式无法识别：{data_dir}\n"
+            f"需要 {MANIFEST_NAME}（自包含清单），或 checkpoint/（每帧 3DMM 参数）。\n"
+            "见 docs/CONFIG.md「数据集格式」。")
     _warn_if_images_missing(data_dir, cfg)
     return scene
+
+
+# ------------------------------------------------------- checkpoint 格式 --
 
 
 def _load_from_checkpoint(
     cfg: Config,
     data_dir: Path,
     frames: int | None,
-    ref_root: Path,
-    split: str,
     device: str,
 ) -> Scene:
-    """旧格式：参照实现的 `<subject>/{images,checkpoint}/`。
+    """参照格式：`<subject>/{images,checkpoint}/`，每帧一个 `.frame`。
 
-    需要把 3DMM 参数经 FLAME 前向算成网格顶点，因此**依赖参照仓库与 chumpy**。
+    需要跑 FLAME 前向把 3DMM 参数变成网格顶点 —— 由本项目自己的
+    `flame_model.FlameModel` 完成（不依赖任何外部仓库）。
     """
-    # 参照侧的加载管线（只读参照仓库）；同属 data/ 层，包内相对导入
-    from .reference import reference_workspace  # noqa: PLC0415
+    from .checkpoint_loader import CheckpointDataset
 
-    with reference_workspace(ref_root):
-        from dataset import FLAMEDataset  # noqa: PLC0415
-        from submodules.flame import FLAME, FlameConfig  # noqa: PLC0415
+    topo = _flame_topology(cfg, device)
+    ds = CheckpointDataset(data_dir)
+    total = len(ds)
+    n = total if frames is None or frames < 0 else min(int(frames), total)
 
-        # ⚠️ 必须用 FlameConfig 的**默认值**（dtype=float64）。
-        #    FLAMEDataset 把姿态/形状参数存为 float64，而 FLAME 的 v_template / shapedirs
-        #    跟随 cfg.dtype；把 dtype 改成 float32 会让
-        #    `template_vertices(float32) + blend_shapes(betas(float64), ...)`
-        #    抛 `expected scalar type Double but found Float`。
-        #    网格顶点在 FLAMEDataset 内部已降到 float32（`mesh_verts`），无需在此转换。
-        flame = FLAME(FlameConfig()).to(device)
-        ds = FLAMEDataset(
-            flame, str(data_dir), split=split,
-            pin_memory=bool(cfg.get("dataset.pin_memory", False)),
-            use_shape_weight=bool(cfg.get("dataset.use_shape_weight", True)),
-            use_pose_weight=bool(cfg.get("dataset.use_pose_weight", True)))
+    flame = _flame_model(cfg)
+    out = []
+    for i in range(n):
+        mesh, weight = ds.mesh_and_weight(i, flame)
+        out.append({"mesh": mesh.to(device), "blend_weight": weight.to(device)})
 
-        # 数据集总帧数 vs 已载入帧数：GUI 只需要载入一部分，
-        # 但控件上的"数据集帧"滑块要反映**总数**。
-        total = ds.__len__()
-        n = total if frames < 0 else min(frames, total)
-        out = [
-            {"mesh": ds.mesh_verts[i].to(device),
-             "blend_weight": ds.blend_weight[i].to(device)}
-            for i in range(n)
-        ]
+    if not out:
+        raise ValueError(f"{data_dir.name} 里没有可用帧（frames={frames}）")
 
-        # 契约自检：下游 `core/` 只接受 float32（CUDA 内核限制）
-        for f in out[:1]:
-            assert f["mesh"].dtype == torch.float32, (
-                f"mesh 顶点应为 float32（core/ 与 CUDA 内核要求），实际 {f['mesh'].dtype}")
-            assert f["blend_weight"].dtype == torch.float32, (
-                f"blend_weight 应为 float32，实际 {f['blend_weight'].dtype}")
-        return Scene(
-            frames=out,
-            faces=flame.faces.detach().clone().to(torch.int32),
-            uvs=flame.uvs.to(torch.float32).detach().clone(),
-            uv_faces=flame.uv_faces.to(torch.int32).detach().clone(),
-            K=torch.from_numpy(ds.camera_intri).to(torch.float32),
-            R=torch.from_numpy(ds.camera_extri[:3, :3]).to(torch.float32),
-            T=torch.from_numpy(ds.camera_extri[:3, 3]).to(torch.float32),
-            width=int(ds.image_width),
-            height=int(ds.image_height),
-            dataset_frames=total,
-        )
+    _check_manifest_contract(cfg, out, topo)
+    return Scene(
+        frames=out,
+        faces=topo["faces"],
+        uvs=topo["uvs"],
+        uv_faces=topo["uv_faces"],
+        K=ds.camera_K.to(device),
+        R=ds.camera_R.to(device),
+        T=ds.camera_T.to(device),
+        width=int(ds.img_size[0]),
+        height=int(ds.img_size[1]),
+        dataset_frames=total,
+    )
+
+
+#: FLAME 前向模型（进程内缓存：加载 50 MB pickle 不便宜）
+_FLAME_MODEL: dict | None = None
+
+
+def _flame_model(cfg: Config):
+    """取（并缓存）`FlameModel`。只在 checkpoint 格式下才需要。"""
+    global _FLAME_MODEL
+    if _FLAME_MODEL is None or _FLAME_MODEL.get("dir") != _flame_dir(cfg):
+        from .flame_model import FlameModel  # noqa: PLC0415
+
+        _FLAME_MODEL = {"dir": _flame_dir(cfg),
+                        "model": FlameModel(_flame_dir(cfg))}
+    return _FLAME_MODEL["model"]
 
 
 # --------------------------------------------------------- manifest 格式 --
@@ -196,38 +181,31 @@ def _load_from_checkpoint(
 #: 自包含清单的文件名。存在它时走 manifest 分支，不再需要 FLAME 文件。
 MANIFEST_NAME = "render_inputs.npz"
 
-#: FLAME 拓扑缓冲（`faces`/`uvs`/`uv_faces`）。
-#: 网格顶点由清单直接给出，但**渲染仍需拓扑**（`face_id` 是面索引）。
-#: 该拓扑只与 FLAME 资产有关、与数据集无关，故进程内缓存一份共用。
-_FLAME_TOPOLOGY: dict | None = None
+#: FLAME 资产目录（本项目自带，不再依赖参照仓库）
+_FLAME_DIR_REL = "data/FLAME2020"
 
 
-def _flame_topology(ref_root: Path, device: str) -> dict:
-    """取 FLAME（含牙齿扩展）的 `faces` / `uvs` / `uv_faces`，并放到 `device`。
+def _flame_dir(cfg: Config) -> Path:
+    """FLAME 资产目录：`<repo>/data/FLAME2020`（可用 `paths.flame_dir` 覆盖）。"""
+    explicit = cfg.get("paths.flame_dir")
+    if explicit:
+        p = Path(str(explicit))
+        return p if p.is_absolute() else (repo_root() / p)
+    return repo_root() / _FLAME_DIR_REL
 
-    为什么要 FLAME 资产：`model.ply` 里的 `face_id` 是**面索引**，
-    而面表只存在于 FLAME 模板中。但**不需要任何逐帧 3DMM 参数**，
-    也不需要数据集里的 `checkpoint/`——所以比旧格式轻得多。
 
-    ⚠️ 缓存**以 CPU 为准**（设备无关），每次调用再 `.to(device)`。
-    否则先加载 cuda 再加载 cpu 时会拿到错误设备上的张量。
+def _cache_dir(cfg: Config) -> Path:
+    """拓扑缓存目录：`<output_dir>/cache`（已 gitignore）。"""
+    out = cfg.get("paths.output_dir") or (repo_root() / "output")
+    return Path(str(out)) / "cache"
+
+
+def _flame_topology(cfg: Config, device: str) -> dict:
+    """取 FLAME 拓扑（`faces`/`uvs`/`uv_faces`），放到 `device`。
+
+    缓存以 CPU 为准、每次调用再搬设备（否则"先 cuda 后 cpu"会拿到错设备）。
     """
-    global _FLAME_TOPOLOGY
-    if _FLAME_TOPOLOGY is None:
-        from .reference import reference_workspace  # noqa: PLC0415
-
-        with reference_workspace(ref_root):
-            from submodules.flame import FLAME, FlameConfig  # noqa: PLC0415
-
-            # ⚠️ 用默认 FlameConfig：`add_mouth=True` 会追加 60 个牙齿顶点，
-            #    面表随之变为 10032 行，正好覆盖 `model.ply` 的 `face_id` 上界 10031。
-            flame = FLAME(FlameConfig())
-            _FLAME_TOPOLOGY = {
-                "faces": flame.faces.detach().clone().to("cpu", torch.int32),
-                "uvs": flame.uvs.detach().clone().to("cpu", torch.float32),
-                "uv_faces": flame.uv_faces.detach().clone().to("cpu", torch.int32),
-            }
-    return {k: v.to(device) for k, v in _FLAME_TOPOLOGY.items()}
+    return flame_topology.load(_flame_dir(cfg), _cache_dir(cfg), device)
 
 
 def _load_from_manifest(
@@ -235,7 +213,6 @@ def _load_from_manifest(
     data_dir: Path,
     manifest: Path,
     frames: int | None,
-    ref_root: Path,
     device: str,
 ) -> Scene:
     """manifest 格式：`render_inputs.npz` 已算好逐帧 `mesh` / `blend_weight`。
@@ -252,7 +229,7 @@ def _load_from_manifest(
     """
     import numpy as np  # noqa: PLC0415
 
-    topo = _flame_topology(ref_root, device)
+    topo = _flame_topology(cfg, device)
 
     with np.load(manifest, allow_pickle=False) as d:
         missing = [k for k in ("mesh", "blend_weight", "K", "w2v", "width", "height")
@@ -288,25 +265,7 @@ def _load_from_manifest(
 
     f0 = out[0]
 
-    # 契约自检：core/ 只接受 float32
-    if f0["mesh"].dtype != torch.float32 or f0["blend_weight"].dtype != torch.float32:
-        raise ValueError("mesh / blend_weight 应为 float32")
-
-    # 维度契约最先查：错维会在 MLP 的 Linear 里才爆，离根因太远
-    d_expect = int(cfg.get("model.network.num_basis_in", 129))
-    if int(f0["blend_weight"].numel()) != d_expect:
-        raise ValueError(
-            f"blend_weight 维度 {f0['blend_weight'].numel()} 与配置 "
-            f"num_basis_in={d_expect} 不一致")
-
-    # 顶点数必须与拓扑一致：`face_id` 是**面索引**，顶点对不上会让绑定错位。
-    # 面表里的最大**顶点**索引必须落在 mesh 的顶点范围内。
-    v_actual = int(f0["mesh"].shape[0])
-    v_index_max = int(topo["faces"].max())
-    if v_index_max >= v_actual:
-        raise ValueError(
-            f"网格顶点数 {v_actual} 不足：FLAME 面表引用了顶点 {v_index_max}；"
-            "通常是用了不同版本的 FLAME 资产，或数据集与模型不是同一套网格")
+    _check_manifest_contract(cfg, out, topo)
 
     return Scene(
         frames=out,
@@ -320,6 +279,31 @@ def _load_from_manifest(
         height=height,
         dataset_frames=total,
     )
+
+
+def _check_manifest_contract(cfg: Config, frames: list[dict], topo: dict) -> None:
+    """加载后的契约自检（两种格式共用）。
+
+    这些错误如果留到下游才暴露，报错会离根因很远：
+    维度错在 MLP 的 `Linear` 里才炸；顶点数错会让 `face_id` 指向错误的面，
+    表现为"模型错乱"，极难与其它问题区分。
+    """
+    f0 = frames[0]
+    if f0["mesh"].dtype != torch.float32 or f0["blend_weight"].dtype != torch.float32:
+        raise ValueError("mesh / blend_weight 应为 float32")
+
+    d_expect = int(cfg.get("model.network.num_basis_in", 129))
+    if int(f0["blend_weight"].numel()) != d_expect:
+        raise ValueError(
+            f"blend_weight 维度 {f0['blend_weight'].numel()} 与配置 "
+            f"num_basis_in={d_expect} 不一致")
+
+    v_actual = int(f0["mesh"].shape[0])
+    v_index_max = int(topo["faces"].max())
+    if v_index_max >= v_actual:
+        raise ValueError(
+            f"网格顶点数 {v_actual} 不足：FLAME 面表引用了顶点 {v_index_max}；"
+            "通常是用了不同版本的 FLAME 资产，或数据集与模型不是同一套网格")
 
 
 def _warn_if_images_missing(data_dir: Path, cfg: Config) -> None:

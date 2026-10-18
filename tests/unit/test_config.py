@@ -39,7 +39,7 @@ def test_loads_defaults_from_yaml_files() -> None:
 def test_path_fields_are_absolute_paths() -> None:
     """路径字段必须已解析为绝对 `Path`（脚本会 chdir，相对路径会失效）。"""
     cfg = load_config()
-    for key in ("paths.data_root", "paths.output_dir", "paths.reference_root"):
+    for key in ("paths.data_root", "paths.output_dir"):
         value = cfg.get(key)
         assert isinstance(value, Path), f"{key} 应为 Path，实际 {type(value).__name__}"
         assert value.is_absolute(), f"{key} 应为绝对路径，实际 {value}"
@@ -248,7 +248,7 @@ def test_scripts_have_no_business_defaults() -> None:
     bad_numeric = re.compile(
         r"add_argument\([^)]*default=(?!None\b)(\d+|Path\()")
     offenders: list[str] = []
-    for name in ("render_test.py", "equivalence_check.py", "show_config.py"):
+    for name in ("render_test.py", "show_config.py"):
         path = REPO_ROOT / "scripts" / name
         for lineno, line in enumerate(
                 path.read_text(encoding="utf-8").splitlines(), 1):
@@ -263,51 +263,40 @@ def test_scripts_have_no_business_defaults() -> None:
 
 
 # --------------------------------------------------------- 模型路径解析 --
-
-
-def test_model_dir_follows_rgba_avatar_layout() -> None:
-    """模型目录约定与 RGBAvatar 一致：`<模型名>/<工作名>/`。"""
-    from live3dgsavatar.config import model_dir, reference_model_dir
+def test_resolve_model_config_finds_bundled_config(tmp_path) -> None:
+    """模型随附的 `config.yaml` 应能在模型目录里被找到。"""
+    from live3dgsavatar.config import model_dir, resolve_model_config
 
     cfg = load_config()
-    subject, work = str(cfg.subject), str(cfg.work_name)
-    assert model_dir(cfg) == Path(cfg.paths.models_dir) / subject / work
-    ref = reference_model_dir(cfg)
-    assert ref == Path(cfg.paths.reference_root) / "output" / subject / work
+    cfg.set("paths.models_dir", tmp_path / "models")
+    cfg.set("paths.models_config", None)
+    assert resolve_model_config(cfg) is None
+
+    target = model_dir(cfg)
+    target.mkdir(parents=True)
+    (target / "config.yaml").write_text("model:\n  tex_size: 256\n", encoding="utf-8")
+    assert resolve_model_config(cfg) == target / "config.yaml"
 
 
-def test_resolve_model_ply_prefers_project_models(tmp_path) -> None:
-    """**本项目 models/ 优先，找不到才回退参照仓库。**"""
+def test_resolve_model_ply_follows_model_dir(tmp_path) -> None:
+    """模型路径只从 `<models_dir>/<subject>/<work_name>/model.ply` 推导。"""
     from live3dgsavatar.config import model_dir, resolve_model_ply
 
     cfg = load_config()
     cfg.set("paths.models_dir", tmp_path / "models")
     cfg.set("paths.model_ply", None)
-    cfg.set("paths.reference_root", None)          # 排除回退，单独验证"不存在"
 
-    # 1) 都不存在 → 报错，且信息里列出尝试过的路径
+    # 1) 不存在 → 报错，且信息里列出尝试过的路径
     with _raises(FileNotFoundError) as exc:
         resolve_model_ply(cfg)
     assert f"subject={cfg.subject}" in str(exc.value)
     assert f"work_name={cfg.work_name}" in str(exc.value)
 
-    # 2) 只建本项目模型 → 命中
+    # 2) 建好后命中
     target = model_dir(cfg)
     target.mkdir(parents=True)
     (target / "model.ply").write_bytes(b"x")
     assert resolve_model_ply(cfg) == target / "model.ply"
-
-    # 3) 同时存在参照模型 → 仍优先本项目
-    ref_root = tmp_path / "ref"
-    cfg.set("paths.reference_root", ref_root)
-    ref_dir = ref_root / "output" / str(cfg.subject) / str(cfg.work_name)
-    ref_dir.mkdir(parents=True)
-    (ref_dir / "model.ply").write_bytes(b"y")
-    assert resolve_model_ply(cfg) == target / "model.ply"
-
-    # 4) 删掉本项目模型 → 回退参照
-    (target / "model.ply").unlink()
-    assert resolve_model_ply(cfg) == ref_dir / "model.ply"
 
 
 def test_explicit_model_ply_wins(tmp_path) -> None:
@@ -325,80 +314,6 @@ def test_explicit_model_ply_wins(tmp_path) -> None:
     with _raises(FileNotFoundError) as exc:
         resolve_model_ply(cfg)
     assert "paths.model_ply" in str(exc.value)
-
-
-def test_resolve_model_config_finds_bundled_config(tmp_path) -> None:
-    """模型随附的 `config.yaml`（RGBAvatar 放在模型目录里）应能被找到。"""
-    from live3dgsavatar.config import model_dir, resolve_model_config
-
-    cfg = load_config()
-    cfg.set("paths.models_dir", tmp_path / "models")
-    cfg.set("paths.models_config", None)
-    cfg.set("paths.reference_root", None)
-    assert resolve_model_config(cfg) is None
-
-    target = model_dir(cfg)
-    target.mkdir(parents=True)
-    (target / "config.yaml").write_text("model:\n  tex_size: 256\n", encoding="utf-8")
-    assert resolve_model_config(cfg) == target / "config.yaml"
-
-
-def test_project_model_dir_exists_and_matches_reference() -> None:
-    """本项目 `models/duda/test/` 应已就位，且与参照的同名模型内容一致。"""
-    import hashlib
-
-    from live3dgsavatar.config import model_dir, reference_model_dir
-
-    cfg = load_config()
-    ours = model_dir(cfg) / "model.ply"
-    ref_dir = reference_model_dir(cfg)
-    if not ours.exists():
-        raise AssertionError(
-            f"本项目模型缺失：{ours}\n"
-            "应把 RGBAvatar 的 output/<subject>/<work_name>/ 复制到 models/ 下")
-    if ref_dir is None or not (ref_dir / "model.ply").exists():
-        return        # 参照不在本机 → 跳过一致性比对
-
-    def md5(p: Path) -> str:
-        h = hashlib.md5()
-        with p.open("rb") as fh:
-            for chunk in iter(lambda: fh.read(1 << 20), b""):
-                h.update(chunk)
-        return h.hexdigest()
-
-    assert md5(ours) == md5(ref_dir / "model.ply"), (
-        "models/ 下的模型与参照仓库的同名模型不一致；"
-        "若刻意改动过，请忽略/调整本测试")
-
-
-def test_cli_accepts_rgba_avatar_underscore_style() -> None:
-    """**兼容性测试**：命令行同时接受 `--work_name`（RGBAvatar 风格）与 `--work-name`。
-
-    参照实现的 CLI 用 `--work_name`（见 `RGBAvatar/render.py`），本项目统一用
-    `--work-name`。脚本里有一层 `_normalize_argv` 把下划线写法归一化，
-    这样两边的命令可以直接互相复制。
-    """
-    import importlib.util
-
-    spec = importlib.util.spec_from_file_location(
-        "_render_test_for_cli", REPO_ROOT / "scripts" / "render_test.py")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)                       # type: ignore[union-attr]
-
-    normalize = mod._normalize_argv
-    # 下划线 → 短横线
-    assert normalize(["--work_name", "x"]) == ["--work-name", "x"]
-    assert normalize(["--data_root=/tmp/a"]) == ["--data-root=/tmp/a"]
-    # 已是短横线 → 不变
-    assert normalize(["--work-name", "x"]) == ["--work-name", "x"]
-    assert normalize(["--subject", "duda"]) == ["--subject", "duda"]
-    # 位置参数与值里的下划线不受影响
-    assert normalize(["out_dir", "--frames", "3"]) == ["out_dir", "--frames", "3"]
-    # 单段参数与下划线值不被误改
-    assert normalize(["--dry-run"]) == ["--dry-run"]
-    assert normalize(["--ply", "/a/b_c/model.ply"]) == ["--ply", "/a/b_c/model.ply"]
-
-
 def test_render_test_guards_image_access_for_no_save() -> None:
     """**回归测试**：`--no-save` 下不得对空图像字典取值。
 

@@ -12,33 +12,13 @@ from __future__ import annotations
 import numpy as np
 import torch
 
-from support import compare, load_module_from, require_reference
+from support import compare
+
 
 ATOL = 1e-5
 
 
-def _reference_utils():
-    """参照仓库的 `utils.py`（纯 torch，但含 nvdiffrast 之外的依赖，按需加载）。"""
-    root = require_reference()
-    return load_module_from(root / "utils.py", "_rgba_reference_utils")
-
-
 # --------------------------------------------------------------------- TBN --
-
-
-def test_face_tbn_matches_reference_python() -> None:
-    from live3dgsavatar.core.deform.tbn import compute_face_tbn
-
-    ref = _reference_utils()
-    torch.manual_seed(0)
-    b, f = 2, 7
-    verts = torch.randn(b, f, 3, 3)
-    uvs = torch.rand(f, 3, 2)
-
-    mine = compute_face_tbn(verts, uvs)
-    theirs = ref.compute_face_tbn(verts, uvs)
-    ok, msg = compare(mine, theirs, ATOL, "compute_face_tbn vs reference.utils")
-    assert ok, msg
 
 
 def test_face_tbn_layout_is_column_basis() -> None:

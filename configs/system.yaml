@@ -4,7 +4,7 @@
 # 字段说明见 docs/CONFIG.md。所有路径支持三种写法：
 #   1. 绝对路径                     /home/you/Datasets/INSTA
 #   2. 以 ~ 开头                     ~/Datasets/INSTA
-#   3. 相对仓库根                    ../RGBAvatar
+#   3. 相对仓库根                    ../other-project
 #
 # 环境变量可覆盖任意字段（便于换机器 / CI 不改文件）：
 #   LIVE3DGS_DATA_ROOT  → paths.data_root
@@ -12,15 +12,14 @@
 #
 # 用 `python scripts/show_config.py` 查看**解析后**的最终值。
 
-# 人物名 / 工作名 —— 与 RGBAvatar 的 CLI 与目录约定完全一致。
+# 人物名 / 工作名 —— 两级目录：models/<subject>/<work_name>/
 #
 #   * subject   人物名。既用于**数据集**（<data_root>/<subject>/），
 #               也用于**模型**（<models_dir>/<subject>/<work_name>/）
-#   * work_name 一次训练/导出的名字，参照里常用 `test`
+#   * work_name 一次训练/导出的名字（通常为 `test`）
 #
 # 参照实现与本项目用同一套名字解析各自的模型路径：
-#   本项目 → <paths.models_dir>/<subject>/<work_name>/model.ply
-#   参照   → <paths.reference_root>/output/<subject>/<work_name>/model.ply
+#   模型 → <paths.models_dir>/<subject>/<work_name>/model.ply
 #
 # 切换对象只需改这两处（脚本的 --subject / --work-name 可临时覆盖）。
 # 当前使用的对象。模型在 <models_dir>/<subject>/<work_name>/，
@@ -52,28 +51,44 @@ paths:
   # （例如 output_dir=output 时，渲染测试写 output/render_test/）。
   output_dir: output
 
-  # 参照实现（RGBAvatar）仓库根目录，**只读**。
-  # 用途：等价门与渲染测试从中读取 FLAME 模板、模板 UV、
-  # 数据集读取代码，以及它自带的预训练模型。
-  reference_root: /home/crh/Projects/RGBAvatar
-
   # 本项目自己的模型根目录。模型按 <models_dir>/<subject>/<work_name>/ 存放，
-  # **与 RGBAvatar 的目录约定保持一致**，便于两边对照。
+  # 模型按两级目录存放，便于同一人物多个训练版本共存。
   models_dir: models
 
-  # 显式指定模型文件。留空（null）表示按下面的顺序自动查找：
-  #   1. <models_dir>/<subject>/<work_name>/model.ply             ← 本项目优先
-  #   2. <reference_root>/output/<subject>/<work_name>/model.ply  ← 回退到参照
+  # FLAME 资产目录（含 generic_model.pkl 与 flame_uv.npz）。
+  # null 表示用仓库根的 data/FLAME2020/。
+  flame_dir: null
+
+  # 显式指定模型文件。留空（null）表示用
+  # <models_dir>/<subject>/<work_name>/model.ply。
   # 若模型在别处，直接写绝对路径。
   #
   # 也可用 models_config 显式指定各模型随附的 config.yaml；
-  # null 表示从上面的模型目录里读（RGBAvatar 在模型目录放了 config.yaml）。
+  # null 表示从模型目录里读 config.yaml。
   model_ply: null
   models_config: null
 
   # 渲染结果图（数据集原图）相对 <data_root>/<subject>/ 的子目录。
   # 用作 PSNR 的 GT。
   image_subdir: images
+
+# 在线更新（热更新）。见 docs/ARCHITECTURE.md §11.1 与 docs/ONLINE_UPDATE.md
+online_update:
+  # 墙钟预算（秒）。通话开始时的一段观测用来微调外观，**不能超过这个时间**。
+  # 目标 10 s；本机 GPU 较弱时可适当放宽。
+  time_budget_s: 10.0
+  # 最大迭代数（与 time_budget_s 取先到者）
+  steps: 300
+  # 颜色（SH DC）与不透明度（logit）的学习率。
+  # 颜色量级小、不透明度是 logit，两者差一个数量级，必须分开设。
+  lr_color: 0.002
+  lr_opacity: 0.02
+  # 是否更新不透明度。关闭则只改颜色（更稳，但无法修正"该透明的地方不透明"）
+  update_opacity: true
+  # 掩码外像素权重。0 = 只用前景（背景通常预测不准，忽略它能改善拟合）
+  mask_weight: 0.0
+  # 用于更新的帧数
+  frames: 8
 
 # 运行设备与精度。
 runtime:

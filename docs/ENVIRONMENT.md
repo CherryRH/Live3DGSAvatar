@@ -21,7 +21,7 @@
 | GPU 架构 | `sm_86`（RTX 3060 Laptop） | `TORCH_CUDA_ARCH_LIST=8.6` |
 | 环境名 | `live3dgs` | |
 
-> **重要**：CUDA 13.0 是本项目的基线。RGBAvatar 官方 README 建议 11.8，但在本环境下 11.8 反而不可用。以本表为准。
+> **重要**：CUDA 13.0 是本项目的基线（与当前 PyTorch 构建匹配）。以本表为准。
 
 ---
 
@@ -148,8 +148,8 @@ pip install -r requirements.txt
 **为什么选这条方案**：另一条路是把 numpy 钉在 1.23.5（需要绕过镜像直接指定 wheel URL，或改用 conda 装 numpy）。
 本项目选择修 chumpy 侧，因为它是**唯一不依赖外部索引状态**的做法，也不会因镜像同步策略变化而再次失效。
 
-**遗留限制**：参照仓库 `RGBAvatar/` 的脚本不导入本包，因此在那边直接跑脚本需自行应用同一补丁
-（`scripts/render_test.py` 经由 `src/live3dgsavatar/data/scene.py` 加载参照实现，补丁已生效）。
+**适用范围**：本项目加载 FLAME pickle 的地方已不再 import chumpy
+（`data/flame_topology.py` 只读 pickle），因此补丁主要用于兼容其它间接依赖。
 
 **可移除条件**：chumpy 上游发布兼容 numpy 2.x 的版本后，删除该补丁并恢复 numpy pin。
 
@@ -193,7 +193,7 @@ pip install chumpy --no-build-isolation
 - UV 域光栅化（`core/deform/binding.py::build_binding`）**必须**有可用 CUDA 设备；
 - 不存在「纯 CPU 跑通完整前向」的路径。
 
-因此 `scripts/equivalence_check.py` 无法在无 GPU 的环境下给出结论。
+因此渲染相关的检查无法在无 GPU 的环境下完成。
 可在 CPU 上验证的部分（矩阵、混合、绑定数学、PLY、输入校验）已由
 `tests/unit/` 的 30 项测试覆盖，无需 GPU。
 
@@ -205,9 +205,8 @@ chumpy 0.70 依赖 numpy 已移除的别名（`np.int` / `np.float` / `np.object
 故 `src/live3dgsavatar/compat/__init__.py` 在**导入期**补齐这些别名。
 补丁由 `live3dgsavatar/__init__.py` 触发（它 `import compat`）。
 
-**因此凡是会加载参照实现的脚本/模块，都必须在「模块层」先
-`import live3dgsavatar`。** 参照侧的 `FLAME.__init__` 会 `pickle.load` 进而
-`import chumpy`，一旦顺序反了就会报：
+**因此凡是要 `pickle.load` 的脚本/模块，都必须在「模块层」先
+`import live3dgsavatar`。** 一旦顺序反了就会报：
 
 ```
 ImportError: cannot import name 'int' from 'numpy'
@@ -231,10 +230,8 @@ ImportError: cannot import name 'int' from 'numpy'
 RuntimeError: expected scalar type Double but found Float
 ```
 
-参照仓库的 `FlameConfig` 默认 float64，因此两边一致、该问题从不暴露。
-**本项目一律使用默认值**，并由
+**本项目一律不做覆盖**，并由
 `tests/unit/test_architecture.py::test_flame_dtype_is_not_overridden` 静态兜住。
-网格顶点在 `FLAMEDataset` 内部已降到 float32，无需外部转换。
 
 ---
 
@@ -270,14 +267,11 @@ python scripts/show_config.py          # 先确认路径指对了
 python scripts/render_test.py --frames 20
 ```
 
-产出：`output/render_test/`（core 渲染图 + 参照渲染图 + `report.json`）。
-报告含三方 PSNR（core vs 参照 / core vs 数据集 / 参照 vs 数据集）与性能对比。
+产出：`output/render_test/`（渲染图 + `report.json`）。
+报告含与数据集原图的 PSNR（全图 / 前景掩码内）与性能指标。
 路径与参数全部来自 `configs/`，见 `docs/CONFIG.md`。
 
-只想过一遍流程时用 `--frames 3`；无需参照实现时加 `--skip-reference`。
-
-> 脚本会先把所有路径解析为**绝对路径**再进入参照仓库的 cwd
-> （参照实现依赖其仓库根作为 cwd 来定位 FLAME 模型）。
+只想过一遍流程时用 `--frames 3`；没有 GPU 时用 `--dry-run`。
 
 ---
 
@@ -287,10 +281,10 @@ python scripts/render_test.py --frames 20
 |---|---|---|
 | `pip install git+https://gh-proxy.com/.../nvdiffrast.git` | `pip install submodules/nvdiffrast` | 免联网、版本固定 |
 | `pip install ~/Libraries/fused-ssim` | `pip install submodules/fused-ssim` | 摆脱工作区外路径依赖 |
-| `pip install -r requirements.txt`（RGBAvatar 版） | 本仓库 `requirements.txt`（已补全） | 官方清单缺 `Pillow`、`chumpy`、`scipy` 等实测必需项 |
+| 上游 `requirements.txt` | 本仓库 `requirements.txt`（已补全） | 上游清单缺 `Pillow`、`chumpy`、`scipy` 等实测必需项 |
 | `pip install submodules/diff-gaussian-rasterization` | `pip install -e submodules/diff-gaussian-rasterization` | editable 便于追踪编译产物 |
 | 无 | `setup_env.sh` + `scripts/env_check.py` + `scripts/render_test.py` | 一条命令可复现 + 可自检 + 可出渲染报告 |
-| 环境名 `rgbavatar` | 环境名 `live3dgs` | 独立环境，避免与参照仓库互相污染 |
+| 环境名 `rgbavatar` | 环境名 `live3dgs` | 独立环境，避免与其它项目互相污染 |
 
 **保留原样的部分**：`TORCH_CUDA_ARCH_LIST=8.6`、`MAX_JOBS/NVCC_THREADS` 限流、`--no-build-isolation`。这些是实测有效的关键设置。
 
@@ -311,7 +305,7 @@ python scripts/render_test.py --frames 20
 | `PermissionError: .../build/.../nvdiffrast/__init__.py: Permission denied` | 源码树内残留此前手工构建的 `build/`，构建工具需要删除/重建它 | 从 `submodules/` 构建，不要用 `~/Libraries/` |
 | `Failed to build installable wheels for ... pyproject.toml` | `--no-build-isolation` 下缺 setuptools/wheel | 先 `pip install setuptools wheel ninja` |
 | `Failed to build 'chumpy' when getting requirements to build wheel` | **真实原因通常是 numpy**：`chumpy` 缺失 PEP 517 元数据（单独装可绕过），但它只是同批里第一个报出来的；若日志里还有 `Failed to build 'numpy'` / `ModuleNotFoundError: No module named 'distutils.msvccompiler'`，说明是 **numpy pin 到了 1.23.5 而 wheel 已拿不到**，pip 退回源码编译 | ① `chumpy` 单独装、不要进 `requirements.txt`；② **不要 pin numpy**，见 §3.6 |
-| `ImportError: cannot import name 'int' from 'numpy'` | chumpy 0.70 与 numpy ≥ 1.24 不兼容（`chumpy/__init__.py:11` 导入已移除的标量别名） | 导入 `live3dgsavatar` 即自动修补（`src/live3dgsavatar/compat/`）；参照仓库脚本需自行应用同一补丁 |
+| `ImportError: cannot import name 'int' from 'numpy'` | chumpy 0.70 与 numpy ≥ 1.24 不兼容（`chumpy/__init__.py:11` 导入已移除的标量别名） | 导入 `live3dgsavatar` 即自动修补（`src/live3dgsavatar/compat/`） |
 | `ERROR: Could not find a version that satisfies the requirement numpy==1.23.5` | 官方与镜像 simple 索引中该文件仍存在，但 pip 当前解析策略不再选用（wheel 标签兼容性问题） | 不要 pin numpy，见 §3.6 |
 | `ModuleNotFoundError: No module named 'distutils.msvccompiler'` | 旧版 numpy 源码包在新 setuptools 下无法编译 | 不要 pin 旧 numpy |
 | `Error 304: OS call failed` / `cuda.is_available()==False` | 当前会话无法访问 GPU 设备（WSL2 下为无法打开 `/dev/dxg`）；容器、远程会话或无 GPU 权限时常见 | 在可访问 GPU 的终端中运行；这不是环境损坏 |
@@ -329,7 +323,7 @@ python scripts/render_test.py --frames 20
 |---|---|
 | `setup_env.sh` | 一键建环境（幂等） |
 | `scripts/env_check.py` | 环境自检（无 GPU 可跑） |
-| `scripts/render_test.py` | 统一渲染测试（core / 参照 / 数据集原图 三方对比） |
+| `scripts/render_test.py` | 渲染测试（本项目出图 vs 数据集原图） |
 | `requirements.txt` | Python 依赖（版本来自实测环境） |
 | `submodules/ATTRIBUTION.md` | vendored 源码的来源、许可与差异 |
 | `src/live3dgsavatar/compat/__init__.py` | 第三方兼容性补丁（numpy 2.x 别名，见 §3.6） |

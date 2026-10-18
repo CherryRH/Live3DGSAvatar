@@ -37,7 +37,7 @@ python scripts/show_config.py --json          # 机器可读
 |---|---|
 | `LIVE3DGS_DATA_ROOT` | `paths.data_root` |
 | `LIVE3DGS_OUTPUT_DIR` | `paths.output_dir` |
-| `LIVE3DGS_REFERENCE_ROOT` | `paths.reference_root` |
+
 | `LIVE3DGS_MODELS_DIR` | `paths.models_dir` |
 | `LIVE3DGS_SUBJECT` | `subject` |
 | `LIVE3DGS_WORK_NAME` | `work_name` |
@@ -49,12 +49,12 @@ python scripts/show_config.py --json          # 机器可读
 
 | 字段 | 说明 |
 |---|---|
-| `subject` | **人物名**，与 RGBAvatar 的 `--subject` 同名同义。既用于数据集（`<data_root>/<subject>/`），也用于模型的一级目录 |
-| `work_name` | 工作名（一次训练/导出的名字），参照里常用 `test` |
+| `subject` | **人物名**。既用于数据集（`<data_root>/<subject>/`），也用于模型的一级目录 |
+| `work_name` | 工作名（一次训练/导出的名字），通常为 `test` |
 | `paths.data_root` | 数据集根目录；下需含 `<subject>/images/` 与 `<subject>/checkpoint/` |
 | `paths.models_dir` | **本项目自己的模型根目录**（默认 `models`）。模型放 `<models_dir>/<subject>/<work_name>/` |
 | `paths.output_dir` | 产物根目录。各脚本写到 `<output_dir>/<脚本名>/` |
-| `paths.reference_root` | RGBAvatar 参照仓库根（**只读**）。取 FLAME 模板、模板 UV、数据集读取代码，以及**它自己的**同名模型 |
+| `paths.flame_dir` | FLAME 资产目录（`generic_model.pkl` + `flame_uv.npz`）。`null` 表示仓库根的 `data/FLAME2020/` |
 | `paths.model_ply` | 显式指定模型文件。`null` 表示按下面的顺序自动查找 |
 | `paths.models_config` | 显式指定模型随附的 `config.yaml`。`null` 表示从模型目录里读 |
 | `paths.image_subdir` | 数据集原图子目录（默认 `images`），用作 PSNR 的 GT |
@@ -69,86 +69,53 @@ python scripts/show_config.py --json          # 机器可读
 | `app.autostart` | 打开页面是否自动推帧 |
 | `app.preload_frames` | GUI 启动时预载帧数。**`-1`（默认）表示全部**。设小会让「数据集帧」滑块被夹在已载入范围内 |
 
-### 模型目录约定（与 RGBAvatar 的 `--subject` / `--work_name` 保持一致）
+### 模型目录约定
 
 ```
-models/<subject>/<work_name>/model.ply          ← 本项目渲染统一用这里
-models/<subject>/<work_name>/config.yaml        ← 模型随附配置（从 RGBAvatar 复制）
+models/<subject>/<work_name>/model.ply          ← 渲染统一用这里
+models/<subject>/<work_name>/config.yaml        ← 模型随附配置
 ```
 
-参照实现渲染时用它**自己的**同名模型：`<reference_root>/output/<subject>/<work_name>/`。
-这与 RGBAvatar CLI 完全一致（`--subject` + `--work_name` 派生 `output_path` 与 `data_path`）：
+**查找顺序**（`resolve_model_ply`）：
 
-```python
-# RGBAvatar/render.py
-output_path = os.path.join(args.output_dir, args.subject, args.work_name)  # 模型
-data_path   = os.path.join(config['data_dir'], args.subject)               # 数据集
-```
-两边目录结构同名，便于对照与切换。
+1. `paths.model_ply` —— 显式配置时直接用它（文件不存在则报错，不静默回退）
+2. `<models_dir>/<subject>/<work_name>/model.ply`
 
-**查找顺序**（`resolve_model_ply`，见 `src/live3dgsavatar/config/__init__.py`）：
+### 数据集格式（自动识别）
 
-1. `paths.model_ply` —— 若显式配置，直接用它（文件不存在则报错，不静默回退）
-2. `<models_dir>/<subject>/<work_name>/model.ply` —— **本项目优先**
-3. `<reference_root>/output/<subject>/<work_name>/model.ply` —— 回退到参照
+`load_scene` 按目录内容判断，不需要额外配置：
 
-> 渲染测试里，**core 用 `models/`，参照用 `output/`**，刻意分开取 ——
-> 否则"对照"会变成"自己跟自己比"。
-
-切换到别的模型：
-
-```bash
-# 命令行
-python scripts/render_test.py --subject duda --work-name test
-
-# 配置文件：改 subject / work_name 两处
-
-# 环境变量
-LIVE3DGS_SUBJECT=duda LIVE3DGS_WORK_NAME=test python scripts/render_test.py
-```
-
-### 监听地址：为什么要 dual-stack
-
-单 host 只能覆盖一个地址族。实测本机（WSL2，`networkingMode=mirrored`）：
-
-| `host` | `127.0.0.1` | `::1` |
+| 格式 | 判据 | 需要什么 |
 |---|---|---|
-| `127.0.0.1` | ✓ | ✗ |
-| `localhost` | ✓ | ✗ |
-| `::` | ✗（本机 `v6only=1`） | ✓ |
+| **manifest**（自包含） | 有 `render_inputs.npz` | 只要 FLAME 拓扑；**不需要 3DMM 参数**，也不需要 GPU 加载 |
+| **checkpoint**（参照格式） | 有 `checkpoint/` + `images/` | 需跑一次 FLAME 前向把 3DMM 参数变成网格（本项目自带的 `data/flame_model.py`） |
 
-而 `/etc/hosts` 里 `localhost` **优先解析为 `::1`**，浏览器打开
-`http://localhost:8000` 会先试 `::1` —— 只绑 IPv4 时 Windows 浏览器报
-**「无法连接」**，而 VS Code 内置浏览器（走 `127.0.0.1`）却正常。
+两种格式加载后产出**完全相同**的 `Scene`（帧、拓扑、相机），下游无差别。
 
-因此回环地址一律改用 **dual-stack socket**（绑 `::` 并关闭 `IPV6_V6ONLY`），
-两种写法都通。启动日志会打印实际监听情况：
+#### manifest
 
-```
-监听：IPv4 127.0.0.1 + IPv6 ::1（dual-stack，端口 8000）
-```
-
-### 数据集的两种格式
-
-`load_scene` 按**文件名**自动识别，不需要额外配置：
-
-| 格式 | 判据 | 需要什么 | 适用 |
-|---|---|---|---|
-| **manifest**（自包含） | 目录下有 `render_inputs.npz` | 只要 FLAME 资产（取拓扑） | 新采集的数据 |
-| **checkpoint**（参照格式） | 目录下有 `checkpoint/` + `images/` | 需 FLAME 前向 + chumpy + GPU | 兼容 duda 等旧数据 |
-
-manifest 里已算好逐帧 `mesh` / `blend_weight` / 相机，**不需要 3DMM 参数**，
-因此不需要 `checkpoint/`，也不需要 GPU 就能加载（渲染仍需 GPU）。
+目录下有 `render_inputs.npz` 即可，渲染不需要 3DMM 参数。
 
 ```text
 <dataset>/
 ├── render_inputs.npz      # mesh [N,5083,3], blend_weight [N,129],
 │                          # K [3,3], w2v [4,4], width, height, names [N]
-├── images/                # 512×512 原图（PSNR 的 GT）
+├── images/                # 512×512 RGBA，PSNR 的 GT
 └── input/                 # 未抠图的原帧（可选）
 ```
 
-加载时会校验三件事，任何一项不符都立即报错（而不是等到训练/渲染中途才炸）：
+#### checkpoint
+
+每帧一个 `.frame` 文件（torch pickle），含 FLAME 参数与相机。
+加载时会：
+
+1. 跑 FLAME 前向（`shape`+`expression`+neck/jaw/eye 旋转+眼睑 → 顶点）
+2. **neck 重定向**：把全局旋转从 root 挪到 neck，并修正平移
+3. 组装 129 维驱动参数（注意下颌/眼球用**归一化后**的 rot6d）
+
+#### 两种格式共用的校验
+
+任何一项不符都立即报错（而不是等到渲染中途才炸）：
 
 1. `blend_weight` 维度 == `model.network.num_basis_in`
 2. `mesh` 顶点数足以覆盖 FLAME 面表引用的顶点
@@ -173,7 +140,7 @@ paths:
 ```yaml
 data_root: /home/you/Datasets/INSTA    # 绝对路径
 data_root: ~/Datasets/INSTA            # ~ 展开
-reference_root: ../RGBAvatar           # 相对**仓库根**
+flame_dir: ../FLAME2020               # 相对**仓库根**（可选覆盖）
 output_dir: output                     # output 特殊：相对**当前工作目录**
 ```
 
@@ -188,7 +155,7 @@ output_dir: output                     # output 特殊：相对**当前工作目
 | `background` | `[0,0,0]` | 背景色。数据集原图为黑底；白底用 `[1,1,1]` |
 | `scaling_modifier` | `1.0` | 高斯缩放系数 |
 | `sh_degree` | `0` | 球谐阶数。本项目只用 DC 项 |
-| `batch_size` | `4` | 批大小。**core 与参照实现共用**，保证计时口径一致。6GB 显存建议 ≤ 4 |
+| `batch_size` | `4` | 批大小。6GB 显存建议 ≤ 4 |
 | `frames` | `20` | 默认渲染帧数；`-1` 为全部 |
 | `max_batch_size` / `max_gaussian_size` / `num_streams` | `10` / `60353` / `3` | 训练用的预分配上限（训练待接入，先保留） |
 
@@ -205,7 +172,7 @@ output_dir: output                     # output 特殊：相对**当前工作目
 | `tex_size` | ⚠️ 仅按容量上界 `tex_size² ≥ N` 校验 | 上界够大时不报错（见下） |
 | `mlp_hidden` / `use_weight_proj` | ❌ 不参与存储 | 写错会加载出**结构不同的网络** |
 
-原因：**参照实现写出的 `.ply` 没有 `comment gaussian_config` 注释**
+原因：**外部工具写出的 `.ply` 通常没有 `comment gaussian_config` 注释**
 （本项目自己写出的文件才有，见 `docs/CONVENTIONS.md` §4）。
 因此消费外部模型时，结构信息只能来自本配置节。
 
@@ -225,7 +192,7 @@ output_dir: output                     # output 特殊：相对**当前工作目
 
 | 字段 | 说明 |
 |---|---|
-| `dataset.use_shape_weight` / `use_pose_weight` | 参照侧 `FLAMEDataset` 的读取选项 |
+| `dataset.use_shape_weight` / `use_pose_weight` | 驱动参数的分段开关（与训练侧一致） |
 | `dataset.pin_memory` | 是否锁页内存 |
 | `test.dump_diff` | 渲染测试是否输出并排对比图 |
 
@@ -236,7 +203,7 @@ output_dir: output                     # output 特殊：相对**当前工作目
 ```bash
 python scripts/render_test.py                     # 全部取配置
 python scripts/render_test.py --frames 5 --batch-size 2   # 临时覆盖
-python scripts/equivalence_check.py --skip-render
+python scripts/render_test.py --dry-run
 ```
 
 `test_scripts_have_no_business_defaults` 会静态检查脚本里不再出现
@@ -246,10 +213,10 @@ python scripts/equivalence_check.py --skip-render
 
 | 参数 | 作用 |
 |---|---|
-| `--subject` / `--work-name` | 选对象与工作名（对应 `models/<subject>/<work_name>/`）。**同时接受 RGBAvatar 风格的下划线写法** `--work_name`，两边命令可直接互相复制 |
+| `--subject` / `--work-name` | 选对象与工作名（对应 `models/<subject>/<work_name>/`）。**同时接受下划线写法** `--work_name` |
 | `--ply` | 直接指定模型文件，覆盖上面的推导 |
 | `--frames` / `--batch-size` | 采样规模与显存占用 |
-| `--skip-reference` | 不加载参照实现（只测本项目） |
+
 | `--dry-run` | CPU 自检，不访问数据集/GPU |
 
 ## 7. 写自己的脚本时怎么用

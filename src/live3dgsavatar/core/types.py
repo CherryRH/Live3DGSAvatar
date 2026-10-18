@@ -290,7 +290,14 @@ class Camera:
 
         rot = R_t.transpose(0, 1)                 # view→world
         pos = -(rot @ T_t)                        # 相机位置
-        w2c = torch.eye(4, dtype=torch.float32)
+        # ⚠️ **必须继承输入的设备**。曾经写成 `torch.eye(4, dtype=...)`（无 device=），
+        #    w2c 就永远留在 CPU；而 K 保留了输入设备。跨设备赋值 `copy_` 不会报错，
+        #    于是 Camera 一半在 GPU、一半在 CPU。之后 w2c 被当作 CUDA 指针传给
+        #    光栅化内核，表现为 `CUDA error: an illegal memory access` —— 
+        #    报错点离根因极远，且只在"调用方忘了 .to()"时出现。
+        w2c = torch.zeros(4, 4, dtype=torch.float32,
+                          device=rot.device) + torch.eye(
+            4, dtype=torch.float32, device=rot.device)
         w2c[:3, :3] = rot.transpose(0, 1)         # = R
         w2c[:3, 3] = T_t
         _ = pos  # 保留推导，便于对照参照实现；w2c 已由 R, T 直接给出

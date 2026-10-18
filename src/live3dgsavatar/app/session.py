@@ -22,7 +22,7 @@ from pathlib import Path
 
 import torch
 
-from ..config import Config, model_dir, reference_model_dir, resolve_model_ply
+from ..config import Config, model_dir, resolve_model_ply
 
 # ⚠️ 直接从 `..core.types` 导入 `Mesh`。若写成 `import ..core.types as types`
 #    会遮蔽标准库的 `types` 模块，间接依赖随之行为异常且极难排查。
@@ -125,7 +125,6 @@ class Session:
         self.frames_served = 0
         self.frames_dropped = 0
         self.model_path: Path | None = None
-        self.reference_model: Path | None = None
 
     # ------------------------------------------------------------ 加载 --
 
@@ -178,8 +177,6 @@ class Session:
         self.avatar = avatar
         self.scene = scene
         self.model_path = model_ply
-        ref_dir = reference_model_dir(cfg)
-        self.reference_model = (ref_dir / "model.ply") if ref_dir else None
         self.camera = Camera.from_intrinsics_extrinsics(
             scene.K, scene.R, scene.T, scene.width, scene.height).to(self.device)
         self._rasterizer = SimpleRasterizer(
@@ -203,8 +200,6 @@ class Session:
         if self.avatar is not None:
             out["model"] = {
                 "path": str(self.model_path) if self.model_path else None,
-                "reference_path": (str(self.reference_model)
-                                   if self.reference_model else None),
                 "num_gaussians": int(self.avatar.num_gaussians),
                 "num_basis": int(self.avatar.num_basis),
                 "num_basis_in": int(self.avatar.config.num_basis_in),
