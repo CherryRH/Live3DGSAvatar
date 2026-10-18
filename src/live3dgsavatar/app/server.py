@@ -38,6 +38,8 @@ from .protocol import (
     pack_frame,
     sleep_after,
 )
+from ..tracking.live_source import LiveUnavailable
+
 from . import settings as settings_mod
 from .session import Session
 
@@ -185,6 +187,7 @@ async def _serve_client(app: FastAPI, ws: WebSocket, session: Session) -> None:
 
     # 后端自己的吞吐统计（**与前端解耦**：前端算它看到的，后端记它渲染的）。
     # 前端 FPS 由 web/js 自己按帧到达间隔计算；后端指标走 stdout 周期日志。
+    live_warn = IntervalLogger(interval_s=5.0)
     window = RollingWindow(window_s=stats_window_s)
     logger_ = IntervalLogger(interval_s=stats_log_interval_s)
     status_logger = IntervalLogger(interval_s=status_interval_s)
@@ -210,8 +213,38 @@ async def _serve_client(app: FastAPI, ws: WebSocket, session: Session) -> None:
         loop = asyncio.get_running_loop()
         while not stop.is_set():
             t0 = loop.time()
+
+            # live 模式下"没有新内容就不重渲"。
+            # RDF 约 15 fps、渲染可到 45 fps，照常跑会把同一份内容渲染 3 次，
+            # 白白占用 GPU —— 而 GPU 正是 RDF 的瓶颈。跳过后帧率会诚实地
+            # 掉到内容更新率（15 fps），这是**正确**的读数。
+            if not session.live_frame_pending():
+                await asyncio.sleep(0.005)
+                # 状态照常推（前端要看到"摄像头未就绪/等待中"）
+                status_logger.interval_s = max(0.05, float(
+                    session.cfg.get("render.status_interval_s", 0.25)))
+                now = loop.time()
+                if status_logger.due(now):
+                    with contextlib.suppress(Exception):
+                        await ws.send_text(json.dumps(
+                            {"type": "status", **_status_payload(session)},
+                            ensure_ascii=False))
+                continue
+
             try:
                 rgb, timings = await asyncio.to_thread(session.render)
+            except LiveUnavailable as e:
+                # 兜底：正常情况下 live 无数据会回退到数据集首帧（不抛异常），
+                # 走到这里说明是"连接了但取不到转换结果"这类异常情形。
+                # **等一会儿再试，不要断开连接** —— 断开会让前端反复重连。
+                if live_warn.due(loop.time()):
+                    logger.info("实时驱动等待中：%s", e)
+                with contextlib.suppress(Exception):
+                    await ws.send_text(json.dumps(
+                        {"type": "error", "message": str(e),
+                         "transient": True}, ensure_ascii=False))
+                await asyncio.sleep(0.1)
+                continue
             except Exception as e:  # noqa: BLE001
                 logger.exception("渲染失败")
                 with contextlib.suppress(Exception):
@@ -403,7 +436,14 @@ def _status_payload(session: Session) -> dict:
         "frame": session.timeline.index if session.timeline else 0,
         "playing": session.timeline.playing if session.timeline else False,
         "total_frames": session.scene.total_frames if session.scene else 0,
+        # 实时驱动的**紧凑**状态：4 Hz 推送，只放前端要显示的四项。
+        # 完整状态（含 identity / 顶点数等）走 `/api/state`。
+        "live": _live_brief(session),
     }
+
+
+def _live_brief(session: Session) -> dict:
+    return session.live_brief()
 
 
 # --------------------------------------------------------------- 应用装配 --
@@ -467,7 +507,21 @@ def create_app(cfg: Config | None = None, session: Session | None = None) -> Fas
     cfg = cfg or load_config()
     session = session or Session(cfg)
 
-    app = FastAPI(title="Live3DGSAvatar GUI", docs_url=None, redoc_url=None)
+    @contextlib.asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        """应用启停时管理实时驱动的连接。
+
+        **为什么在这里而不是 `Session.__init__`**：构造 `Session` 的场合很多
+        （脚本、测试），不该顺手起一个后台线程去连网络。只有真正跑服务时才连。
+        """
+        session.live.start()
+        try:
+            yield
+        finally:
+            session.live.stop()
+
+    app = FastAPI(title="Live3DGSAvatar GUI", docs_url=None, redoc_url=None,
+                  lifespan=lifespan)
     app.state.session = session
     app.state.stream_task = None
     app.state.stream_size = None

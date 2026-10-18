@@ -7,9 +7,15 @@
 ⚠️ 修改 `src/live3dgsavatar/compat/__init__.py` 中的补丁列表时，必须同步修改本文件
    （两个文件各有一份 `_NUMPY_ALIASES`）。
 
-当前补丁：chumpy 0.70 与 numpy 2.x 不兼容 —— `chumpy/__init__.py:11` 执行
-    from numpy import bool, int, float, complex, object, unicode, str, nan, inf
-这些别名在 numpy 1.24 弃用、2.0 移除。原因与移除条件见 docs/ENVIRONMENT.md §3.6。
+当前补丁（**两个独立的不兼容维度**）：
+
+1. **numpy 2.x 移除了标量别名** —— `chumpy/__init__.py:11` 执行
+       from numpy import bool, int, float, complex, object, unicode, str, nan, inf
+   这些别名在 numpy 1.24 弃用、2.0 移除。
+2. **Python 3.11 移除了 `inspect.getargspec`** —— `chumpy/ch.py:1203` 仍在用。
+   这与 numpy 版本无关：3.10 下不出现，3.11 下即使 numpy 1.x 也会出现。
+
+原因与移除条件见 docs/ENVIRONMENT.md §3.6。
 """
 
 from __future__ import annotations
@@ -49,9 +55,39 @@ def apply() -> tuple[str, ...]:
     return tuple(patched)
 
 
+def apply_inspect_getargspec() -> bool:
+    """为 Python 3.11+ 补回 `inspect.getargspec`。返回是否真的补了。
+
+    与 numpy 补丁是**两个独立维度**：3.11 下即使 numpy 1.x 也需要它。
+    """
+    import inspect
+
+    if hasattr(inspect, "getargspec"):
+        return False
+
+    class _ArgSpec(tuple):
+        __slots__ = ()
+
+        def __new__(cls, args, varargs, keywords, defaults):
+            return tuple.__new__(cls, (args, varargs, keywords, defaults))
+
+        args = property(lambda self: self[0])
+        varargs = property(lambda self: self[1])
+        keywords = property(lambda self: self[2])
+        defaults = property(lambda self: self[3])
+
+    def getargspec(func):                      # noqa: ANN001
+        spec = inspect.getfullargspec(func)
+        return _ArgSpec(spec.args, spec.varargs, spec.varkw, spec.defaults)
+
+    inspect.getargspec = getargspec
+    return True
+
+
 def verify_chumpy() -> tuple[bool, str]:
     """应用补丁后验证 chumpy 是否可用。返回 (是否可用, 说明)。"""
     apply()
+    apply_inspect_getargspec()
     try:
         import chumpy  # noqa: F401, PLC0415
     except Exception as e:  # pragma: no cover

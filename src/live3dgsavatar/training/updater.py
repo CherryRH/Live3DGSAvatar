@@ -136,10 +136,21 @@ class UpdateState:
 
     @classmethod
     def from_dict(cls, d: dict, device="cpu") -> "UpdateState":
+        """从字典恢复增量。
+
+        **容忍 numpy 数组**：`to_dict()` 给的是 CPU tensor，但存成 `.npz`
+        （`np.savez`）再读回来就是 numpy 数组了。若只认 tensor，
+        "存下来再加载"这条最自然的用法会直接崩 `.to()` 不存在。
+        """
+        def as_tensor(value) -> torch.Tensor:
+            if isinstance(value, torch.Tensor):
+                return value.to(device).detach().requires_grad_(True)
+            return torch.as_tensor(value, device=device).requires_grad_(True)
+
         return cls(
-            color_delta=d["color_delta"].to(device).requires_grad_(True),
-            opacity_delta=(d["opacity_delta"].to(device).requires_grad_(True)
-                           if "opacity_delta" in d else None),
+            color_delta=as_tensor(d["color_delta"]),
+            opacity_delta=(as_tensor(d["opacity_delta"])
+                           if d.get("opacity_delta") is not None else None),
             step=int(d.get("step", 0)),
         )
 
@@ -185,6 +196,7 @@ class OnlineUpdater:
         self.avatar = avatar
         self.rasterizer = rasterizer
         self.config = config or UpdateConfig()
+        self._camera: Camera | None = None
         self.loss_fn = loss_fn or PhotometricLoss(
             mask_weight=(config.mask_weight if config else 0.0),
             l1=(config.color_l1 if config else False))
@@ -210,6 +222,7 @@ class OnlineUpdater:
             `(报告, 增量状态)`。报告里含 before/after PSNR —— **这就是验收判据**。
         """
         cfg = self.config
+        self._camera = batch.camera
         # ⚠️ **复制**传入的 state，绝不原地修改调用方的对象。
         #    否则调用方持有的"上一轮结果"会跟着本轮迭代一起变，
         #    表现为两轮的 `state.step` 混在一起、无法比较前后差异。
@@ -236,8 +249,17 @@ class OnlineUpdater:
                 break
             opt.zero_grad(set_to_none=True)
             loss = torch.zeros((), device=background.device)
-            # 逐帧（真实场景下帧是陆续到达的，不该假设能一次看完全部）
-            chunk = batch.frames[: cfg.frame_chunk]
+            # **每步轮转一批帧**，而不是永远取前 `frame_chunk` 个。
+            #
+            # 之前的写法是 `batch.frames[:frame_chunk]` —— 若观测有 300 帧、
+            # `frame_chunk=8`，那**只有前 8 帧产生过梯度**，另外 292 帧只在
+            # 评估时被用到。用户以为"用 300 帧更新"，实际只用了 8 帧。
+            #
+            # 轮转（而不是随机）保证：① 可复现；② 每 ceil(N/k) 步覆盖全部帧。
+            n_frames = len(batch.frames)
+            k = min(int(cfg.frame_chunk), n_frames)
+            start = (step * k) % n_frames
+            chunk = [batch.frames[(start + j) % n_frames] for j in range(k)]
             for obs in chunk:
                 out = self._forward(obs, batch.camera, background, st)
                 l, _ = self.loss_fn(out, obs)
@@ -272,6 +294,28 @@ class OnlineUpdater:
             return self._forward(obs, camera, background, state)
 
     # ------------------------------------------------------------ 内部 --
+    def render_observation(self, obs: FrameObservation, background: torch.Tensor,
+                           state: UpdateState | None = None):
+        """用给定增量渲染一帧观测，返回 `RenderOutput`（**供可视化/对比用**）。
+
+        做成公开方法而不是让脚本调 `_forward`：对比图需要"同一套注入逻辑"
+        （颜色/不透明度增量怎么加到高斯上），重复实现一遍必然漂移。
+        """
+        st = state if state is not None else UpdateState.zeros(
+            self.avatar, update_opacity=self.config.update_opacity)
+        with torch.no_grad():
+            return self._forward(obs, self.batch_camera(obs), background, st)
+
+    def batch_camera(self, obs: FrameObservation) -> Camera:
+        """取观测所用的相机（`fit()` 里由 batch 提供，单独渲染时需显式给）。"""
+        if self._camera is None:
+            raise RuntimeError(
+                "尚未设置相机：请先调用 `fit(batch, ...)`，或 `set_camera(cam)`")
+        return self._camera
+
+    def set_camera(self, camera: Camera) -> None:
+        self._camera = camera
+
     def _forward(self, obs: FrameObservation, camera: Camera,
                  background: torch.Tensor, state: UpdateState):
         """带增量的前向。顺序与 `core/render/pipeline.render_frame` 一致，

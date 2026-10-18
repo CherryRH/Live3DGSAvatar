@@ -33,6 +33,10 @@ from pathlib import Path
 import numpy as np
 import torch
 
+# ⚠️ 必须在 pickle.load 之前施加补丁：FLAME 资产与 `.frame` 里含
+#    chumpy 对象，而 chumpy 在新版 numpy / Python 下需要别名补齐。
+from .. import compat  # noqa: F401, E402  （导入即生效）
+
 from .flame_model import FlameModel
 
 

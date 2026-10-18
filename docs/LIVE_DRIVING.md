@@ -238,16 +238,107 @@ shape 差异** —— 任何刚体/相似变换都吸收不了。牙齿在口腔
 代价是"驱动者的身份"与"模型的训练对象"不同；但这恰好是**想验证的鲁棒性**，
 而不是需要消除的误差 —— 转换误差由 GT 参数衡量，渲染观感单独看。
 
+## 6b. 怎么跑起来
+
+**两个终端。** 顺序无所谓 —— 先开哪个都行，两边都会等对方。
+
+```bash
+# 终端 A：桥接进程（realdenseface 环境）—— 摄像头
+conda activate realdenseface
+cd ~/Projects/Live3DGSAvatar
+python scripts/rdf_bridge.py --camera 0 --port 8980 --fps 30
+
+# 终端 B：本项目（live3dgs 环境）
+conda activate live3dgs
+bash run_gui.sh
+```
+
+回放模式（可重复、便于调试）：
+
+```bash
+python scripts/rdf_bridge.py \
+    --images ~/Datasets/INSTA/crh_2/input --limit 300 --loop
+```
+
+摄像头参数：`--camera N`（索引）、`--camera-width/--camera-height`（请求分辨率；
+不传则用摄像头默认）。采集缓冲设成 1 —— 实时场景下"旧帧"没有价值。
+
+### 摄像头没数据时会发生什么
+
+**回退到数据集首帧**（crh_1 的第 0 帧），而不是黑屏或报错：
+
+| 状态 | 画面 | 界面提示 |
+|---|---|---|
+| 桥接未启动 | crh_1 首帧 | `⚠ 显示首帧（未连接 RDF 桥接进程…）` |
+| 桥接启动但无新帧 | crh_1 首帧 | `⚠ 显示首帧（已连接，但 1.0s 内没有新帧）` |
+| 正常 | 摄像头驱动 | `RDF 15 FPS · 帧间隔 0.03s` |
+
+**回退必须可见**：不说明的话，用户会以为摄像头在工作。
+
+### 为什么渲染帧率会掉到 RDF 的帧率
+
+RDF 约 15 fps、渲染能到 45 fps。照常按帧数上限渲染会把**同一份内容渲染 3 次**，
+白白占用 GPU —— 而 GPU 正是 RDF 的瓶颈，等于自己拖慢自己。
+
+所以 live 模式下"**没有新观测就不重渲**"：帧率会诚实地掉到内容更新率（15 fps）。
+数据集模式**保持原语义**（"暂停 ≠ 停止渲染"，链路始终是活的）——
+两者行为不同是刻意的：数据集模式重渲同一帧没有代价，live 模式有。
+
+浏览器打开后，把播放条上的**数据源**切到「实时驱动（RDF）」。
+
+| 现象 | 含义 |
+|---|---|
+| `未连接桥接进程（请先运行 scripts/rdf_bridge.py）` | 桥接没起，或端口不对 |
+| 桥接侧停在 `正在加载 RDF 模型…` | 首次含 `torch.compile`，约 30 s；之后有缓存|
+| `已连接，但 1.0s 内没有新帧` | 桥接在跑但卡住了（GPU 忙/编译中） |
+| `RDF 28 FPS · 帧间隔 0.03s` | 正常 |
+
+**连接会一直保持**：桥接没起时，渲染循环会"等待"而不是断开 ——
+这样先开 GUI 再开桥接也能自动接上（`LiveUnavailable` 与普通渲染错误分开处理）。
+
+### 桥接的启动顺序与参数语义
+
+桥接**先加载模型再监听端口**：
+- 先监听会让客户端连上后干等几十秒，看起来像卡住
+- 端口不通更容易判断"还没准备好"
+
+`--limit N` 是**从目录里取多少帧**（在 `main` 里就截断帧表），
+配合 `--loop` 会**反复回放这 N 帧**。不加 `--loop` 则推完就等下一个客户端。
+
+### 数据源切换的语义
+
+| | 数据集采样 | 实时驱动 |
+|---|---|---|
+| 网格 | 数据集现成的（含 60 个牙齿） | RDF 的 5023 顶点 + 本地补牙齿 |
+| 参数 | 数据集现成的 129 维 | RDF 的 118 维 → 转换 |
+| 帧号/播放/扰动 | 有效 | **无意义**（后端忽略，见 `LIVE_IGNORED_FIELDS`）|
+
+## 6c. 线上格式
+
+每帧 59.3 KB，30 fps 约 1.8 MB/s，回环可忽略。
+
+```
+握手（一次）RDFH | version | n_verts | n_exp | w | h | identity[300]
+每帧        RDFF | seq | timestamp | x[118] | verts[5023*3]
+```
+
+顶点由**桥接侧**用 RDF 自己的 FLAME2023 算好再发 —— 本端因此不需要
+FLAME2023，也就不会出现"用 2020 的基算 2023 的参数"。
+
+读端必须**循环读满**（`recv` 返回片段是常态）。这一条有集成测试守着：
+测试里的假桥接故意把帧切成 4 KB 片段发送。
+
 ## 7. 分层与边界
 
 ```
 tracking/param_map.py   纯函数：118 → 129
 tracking/align.py       纯函数：相似变换拟合/应用
-tracking/rdf_wire.py    纯函数：帧格式编解码          （待实现）
-tracking/rdf_client.py  网络：连接桥接进程，latest-wins （待实现）
-tracking/live_source.py 组装：参数 → (mesh, blend_weight)（待实现）
+tracking/mesh_build.py  补 60 个牙齿顶点（5023 → 5083）
+tracking/rdf_wire.py    纯函数：帧格式编解码
+tracking/rdf_client.py  网络：连接桥接进程，latest-wins（后台线程）
+tracking/live_source.py 组装：观测 → (mesh, blend_weight)
 scripts/rdf_dump.py     离线导出（realdenseface 环境）
-scripts/rdf_bridge.py   实时桥接（realdenseface 环境） （待实现）
+scripts/rdf_bridge.py   实时桥接（realdenseface 环境）
 ```
 
 `tracking/` 可以依赖 `core/types`，但**不得**被 `core/` 导入 ——
@@ -260,8 +351,27 @@ scripts/rdf_bridge.py   实时桥接（realdenseface 环境） （待实现）
 | P1 | 参数转换 + 坐标对齐（纯函数、可测） | ✅ 已实现 |
 | P1b | 标定：在 crh_2 上验证两个假设 | ✅ **已完成**（见 §5b） |
 | P1c | 牙齿顶点补全 | ✅ 已实现（误差 7 mm，有上界测试） |
-| P2 | 实时桥接 + `Session` 的 live 模式 | 待做 |
-| P3 | 前端启用 `live`、显示跟踪延迟 | 待做 |
+| P2 | 实时桥接 + `Session` 的 live 模式 | ✅ 已实现（回放模式） |
+| P3 | 前端启用 `live`、显示跟踪延迟 | ✅ 已实现 |
+| P4 | 真摄像头采集 | 待做（只差取图那一层） |
 
-**P1b 是闸门**：如果表情段对不上，说明训练侧用的不是 RDF 的原始输出，
-整个 live 方案的前提要重估。所以在写实时回路之前先把它验掉。
+~~P1b 是闸门~~：已完成。参数转换的代价是 **0.33 mm** 的高斯位置误差（见 §5b）。
+
+## 9. 已验证的链路
+
+`tests/unit/test_live_pipeline.py`（14 项，**不需要 GPU / RDF**）：
+
+| 覆盖 | 方式 |
+|---|---|
+| 帧格式往返 | 纯函数 |
+| 分片读取 | 真实回环 socket，帧被切成 4 KB 片段 |
+| latest-wins | 连发 10 帧，只保留 seq=9 |
+| 过期判定 | 把 `received_at` 做旧，验证 `max_age_s` |
+| 无桥接时不崩 | 连一个没人监听的端口 |
+| 5023→5083、118→129 | 假客户端注入观测 |
+| Session live 分支 | 直接调 `_frame_inputs()` |
+| 不可用时的提示 | 断言提示里含可执行命令 |
+
+另做了一次**真实端到端冒烟**（假桥接喂 crh_2 的真实 RDF 数据）：
+连接 → 收帧 28 fps → `_frame_inputs()` 给出 `(1,5083,3)` 与 `(1,129)`，
+网格与真值最匹配帧差 **0.92 mm**。

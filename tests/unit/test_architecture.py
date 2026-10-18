@@ -202,30 +202,68 @@ def test_flame_dtype_is_not_overridden() -> None:
         "不得覆盖 FLAME 的 dtype（会导致 Double/Float 混算）：\n  " + "\n  ".join(offenders))
 
 
-def test_scripts_trigger_compat_before_chumpy() -> None:
-    """**回归测试**：会加载 FLAME pickle 的脚本必须在模块层先触发 numpy 兼容补丁。
+def test_modules_that_unpickle_flame_import_compat() -> None:
+    """**回归测试**：要 `pickle.load` FLAME 资产的模块必须显式导入 `compat`。
 
-    背景：FLAME 的旧封装（`pickle.load` → `import chumpy`）依赖 numpy 已移除的
-    别名（`np.int` 等），补丁由 `import live3dgsavatar` 在导入期施加。
+    FLAME 的 pickle 里含 chumpy 对象，而 chumpy 在新版 numpy / Python 下有
+    两个独立的兼容问题（numpy 2.x 的标量别名、Python 3.11 移除的
+    `inspect.getargspec`）。补丁在 `live3dgsavatar.compat` 里，**导入即生效**。
 
-    ⚠️ **本项目已不再使用那套 FLAME 封装**：拓扑改为直接读 pickle
-    （见 `data/flame_topology.py`），不 import chumpy。因此 `data/scene.py`
-    不再需要这条约束。仍保留对脚本的检查——它们可能间接加载参照侧的代码。
+    ⚠️ 曾经的做法是"包初始化时急切施加补丁"，靠 `import live3dgsavatar` 触发。
+    那样有代价：任何导入本包的模块都会被拖去 import chumpy ——
+    桥接进程（只需要纯 `struct` 打包）在 RDF 环境里因此直接崩掉。
+    现在改为**按需导入**，这条测试守的就是"按需"这件事：需要的地方不能忘。
+
+    注意 `tracking/rdf_wire.py` 这类纯逻辑模块**不应该**导入 compat ——
+    反向的约束由 `test_pure_modules_do_not_pull_in_chumpy` 守。
     """
-    targets = [REPO_ROOT / "scripts" / "render_test.py",
-               REPO_ROOT / "scripts" / "profile_deform.py"]
-    for path in targets:
+    must_have = [
+        REPO_ROOT / "src" / "live3dgsavatar" / "data" / "flame_topology.py",
+        REPO_ROOT / "src" / "live3dgsavatar" / "data" / "flame_model.py",
+        REPO_ROOT / "src" / "live3dgsavatar" / "data" / "checkpoint_loader.py",
+    ]
+    for path in must_have:
         assert path.exists(), f"缺少文件：{path}"
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        top_level_import = any(
-            (isinstance(n, ast.Import) and any(a.name == "live3dgsavatar" for a in n.names))
-            or (isinstance(n, ast.ImportFrom) and n.module == "live3dgsavatar")
+        # 三种写法都要认：`from .. import compat`（本项目实际用的）、
+        # `from ..compat import x`、`import a.b.compat`
+        found = any(
+            (isinstance(n, ast.ImportFrom)
+             and (n.module or "").split(".")[-1] == "compat")
+            or (isinstance(n, ast.ImportFrom)
+                and any(a.name == "compat" for a in n.names))
+            or (isinstance(n, ast.Import)
+                and any(a.name.split(".")[-1] == "compat" for a in n.names))
             for n in tree.body
         )
-        assert top_level_import, (
-            f"{path.name} 必须在模块层 `import live3dgsavatar`；"
-            "否则 numpy 兼容补丁可能晚于首次 pickle 加载而失效")
+        assert found, (
+            f"{path.name} 必须在模块层导入 compat（否则第一次 unpickle FLAME 时"
+            "补丁尚未生效，会抛 chumpy 的 ImportError/AttributeError）")
 
+
+def test_pure_modules_do_not_pull_in_chumpy() -> None:
+    """纯逻辑模块导入时**不得**触发 chumpy —— 否则桥接进程会崩。
+
+    真实事故：桥接脚本（跑在 RDF 的 py3.11 环境，那里的 chumpy 需要另一种补丁）
+    只 import 了 `tracking.rdf_wire`，却因为包初始化急切施加补丁而崩在
+    `inspect.getargspec`。
+    """
+    import subprocess
+    import sys as _sys
+
+    code = (
+        "import sys\n"
+        "sys.path.insert(0, r'{}')\n"
+        "from live3dgsavatar.tracking import rdf_wire\n"
+        "assert 'chumpy' not in sys.modules, 'chumpy was imported'\n"
+        "assert 'live3dgsavatar.compat' not in sys.modules, 'compat was imported'\n"
+        "print('ok', rdf_wire.VERSION)\n"
+    ).format(SRC)
+    r = subprocess.run([_sys.executable, "-c", code], capture_output=True,
+                       text=True, timeout=120)
+    assert r.returncode == 0, (
+        "纯逻辑模块把 chumpy 拖进来了：\n"
+        f"stdout={r.stdout[-400:]}\nstderr={r.stderr[-600:]}")
 def test_no_undefined_names_across_project() -> None:
     """**静态检查**：全项目不得有未定义名字。
 
@@ -507,3 +545,30 @@ def test_app_cli_help_works() -> None:
         f"--help 应成功，实际 {r.returncode}\nstdout={r.stdout[-500:]}\n"
         f"stderr={r.stderr[-800:]}")
     assert "--subject" in r.stdout
+
+
+def test_scripts_with_main_have_entry_point_guard() -> None:
+    """**回归测试**：定义了 `main()` 的脚本必须有 `if __name__ == "__main__"`。
+
+    真实事故：重写 `rdf_bridge.py` 的 `main()` 时把文件尾部的入口判断一起截掉了。
+    脚本从此**什么都不做、退出码 0、没有任何输出** —— 看起来像"跑完了"，
+    实际上 `main()` 从没被调用。这种失效没有任何报错，只能靠静态检查发现。
+    """
+    import ast
+
+    for path in sorted((REPO_ROOT / "scripts").glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        has_main = any(
+            isinstance(n, ast.FunctionDef) and n.name == "main" for n in tree.body)
+        if not has_main:
+            continue
+        guarded = any(
+            isinstance(n, ast.If)
+            and isinstance(n.test, ast.Compare)
+            and isinstance(n.test.left, ast.Name)
+            and n.test.left.id == "__name__"
+            for n in tree.body
+        )
+        assert guarded, (
+            f"{path.name} 定义了 main() 却没有 `if __name__ == \"__main__\"` 入口 —— "
+            "运行它会静默退出（0，无输出），main() 永远不会被调用")

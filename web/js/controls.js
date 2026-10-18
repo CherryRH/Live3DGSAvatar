@@ -45,6 +45,7 @@ export class Controls {
       frameOut: root.querySelector("#o-frame"),
       total: root.querySelector("#o-total"),
       source: root.querySelector("#f-source"),
+      liveStatus: root.querySelector("#live-status"),
       amp: root.querySelector("#f-amp"),
       ampOut: root.querySelector("#o-amp"),
       perturb: root.querySelector("#f-perturb"),
@@ -77,6 +78,12 @@ export class Controls {
     }
     // ⚠️ 不再回填 render.* —— 这些参数的唯一 UI 在设置面板，
     //    这里若也写一份，两边会互相覆盖（历史 bug）。
+    // 数据源：刷新页面后要恢复成后端正在用的那个
+    const kind = state.render?.source_kind;
+    if (typeof kind === "string"
+        && [...el.source.options].some((o) => o.value === kind)) {
+      el.source.value = kind;
+    }
     const drive = state.drive;
     if (drive) {
       if (typeof drive.frame === "number") el.frame.value = String(drive.frame);
@@ -84,6 +91,7 @@ export class Controls {
       if (typeof drive.playing === "boolean") this._setPlayButton(drive.playing);
       if (typeof drive.perturb === "boolean") el.perturb.checked = drive.perturb;
     }
+    if (state.live) this.applyLiveStatus(state.live);
     if (state.dataset?.num_frames) this.setFrameRange(state.dataset.num_frames);
     this._renderOutputs();
   }
@@ -195,6 +203,33 @@ export class Controls {
     // 会丢失刚选的帧号（拖动期间不发消息，详见 `_dragging` 的处理）。
     // 播放推进本身仍由**服务端**负责：渲染循环每出一帧推进一次。
     this._emitParams();
+  }
+
+  /**
+   * 显示实时驱动状态。**只做显示，不禁用控件** ——
+   * live 不可用时后端会返回明确错误，让用户看到"为什么不行"，
+   * 比把下拉框置灰（点不动、也没提示）更有用。
+   */
+  applyLiveStatus(live) {
+    const el = this.el.liveStatus;
+    if (!el) return;
+    const usingLive = this.el.source.value === "live";
+    el.hidden = !usingLive;
+    if (!usingLive) return;
+
+    // 回退态优先提示：此时画面上是**数据集首帧**，不是摄像头画面 ——
+    // 不明确说明的话，用户会以为摄像头在工作。
+    if (live.fallback) {
+      el.textContent = `⚠ 显示首帧（${live.reason ?? "摄像头未就绪"}）`;
+    } else if (!live.enabled) {
+      el.textContent = "实时驱动已在配置里关闭";
+    } else if (!live.connected) {
+      el.textContent = "未连接桥接进程（请先运行 scripts/rdf_bridge.py）";
+    } else if (!live.available) {
+      el.textContent = `已连接，但 ${live.max_age_s}s 内没有新帧`;
+    } else {
+      el.textContent = `RDF ${live.fps ?? 0} FPS · 帧间隔 ${live.age_s ?? 0}s`;
+    }
   }
 
   /** 组装并发送一条 `params` 消息。 */

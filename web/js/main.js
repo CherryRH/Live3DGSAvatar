@@ -100,6 +100,9 @@ function updateStats(status) {
   // 帧号与播放状态以**后端**为准，避免两端各记一份而漂移。
   // 后端按 render.status_interval_s（默认 4 Hz）周期推 status，
   // 因此播放时帧号条会平滑推进（只在控制消息后回 status 则不会动）。
+  // live 状态会变（桥接起停、断流），只在 /api/state 里给一次是不够的
+  if (status.live) controls.applyLiveStatus(status.live);
+
   if (typeof status.frame === "number" || typeof status.playing === "boolean") {
     controls.applyPlayback({ frame: status.frame, playing: status.playing });
   }

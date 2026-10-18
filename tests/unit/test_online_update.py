@@ -274,3 +274,133 @@ def test_updater_can_continue_from_state() -> None:
     # `state.step` 是**累计**步数；`report.steps` 只是本轮步数
     assert st2.step > st1.step, f"累计步数应增长：{st1.step} → {st2.step}"
     assert st2.step == st1.step + r2.steps
+
+
+def test_update_state_roundtrips_through_npz(tmp_path) -> None:
+    """增量存成 `.npz` 再读回来必须一致。
+
+    两个坑都踩过：
+
+    1. `to_dict()` 里除了 tensor 还有 `step`（Python int），
+       一律 `.numpy()` 会 `AttributeError: 'int' object has no attribute 'numpy'`
+    2. 读回来的值是 **numpy 数组**，而 `from_dict` 原先只认 tensor
+       （`.to(device)` 不存在），于是"存下来再加载"直接崩
+    """
+    import numpy as np
+    import torch
+
+    from live3dgsavatar.training.updater import UpdateState
+
+    state = UpdateState(color_delta=torch.randn(6, 1, 3),
+                        opacity_delta=torch.randn(6, 1), step=9)
+
+    # 与脚本里一致：tensor 用 .numpy()，标量用 np.asarray
+    arrays = {k: (v.numpy() if hasattr(v, "numpy") else np.asarray(v))
+              for k, v in state.to_dict().items()}
+    path = tmp_path / "state.npz"
+    np.savez(path, **arrays)
+
+    with np.load(path) as d:
+        restored = UpdateState.from_dict({k: d[k] for k in d.files})
+
+    assert restored.step == 9
+    assert torch.allclose(restored.color_delta, state.color_delta)
+    assert torch.allclose(restored.opacity_delta, state.opacity_delta)
+
+
+def test_update_state_roundtrips_without_opacity(tmp_path) -> None:
+    """`update_opacity=False` 时 `opacity_delta` 为 None，存/取都不能出错。"""
+    import numpy as np
+    import torch
+
+    from live3dgsavatar.training.updater import UpdateState
+
+    state = UpdateState(color_delta=torch.zeros(3, 1, 3), opacity_delta=None, step=1)
+    arrays = {k: (v.numpy() if hasattr(v, "numpy") else np.asarray(v))
+              for k, v in state.to_dict().items()}
+    path = tmp_path / "s.npz"
+    np.savez(path, **arrays)
+
+    with np.load(path) as d:
+        restored = UpdateState.from_dict({k: d[k] for k in d.files})
+    assert restored.opacity_delta is None
+    assert restored.step == 1
+
+
+def test_fit_uses_all_frames_across_steps() -> None:
+    """每一步应轮转到**不同的**帧，而不是永远用前 `frame_chunk` 个。
+
+    真实缺陷：原先写的是 `batch.frames[:frame_chunk]` —— 300 帧观测、
+    `frame_chunk=8` 时只有前 8 帧产生过梯度，另外 292 帧只参与评估。
+    用户以为"用 300 帧更新"，实际只用了 8 帧。
+    """
+    import torch
+
+    from live3dgsavatar.core.types import Camera, Mesh
+    from live3dgsavatar.training import OnlineUpdater, UpdateConfig
+    from live3dgsavatar.training.observations import (BatchObservation,
+                                                      FrameObservation)
+
+    seen: list[str] = []
+
+    class _RecordingRasterizer:
+        def render(self, gaussians, camera, background, target_image=None):
+            from live3dgsavatar.core.types import RenderOutput
+            # 必须与 `gaussians` 保持梯度连接，否则 `loss.backward()` 会报
+            # "does not require grad" —— 真实光栅化器天然是可微的。
+            base = gaussians.color.sum() * 0.0
+            color = base.expand(1, 3, 4, 4)
+            return RenderOutput(color=color,
+                                alpha=torch.ones(1, 1, 4, 4),
+                                est_color=None, est_weight=None, radii=None)
+
+    class _Avatar:
+        num_gaussians = 6
+        num_basis = 2
+        opacity = torch.zeros(6, 1)
+        color = torch.zeros(6, 1, 3)      # UpdateState.zeros 要用它的 device/dtype
+
+        def deform(self, mesh, weight):
+            from live3dgsavatar.core.types import GaussianSet
+            n, b = 6, mesh.verts.shape[0]
+            return GaussianSet(
+                xyz=torch.zeros(b, n, 3), rotation=torch.zeros(b, n, 4),
+                scaling=torch.zeros(b, n, 3), opacity=torch.zeros(b, n, 1),
+                color=torch.zeros(b, n, 1, 3), space="world")
+
+    def make_obs(name: str) -> FrameObservation:
+        return FrameObservation(
+            mesh=Mesh(verts=torch.zeros(1, 4, 3), faces=torch.zeros(1, 3, dtype=torch.int32),
+                      uvs=torch.zeros(1, 2), uv_faces=torch.zeros(1, 3, dtype=torch.int32)),
+            blend_weight=torch.zeros(1, 129),
+            target=torch.zeros(1, 3, 4, 4), mask=torch.ones(1, 1, 4, 4), name=name)
+
+    # 用名字记录访问顺序：让 rasterizer 在 render 时被调用，但我们需要的是
+    # `_forward` 收到的 obs —— 改从 loss_fn 侧记录更直接。
+    frames = [make_obs(f"{i:05d}") for i in range(6)]
+
+    recorded: list[list[str]] = []
+
+    class _RecordingLoss:
+        def __call__(self, out, obs):
+            # ⚠️ 只记录**训练步**：`fit()` 前后的 `_evaluate` 会在 no_grad 下
+            #    遍历全部帧；若把它们也记进来，测试就变成"评估覆盖了全部帧"，
+            #    无论训练用几帧都会通过 —— 测不到真正的缺陷。
+            if torch.is_grad_enabled():
+                current.append(obs.name)
+            return out.color.sum(), {"loss": 0.0, "psnr": 0.0}
+
+    current: list[str] = []
+    cam = Camera.from_intrinsics_extrinsics(
+        K=torch.eye(3), R=torch.eye(3), T=torch.zeros(3), width=4, height=4)
+
+    updater = OnlineUpdater(_Avatar(), _RecordingRasterizer(),
+                            config=UpdateConfig(steps=3, time_budget_s=60.0,
+                                                frame_chunk=2, log_every=0),
+                            loss_fn=_RecordingLoss())
+    batch = BatchObservation(frames=frames, camera=cam, )
+    updater.fit(batch, background=torch.zeros(3))
+
+    # 3 步 × 每步 2 帧 = 6 次，应覆盖全部 6 帧且每帧一次
+    names = current[:6]
+    assert len(set(names)) == 6, f"6 步内应覆盖全部帧，实际只用到 {sorted(set(names))}"

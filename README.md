@@ -51,9 +51,16 @@ python scripts/render_test.py --frames -1 --batch-size 4 --dump-diff
 # 无 GPU 的形状/约定自检
 python scripts/render_test.py --dry-run
 
+# 实时驱动：桥接进程（realdenseface 环境）+ GUI 里切「实时驱动」
+python scripts/rdf_bridge.py --images ~/Datasets/INSTA/crh_2/input --port 8980 --fps 30 --loop
+
 # 在线更新（热更新）：先测闭式颜色校正（无需 GPU）
 python scripts/online_update.py --dry-run
 python scripts/online_update.py --frames 8 --time-budget 10
+
+# 跨对象更新 + 对比图（crh_2 的画面 → crh_1 的模型）
+python scripts/online_update.py --subject crh_1 --data-subject crh_2 \
+    --frames 300 --compare-frames 8
 ```
 
 ### GUI 常用参数

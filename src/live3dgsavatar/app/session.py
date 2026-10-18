@@ -70,12 +70,17 @@ class RenderParams:
             setattr(self, key, value)
 
     def to_dict(self) -> dict:
-        """给前端的 `render` 子集。"""
+        """给前端的 `render` 子集。
+
+        含 `source_kind`：否则刷新页面后数据源会退回"数据集采样"，
+        而实际后端还在按 live 驱动 —— 界面与状态不一致。
+        """
         return {
             "background": list(self.background),
             "scaling_modifier": self.scaling_modifier,
             "scale": self.scale,
             "target_fps": self.target_fps,
+            "source_kind": self.source_kind,
         }
 
     def to_drive_dict(self) -> dict:
@@ -114,9 +119,19 @@ class Session:
         self.scene = None
         # 帧号推进状态（播放/单步）。total 在模型载入后确定。
         self.timeline: FrameTimeline | None = None
+        # 实时驱动源（live 数据源）。**构造即创建**，但不 enabled 时不连。
+        self.live = None            # type: ignore[assignment]
         self.camera = None
         self._rasterizer = None
         self._mesh_cache: dict[int, object] = {}
+        #: 最近一次 `_frame_inputs()` 用的内容键（用于"没变就不重渲"）
+        self._last_input_key: tuple | None = None
+        #: live 模式下当前是否在显示**回退帧**（摄像头未就绪）
+        self.live_fallback = False
+
+        from ..tracking.live_source import LiveSource  # noqa: PLC0415
+
+        self.live = LiveSource(cfg, self.device)
         # 统计（供 status 消息）
         self.peak_memory_mib = 0.0
         self.last_frame_ms = 0.0
@@ -189,6 +204,21 @@ class Session:
         self._reset_counters()
         return self.state()
 
+    def live_brief(self) -> dict:
+        """给 `status` 的紧凑 live 状态。"""
+        st = self.live.status()
+        return {
+            "enabled": st["enabled"],
+            "connected": st["connected"],
+            "available": st["available"],
+            "fps": st["fps"],
+            "age_s": st["age_s"],
+            "max_age_s": st["max_age_s"],
+            "fallback": self.live_fallback,
+            "reason": (self._live_unavailable_reason()
+                       if self.live_fallback else None),
+        }
+
     def state(self) -> dict:
         """/api/state 的返回体。"""
         cfg = self.cfg
@@ -197,6 +227,10 @@ class Session:
             "work_name": str(cfg.work_name),
             "render": self.params.to_dict(),
             "drive": self.params.to_drive_dict(),
+            "live": {**self.live.status(),
+                     "fallback": self.live_fallback,
+                     "reason": (self._live_unavailable_reason()
+                                if self.live_fallback else None)},
         }
         if self.avatar is not None:
             out["model"] = {
@@ -315,10 +349,40 @@ class Session:
     # ------------------------------------------------------------ 内部 --
 
     def _frame_inputs(self):
-        """按当前驱动模式取出 `(mesh [1,V,3], blend_weight [1,D])`。"""
-        # 帧号以 timeline 为准（后端推进播放），params.frame 只是它的镜像
+        """按当前驱动模式取出 `(mesh [1,V,3], blend_weight [1,D])`。
+
+        `live` 与 `checkpoint` 的**唯一**差别就在这里：前者从桥接进程取
+        最新观测，后者从数据集的当前帧取。下游（deform/rasterize）完全一样 ——
+        这正是把驱动来源做成可替换层的目的。
+
+        **live 没有数据时回退到数据集首帧**（而不是报错）：通话时摄像头
+        可能未就绪或断流，此时让画面停在首帧比黑屏/断流合理。
+        `self.live_fallback` 会置真，前端据此显示原因。
+        """
+        if self.params.is_live:
+            obs = self.live.observation()
+            if obs is not None:
+                self.live_fallback = False
+                # ⚠️ `observation()` 返回的是 `(mesh, weight)`，不是 Observation ——
+                #    内容键要另外取序号。
+                self._last_input_key = ("live", self.live.current_seq())
+                return obs
+            # 回退：停在数据集首帧
+            self.live_fallback = True
+            self._last_input_key = ("live-fallback",)
+            return self._dataset_frame(0)
+
         assert self.timeline is not None
         idx = self.timeline.index
+        self.live_fallback = False
+        self._last_input_key = ("dataset", idx, self.params.perturb,
+                                round(float(self.params.amplitude), 6))
+        return self._dataset_frame(idx)
+
+    def _dataset_frame(self, idx: int):
+        """取数据集某帧的 `(mesh, blend_weight)`，并应用调试扰动。"""
+        assert self.scene is not None
+        idx = max(0, min(int(idx), self.scene.num_frames - 1))
         cached = self._mesh_cache.get(idx)
         if cached is None:
             frame = self.scene.frames[idx]
@@ -329,18 +393,46 @@ class Session:
             self._mesh_cache[idx] = cached
         mesh, weight = cached
 
-        # 帧号取 timeline.index（推进由渲染循环负责，仅在 playing 时发生）；
-        # `perturb` 是与之正交的调试开关。
+        # `perturb` 是与驱动模式正交的调试开关。
+        # **用帧号做种子**：同一帧号重复请求给出同一扰动，
+        # 否则"审查"时画面会一直抖，无法判断是模型问题还是随机性。
         if self.params.perturb:
-            # 以当前帧为基准加扰动。
-            # **用帧号做种子**：同一帧号重复请求给出同一扰动，
-            # 否则"审查"时画面会一直抖，无法判断是模型问题还是随机性。
             g = torch.Generator(device=weight.device)
             g.manual_seed(0x5EED + idx)
             noise = torch.randn(weight.shape, generator=g,
                                 device=weight.device, dtype=weight.dtype)
             weight = weight + self.params.amplitude * noise
         return mesh, weight
+
+    def live_frame_pending(self) -> bool:
+        """live 模式下是否有一帧**尚未渲染过**的内容。
+
+        为什么需要它：RDF 约 15 fps、渲染可以 45 fps。若照常按帧数上限渲染，
+        **同一份内容会被重复渲染 3 次**，白白占用 GPU —— 而 GPU 正是 RDF 的
+        瓶颈，等于自己在拖慢自己。
+
+        非 live 模式恒返回 ``True``：数据集模式保持原有语义
+        （"暂停 ≠ 停止渲染"，链路始终是活的）。
+        """
+        if not self.params.is_live:
+            return True
+        seq = self.live.current_seq()
+        key = ("live", seq) if seq is not None else ("live-fallback",)
+        return key != self._last_input_key
+
+    def _live_unavailable_reason(self) -> str:
+        """live 不可用时的**可执行**提示（而不是只报"无数据"）。"""
+        st = self.live.status()
+        if not st["enabled"]:
+            return "实时驱动已关闭（tracking.enabled = false）"
+        if not st["connected"]:
+            err = st.get("error")
+            return ("未连接 RDF 桥接进程"
+                    + (f"（{err}）" if err else "")
+                    + "。请先运行：conda activate realdenseface && "
+                      "python scripts/rdf_bridge.py --camera 0")
+        return ("已连接，但最近 "
+                f"{self.live.max_age_s:.1f}s 内没有新帧（RDF 可能卡住）")
 
     @staticmethod
     def _downscale(rgb: torch.Tensor, w: int, h: int) -> torch.Tensor:

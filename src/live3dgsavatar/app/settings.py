@@ -248,6 +248,16 @@ FIELDS: tuple[Field, ...] = (
        help="stdout 统计日志的节奏；与前端 FPS 解耦"),
     _f("smoke.max_frames", "冒烟测试帧数上限", "system", "int", order=270,
        reason="只影响自检脚本"),
+    _f("tracking.enabled", "启用实时驱动", "system", "bool", order=30,
+       editable=True,
+       help="live 数据源的总开关。需要桥接进程（scripts/rdf_bridge.py）在运行"),
+    _f("tracking.max_age_s", "实时帧过期时间", "system", "float", order=31,
+       editable=True, minimum=0.1, maximum=30.0, step=0.1, unit="s",
+       help="超过这么久没有新帧就认为 live 中断"),
+    _f("tracking.host", "桥接地址", "system", "text", order=32,
+       reason="连接在会话建立时创建；改了需重启服务", requires="restart"),
+    _f("tracking.port", "桥接端口", "system", "int", order=33,
+       reason="同上：需重启服务", requires="restart"),
 )
 
 #: 快速查表

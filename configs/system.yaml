@@ -73,6 +73,18 @@ paths:
   # 用作 PSNR 的 GT。
   image_subdir: images
 
+# 实时驱动（live 数据源）。RDF 以**独立进程**运行（环境不兼容），
+# 通过本机 TCP 把参数与顶点送过来。见 docs/LIVE_DRIVING.md。
+tracking:
+  # 总开关。关闭后 live 数据源不可用，前端会显示原因。
+  enabled: true
+  # 桥接进程的地址（scripts/rdf_bridge.py 监听）。
+  host: 127.0.0.1
+  port: 8980
+  # 超过这么久没有新帧就认为 live 中断（秒）。
+  # 太大会让"画面冻住但仍在渲染"难以察觉；太小会在 RDF 抖动时闪烁。
+  max_age_s: 1.0
+
 # 运行设备与精度。
 runtime:
   device: cuda          # cuda | cpu（cpu 仅供不依赖 CUDA 内核的自检）

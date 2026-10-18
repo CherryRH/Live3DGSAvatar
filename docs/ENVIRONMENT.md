@@ -134,7 +134,40 @@ pip install -r requirements.txt
 **采取的方案**：放开 numpy（由其他依赖自然解析为 2.x），改在 `src/live3dgsavatar/compat/` 里
 补齐 numpy 2.x 移除的 7 个别名（`bool/int/float/complex/object/unicode/str`）。
 补丁仅在别名缺失时生效，numpy 1.x 下自动无操作。
-`live3dgsavatar/__init__.py` 保证它在任何 chumpy 相关导入之前执行。
+
+### chumpy 有**两个**独立的不兼容维度
+
+| # | 问题 | 触发条件 | 补丁 |
+|---|---|---|---|
+| 1 | numpy 2.x 移除标量别名（`np.int` 等） | numpy ≥ 1.24 | 补齐 7 个别名 |
+| 2 | Python 3.11 移除 `inspect.getargspec` | **Python ≥ 3.11**（与 numpy 无关） | 用 `getfullargspec` 实现替身 |
+
+两者都可能独立触发。第 2 条是在 **RDF 的 py3.11 环境**里暴露的：
+`chumpy/ch.py:1203` 执行 `inspect.getargspec(func).args`，在 3.11 下直接
+`AttributeError`。
+
+### 补丁是**按需**导入的，不是包初始化的一部分
+
+```
+data/flame_topology.py   ─┐
+data/flame_model.py      ─┼─→ from .. import compat   （要 unpickle FLAME 资产）
+data/checkpoint_loader.py─┘
+```
+
+**为什么不再在 `live3dgsavatar/__init__.py` 里急切施加**：
+
+补丁会 `import chumpy` 做自检。桥接进程（`scripts/rdf_bridge.py`，跑在 RDF 的
+py3.11 环境）只需要 `tracking/rdf_wire.py` 里的纯 `struct` 打包，却因为
+"导入本包"被拖去 import chumpy，于是在
+`inspect.getargspec` 上直接崩掉 —— 而那个环境里的 chumpy 是给 RDF 自己
+用 `common/fix_chumpy` 打补丁的，与我们无关。
+
+代价是"需要补丁的地方不能忘"。这条由测试守住：
+
+| 测试 | 守什么 |
+|---|---|
+| `test_modules_that_unpickle_flame_import_compat` | 三个要 unpickle 的模块必须显式导入 compat |
+| `test_pure_modules_do_not_pull_in_chumpy` | 子进程导入 `tracking.rdf_wire` 后，`sys.modules` 里**不得**有 chumpy |
 
 **实测结果**（Python 3.10.21 + numpy 2.2.6）：
 

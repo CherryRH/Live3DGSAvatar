@@ -52,10 +52,11 @@
       <div class="player-row player-row--sub">
         <label class="inline">数据源
           <select id="f-source">
-            <option value="checkpoint">数据集采样（checkpoint）</option>
-            <option value="live" disabled>实时采集（live）· 待接入</option>
+            <option value="checkpoint">数据集采样</option>
+            <option value="live">实时驱动（RDF）</option>
           </select>
         </label>
+        <span class="hint" id="live-status" hidden></span>
         <label class="inline">
           <input id="f-perturb" type="checkbox"> 调试·随机扰动
         </label>

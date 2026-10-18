@@ -175,7 +175,7 @@ Live3DGSAvatar/
 │   │   ├── flame_model.py       #   FLAME 前向（checkpoint 格式需要）
 │   │   └── checkpoint_loader.py  #   参照格式数据集（每帧 .frame）
 │   ├── training/                # 在线更新（observations/losses/color_fit/updater）
-│   ├── tracking/                # 待实现（Tracker 协议 + 离线 metrical-tracker 适配）
+│   ├── tracking/                # 实时驱动（RDF 桥接 + 参数转换 + 补牙齿）
 │   ├── runtime/                 # 待实现（AvatarRuntime 门面、服务端会话）
 │   ├── streaming/               # 待实现（编码/传输）
 │   ├── app/                     # GUI 后端：protocol / session / server

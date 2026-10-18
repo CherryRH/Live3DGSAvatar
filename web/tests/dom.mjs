@@ -105,6 +105,7 @@ function makeRoot() {
     "#f-source": el("select", { value: "checkpoint" }),
     "#f-amp": el("input", { value: "0.1" }), "#o-amp": el("output"),
     "#f-perturb": el("input", { checked: false }),
+    "#live-status": el("span"),
     // 操作
     "#btn-pause": el("button"), "#btn-capture": el("button"), "#btn-reconnect": el("button"),
   };

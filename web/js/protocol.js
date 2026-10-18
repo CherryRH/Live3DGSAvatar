@@ -23,7 +23,7 @@ export const PROTOCOL_VERSION = 1;
  *
  * 改前端时请顺手更新此值。
  */
-export const BUILD_TAG = "2026-02-gui7";
+export const BUILD_TAG = "2026-02-gui9";
 
 /**
  * 解析一条二进制帧。
