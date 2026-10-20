@@ -7,7 +7,8 @@
 ## 快速开始
 
 ```bash
-git clone https://github.com/CherryRH/Live-3DGS-Avatar && cd Live3DGSAvatar
+git clone https://github.com/CherryRH/Live3DGSAvatar
+cd Live3DGSAvatar
 
 bash setup_env.sh          # 建环境 + 编译本地 CUDA 扩展（只需一次）
 conda activate live3dgs
