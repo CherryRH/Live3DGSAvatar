@@ -64,6 +64,11 @@ python scripts/show_config.py --json          # 机器可读
 | `paths.model_ply` | 显式指定模型文件。`null` 表示按下面的顺序自动查找 |
 | `paths.models_config` | 显式指定模型随附的 `config.yaml`。`null` 表示从模型目录里读 |
 | `paths.image_subdir` | 数据集原图子目录（默认 `images`），用作 PSNR 的 GT |
+| `tracking.enabled` | 实时驱动总开关。关闭后 `live` 不可用 |
+| `tracking.host` / `tracking.port` | 追踪服务地址（默认 `127.0.0.1:8980`）|
+| `tracking.max_age_s` | 超过此时长没有新观测即视为中断（秒）|
+| `tracking.source_fps` | 送给追踪服务的画面节奏上限（帧/秒），0 为不限 |
+| `tracking.frame_subdir` | 送哪个目录的画面：`auto`（优先 `input/`，无则 `images/`）/ `input` / `images` |
 | `runtime.device` | `cuda` 或 `cpu`。`cpu` 仅供不依赖 CUDA 内核的自检 |
 | `runtime.split` | 数据集切分：`all` / `train` / `test` |
 | `smoke.max_frames` | 采样帧数上限；`null` 表示不限制 |
@@ -207,7 +212,7 @@ output_dir: output                     # output 特殊：相对**当前工作目
 
 ## 5.5 `train.yaml` 字段
 
-### `train.pipeline` —— 完整训练（待接入）
+### `train.pipeline` —— 完整训练（合作方提供，暂未接入）
 
 | 键 | 默认 | 说明 |
 |---|---|---|

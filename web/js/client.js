@@ -10,7 +10,7 @@
  * 3. **重连用指数退避**：后端重启时不至于把日志刷满。
  */
 
-import { parseFrame, parseMessage, geometryFromConfig } from "./protocol.js";
+import { MSG_TARGET, parseFrame, parseMessage, geometryFromConfig } from "./protocol.js";
 
 const RECONNECT_BASE_MS = 500;
 const RECONNECT_MAX_MS = 8000;
@@ -147,6 +147,13 @@ export class RenderClient extends EventTarget {
       frame = parseFrame(ev.data, this.geometry);
     } catch (err) {
       this._emitError(err);
+      return;
+    }
+
+    // 对比帧独立派发：它不参与"最新一帧"的节流（那是渲染帧的逻辑）。
+    // 顺序上后端保证它紧跟同一 seq 的渲染帧，所以直接画即可。
+    if (frame.kind === MSG_TARGET) {
+      this.dispatchEvent(new CustomEvent("target", { detail: frame }));
       return;
     }
 

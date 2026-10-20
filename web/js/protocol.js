@@ -9,7 +9,8 @@
  */
 
 /** 帧头长度（字节）。 */
-export const HEADER_BYTES = 4;
+//: `<B 类型><I seq><f psnr>`，与后端 `protocol.FRAME_HEADER_BYTES` 一致
+export const HEADER_BYTES = 9;
 
 /** 协议版本；与后端不一致时应显式报错，而不是画出错位的图。 */
 export const PROTOCOL_VERSION = 1;
@@ -23,7 +24,7 @@ export const PROTOCOL_VERSION = 1;
  *
  * 改前端时请顺手更新此值。
  */
-export const BUILD_TAG = "2026-02-gui9";
+export const BUILD_TAG = "2026-02-gui16";
 
 /**
  * 解析一条二进制帧。
@@ -33,6 +34,10 @@ export const BUILD_TAG = "2026-02-gui9";
  * @returns {{seq:number, pixels:Uint8ClampedArray}}
  * @throws {Error} 几何未配置或长度不符时抛出（宁可报错也不画出错位的图）
  */
+/** 二进制帧类型：1 = 渲染结果，2 = 对比目标（数据集原图）。 */
+export const MSG_RENDER = 1;
+export const MSG_TARGET = 2;
+
 export function parseFrame(buffer, geom) {
   if (!geom || !geom.width || !geom.height) {
     throw new Error("尚未收到 config，无法解析帧");
@@ -47,9 +52,12 @@ export function parseFrame(buffer, geom) {
   }
 
   const view = new DataView(buffer);
-  const seq = view.getUint32(0, /* littleEndian = */ true);
+  // 头是 `<B 类型><I seq><f psnr>`，与后端 `protocol.py` 逐字节对齐
+  const kind = view.getUint8(0);
+  const seq = view.getUint32(1, /* littleEndian = */ true);
+  const psnr = view.getFloat32(5, /* littleEndian = */ true);
   const pixels = new Uint8ClampedArray(buffer, HEADER_BYTES);
-  return { seq, pixels };
+  return { kind, seq, psnr, pixels };
 }
 
 /**

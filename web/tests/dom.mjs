@@ -27,6 +27,11 @@ globalThis.document = {
     keyboard.handlers[ev] = (keyboard.handlers[ev] ?? []).filter((f) => f !== fn);
   },
   querySelector: () => null,
+  // Controls 会用 getElementById("stage") 切布局类；桩里返回一个可断言的对象
+  getElementById: (id) => (id === "stage" ? globalThis.__stage : null),
+};
+globalThis.Option = class Option {
+  constructor(text, value) { this.text = String(text); this.value = String(value); }
 };
 globalThis.HTMLInputElement = class HTMLInputElement {};
 globalThis.HTMLSelectElement = class HTMLSelectElement {};
@@ -84,13 +89,32 @@ function el(tag = "input", attrs = {}) {
   const listeners = {};
   return Object.assign({
     tagName: tag.toUpperCase(), value: "", disabled: false, max: "", textContent: "",
-    checked: false, options: [], classList: { toggle() {}, add() {}, remove() {} },
+    checked: false,
+    // `options` + `replaceChildren` 模拟 `<select>` 的常见用法：
+    // 真实 DOM 用 `new Option(text, value)` 追加子节点。
+    options: [],
+    replaceChildren(...items) {
+      this.options = items;
+      this.value = items.length ? items[0].value : "";
+    },
+    classList: {
+      _set: new Set(),
+      add(c) { this._set.add(c); },
+      remove(c) { this._set.delete(c); },
+      contains(c) { return this._set.has(c); },
+      toggle(c, on) {
+        const want = on === undefined ? !this._set.has(c) : Boolean(on);
+        if (want) this._set.add(c); else this._set.delete(c);
+        return want;
+      },
+    },
     addEventListener(ev, fn) { (listeners[ev] ??= []).push(fn); },
     _fire(ev) { (listeners[ev] ?? []).forEach((f) => f()); },
   }, attrs);
 }
 
 function makeRoot() {
+  globalThis.__stage = el("div");
   const map = {
     // 模型
     "#f-subject": el("input", { value: "duda" }),
@@ -102,9 +126,14 @@ function makeRoot() {
     "#btn-step-back": el("button"), "#btn-step-fwd": el("button"),
     "#f-frame": el("input", { value: "0" }), "#o-frame": el("output"),
     "#o-total": el("span"),
-    "#f-source": el("select", { value: "checkpoint" }),
+    "#f-source": el("select", { value: "checkpoint",
+                                options: [{ value: "checkpoint" }, { value: "live" }] }),
+    "#f-dataset": el("select"),
+    "#dataset-info": el("p"),
     "#f-amp": el("input", { value: "0.1" }), "#o-amp": el("output"),
     "#f-perturb": el("input", { checked: false }),
+    "#f-compare": el("input", { checked: false }),
+    "#psnr-out": el("span"),
     "#live-status": el("span"),
     // 操作
     "#btn-pause": el("button"), "#btn-capture": el("button"), "#btn-reconnect": el("button"),
@@ -143,6 +172,66 @@ t("_emitParams 装配出协议要求的层级（且不再发 render）", () => {
   c.destroy();
 });
 
+t("applyModels 填对象/版本下拉，换对象重填版本", () => {
+  const root = makeRoot();
+  const c = makeControls(root);
+  c.applyModels({
+    models: [{ subject: "alice", work_name: "run1" },
+             { subject: "alice", work_name: "run2" },
+             { subject: "bob", work_name: "test" }],
+    current: { subject: "alice", work_name: "run2" },
+  });
+  const subj = root._map["#f-subject"];
+  const work = root._map["#f-work-name"];
+  eq(subj.options.length, 2, "对象应去重成 2 个");
+  eq(subj.value, "alice");
+  eq(work.options.length, 2, "alice 下有 2 个版本");
+  eq(work.value, "run2", "应选中后端当前的版本");
+
+  // 换对象 → 版本列表跟着换
+  subj.value = "bob";
+  subj._fire("change");
+  eq(work.options.length, 1);
+  eq(work.value, "test");
+  c.destroy();
+});
+
+t("对比原图：开关会发 params.compare 并切布局", () => {
+  const root = makeRoot(); let sent = null;
+  const c = makeControls(root, { onParams: (m) => { sent = m; } });
+  ok(!globalThis.__stage.classList.contains("is-compare"), "默认不并排");
+
+  root._map["#f-compare"].checked = true;
+  root._map["#f-compare"]._fire("change");
+  eq(sent.compare, true, "应把开关发给后端");
+  ok(globalThis.__stage.classList.contains("is-compare"), "应切到并排布局");
+
+  root._map["#f-compare"].checked = false;
+  root._map["#f-compare"]._fire("change");
+  eq(sent.compare, false);
+  ok(!globalThis.__stage.classList.contains("is-compare"), "关闭后恢复单幅");
+  c.destroy();
+});
+
+t("PSNR 读数只在对比开启时显示", () => {
+  const root = makeRoot();
+  const c = makeControls(root);
+  const out = root._map["#psnr-out"];
+
+  root._map["#f-compare"].checked = false;
+  c.applyPsnr(21.5);
+  ok(out.hidden, "未开启对比时不该显示 PSNR");
+
+  root._map["#f-compare"].checked = true;
+  c.applyPsnr(21.5);
+  ok(!out.hidden, "开启后应显示");
+  ok(/21\.50/.test(out.textContent), `应显示两位小数：${out.textContent}`);
+
+  c.applyPsnr(Number.NaN);
+  ok(out.textContent.includes("–"), `无值时应显示占位：${out.textContent}`);
+  c.destroy();
+});
+
 t("勾选随机扰动 → drive.perturb=true，幅度控件启用", () => {
   const root = makeRoot(); let sent = null;
   const c = makeControls(root, { onParams: (m) => { sent = m; } });
@@ -155,16 +244,104 @@ t("勾选随机扰动 → drive.perturb=true，幅度控件启用", () => {
   c.destroy();
 });
 
-t("数据源 live → 不发送 frame/mode（该层级不适用）", () => {
+t("applyDatasets 填选项、恢复当前值、给出帧数提示", () => {
+  const root = makeRoot();
+  const c = makeControls(root);
+  c.applyDatasets({
+    datasets: [
+      { name: "crh_1", frames: 2863, is_model: true, has_input: true },
+      { name: "crh_2", frames: 3524, is_model: false, has_input: true },
+      { name: "duda", frames: 254, is_model: false, has_input: false },
+    ],
+    model_subject: "crh_1",
+    current: "crh_2",
+  });
+  const sel = root._map["#f-dataset"];
+  eq(sel.options.length, 3, "应有 3 个选项");
+  eq(sel.value, "crh_2", "应恢复后端当前的驱动数据集");
+  ok(sel.options[0].text.includes("模型自带"), `模型自带项要有标记：${sel.options[0].text}`);
+  const info = root._map["#dataset-info"].textContent;
+  ok(info.includes("3524"), `提示里应有帧数：${info}`);
+  c.destroy();
+});
+
+t("换数据集 → 走独立回调（慢操作要能显示加载浮窗）", () => {
+  const root = makeRoot();
+  let sent = null; const asked = [];
+  const c = makeControls(root, {
+    onParams: (m) => { sent = m; },
+    onDatasetChange: (name) => asked.push(name),
+  });
+  c.applyDatasets({
+    datasets: [{ name: "crh_1", frames: 10, is_model: true },
+               { name: "crh_2", frames: 20, is_model: false }],
+    model_subject: "crh_1", current: "",
+  });
+  sent = null;
+  root._map["#f-dataset"].value = "crh_2";
+  root._map["#f-dataset"]._fire("change");
+  eq(asked.length, 1, "应触发一次切换请求");
+  eq(asked[0], "crh_2");
+  ok(sent === null, "不应把数据集塞进 WS params（慢操作走 HTTP）");
+  c.destroy();
+});
+
+t("切换失败 → 下拉框回到上一次成功的值", () => {
+  const root = makeRoot();
+  const c = makeControls(root, { onDatasetChange: () => {} });
+  c.applyDatasets({
+    datasets: [{ name: "a", frames: 1, is_model: true },
+               { name: "b", frames: 2, is_model: false }],
+    model_subject: "a", current: "a",
+  });
+  root._map["#f-dataset"].value = "b";
+  c.revertDataset();
+  eq(root._map["#f-dataset"].value, "a", "应退回已提交值");
+  c.destroy();
+});
+
+t("live 模式：说明送给追踪；有 images/ 回退时不该误报", () => {
+  const root = makeRoot();
+  const c = makeControls(root);
+  // 只有 images/ 的数据集（如 duda）—— 可以喂追踪，不该报警
+  c.applyDatasets({
+    datasets: [{ name: "duda", frames: 254, is_model: false,
+                 has_input: false, has_images: true }],
+    model_subject: "crh_1", current: "duda",
+  });
+  root._map["#f-source"].value = "live";
+  c._renderDatasetInfo();
+  let info = root._map["#dataset-info"].textContent;
+  ok(info.includes("追踪"), `live 模式应说明送给追踪：${info}`);
+  ok(!info.includes("⚠"), `有 images/ 回退不应警告：${info}`);
+
+  // 两个目录都没有 → 必须警告
+  c.applyDatasets({
+    datasets: [{ name: "broken", frames: 10, is_model: false,
+                 has_input: false, has_images: false }],
+    model_subject: "crh_1", current: "broken",
+  });
+  c._renderDatasetInfo();
+  info = root._map["#dataset-info"].textContent;
+  ok(info.includes("⚠"), `无画面目录必须警告：${info}`);
+  c.destroy();
+});
+
+t("数据源 live：播放条仍有效（可暂停、可跳帧）", () => {
   const root = makeRoot(); let sent = null;
   const c = makeControls(root, { onParams: (m) => { sent = m; } });
   root._map["#f-source"].value = "live";
+  root._map["#f-frame"].value = "37";
   c._renderOutputs();
   c._emitParams();
   eq(sent.source.kind, "live");
-  eq(Object.keys(sent.drive).length, 0, "live 下 drive 应为空对象");
-  ok(root._map["#f-frame"].disabled, "live 下帧滑块应禁用");
-  ok(root._map["#btn-step-fwd"].disabled, "live 下单步应禁用");
+  // 帧号与播放态在 live 下**必须**发：取帧线程按帧号送图
+  eq(sent.drive.frame, 37, "live 下也要发帧号");
+  eq(sent.drive.playing, false, "live 下也要发播放态");
+  ok(!root._map["#f-frame"].disabled, "live 下帧滑块应可用");
+  ok(!root._map["#btn-step-fwd"].disabled, "live 下单步应可用");
+  // 调试扰动仍不适用
+  ok(root._map["#f-perturb"].disabled, "live 下扰动应禁用");
   c.destroy();
 });
 
@@ -237,6 +414,13 @@ t("拖动帧滑块期间不被回填（否则和手指打架）", () => {
 t("applyState 写入模型信息、总帧数与驱动方式", () => {
   const root = makeRoot();
   const c = makeControls(root);
+  // 先填下拉框：不在选项里的值不能被"选中"（会变成空值）
+  c.applyModels({
+    models: [{ subject: "alice", work_name: "run1" },
+             { subject: "alice", work_name: "run2" },
+             { subject: "bob", work_name: "test" }],
+    current: { subject: "alice", work_name: "run1" },
+  });
   c.applyState({
     subject: "alice", work_name: "run1",
     model: { num_gaussians: 60000, num_basis: 20, num_basis_in: 129, tex_size: 256 },

@@ -134,7 +134,6 @@ app → runtime → training → core → ext
 | `Binder` | `core/deform/bind.py` | 切空间 → 世界空间 | 位置用 **`R·x`**（`R` 列为基；布局易错，见 `docs/CONVENTIONS.md` §3.2.1） |
 | `Rasterizer` | `core/render/rasterizer.py` | 世界空间高斯 → 图像 | 唯一接触 CUDA 扩展的位置 |
 | `GaussianAvatar` | `core/avatar.py` | 参数容器 + PLY 序列化 | 网络结构由 `AvatarConfig` 显式给出 |
-| `AvatarRuntime` | `runtime/`（待实现） | 组装门面：`setup/train/render/update` | — |
 
 **约定摘要**（详见 `docs/CONVENTIONS.md`）：
 
@@ -173,11 +172,17 @@ Live3DGSAvatar/
 │   │   │                        #   支持 manifest（自包含）与 checkpoint 两种格式
 │   │   ├── flame_topology.py    #   FLAME 网格拓扑（只读资产，带缓存）
 │   │   ├── flame_model.py       #   FLAME 前向（checkpoint 格式需要）
-│   │   └── checkpoint_loader.py  #   参照格式数据集（每帧 .frame）
+│   │   ├── checkpoint_loader.py  #   参照格式数据集（每帧 .frame）
+│   │   ├── datasets.py          #   数据集发现（列出/校验可用作驱动的数据集）
+│   │   └── models.py            #   模型发现（列出含 model.ply 的目录）
 │   ├── training/                # 在线更新（observations/losses/color_fit/updater）
-│   ├── tracking/                # 实时驱动（RDF 桥接 + 参数转换 + 补牙齿）
-│   ├── runtime/                 # 待实现（AvatarRuntime 门面、服务端会话）
-│   ├── streaming/               # 待实现（编码/传输）
+│   ├── tracking/                # 实时驱动
+│   │   ├── rdf_wire.py          #   线上协议（请求/回复，自描述，纯函数）
+│   │   ├── rdf_client.py        #   追踪服务客户端（请求/响应）
+│   │   ├── frame_source.py      #   取帧器（数据集 input/，将来摄像头）
+│   │   ├── live_source.py       #   取帧线程 → 追踪 → 渲染输入
+│   │   ├── param_map.py         #   118 → 129 维参数转换
+│   │   └── mesh_build.py        #   补牙齿（5023 → 5083）
 │   ├── app/                     # GUI 后端：protocol / session / server
 │   └── compat/
 │       └── __init__.py          # 第三方兼容补丁（numpy 2.x 别名等）
@@ -295,11 +300,11 @@ error: could not delete 'build/lib.linux-x86_64-cpython-310/nvdiffrast/__init__.
 | 模型产物 | `.ply`（3DGS 属性 + `xyz_b_*` / `rot_b_*` / `f_dc_b_*` 基 + `face_id` / `face_bary_*` 绑定） | ✅ 文件另含 `comment gaussian_config` 自描述 |
 | 模型读取 | `core/io/ply.py::load_ply` → `GaussianAvatar` | ✅ 可用 |
 | 驱动参数 | `[B, D]` 张量，`D = model.network.num_basis_in` | ✅ 已定义 |
-| 渲染接口 | `AvatarRuntime`（见 §7.1） | ⏳ 待实现 |
+| 渲染接口 | `app/session.py::Session.render` + `training/updater.py` | ✅ 可用 |
 | 训练产物落盘 | 同上 `.ply` 约定 | ⏳ 待对方确认 |
 
 **当前阶段**：直接使用数据集与**已有模型**即可，不需要训练。
-`src/live3dgsavatar/training/` 目录保留为空占位，接入时再填充。
+`training/` 目前只包含**在线更新**（外观微调），不含预训练管线 —— 那是合作方的部分。
 
 ---
 
@@ -447,13 +452,12 @@ class Session:
 
 让模型在通话过程中**持续适应**新到达的帧，而不是只消费训练好的静态模型。
 
-- **现状**：驱动参数来自数据集里已有的采样（`source.kind = "checkpoint"`）
-- **目标**：接入实时采集的驱动参数，并让模型随之在线微调
-- **协议已留钩子**：`source.kind = "live"`（前端置灰，后端忽略该分支的字段）
-- **已实现**：`training/` 提供外观微调（闭式颜色校正 + 梯度微调），
-  详见 [`docs/ONLINE_UPDATE.md`](ONLINE_UPDATE.md)
+- **已实现**：`source.kind = "live"` 走追踪服务（见 [`docs/LIVE_DRIVING.md`](LIVE_DRIVING.md)）；
+  外观微调在 `training/`（闭式颜色校正 + 梯度微调），见
+  [`docs/ONLINE_UPDATE.md`](ONLINE_UPDATE.md)
 - **边界**：只改颜色/不透明度，不碰几何、融合基与 MLP
-- **未定项**：触发策略、抗遗忘采样、与预训练（合作方提供）的接口边界
+- **目标**：把"一次性微调"变成"随新帧持续更新"——需要变化检测与局部化更新，
+  方案见 [`docs/ONLINE_UPDATE.md`](ONLINE_UPDATE.md) §7
 
 ### 11.2 已评估、暂不做
 

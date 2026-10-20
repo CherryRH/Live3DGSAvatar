@@ -9,14 +9,14 @@
 <body>
 <header class="topbar">
   <h1>Live3DGSAvatar</h1>
-  <span class="build" id="build-tag" title="前端构建标记：用于确认浏览器是否加载了最新代码">…</span>
+  <span class="build" id="build-tag" title="构建标记">…</span>
   <div class="conn">
     <span id="conn-dot" class="dot dot--off" title="连接状态"></span>
     <span id="conn-text">未连接</span>
   </div>
   <div class="spacer"></div>
   <div class="stats" id="stats">
-    <span title="前端实测：你实际收到的画面帧率（反映对方看到的）">
+    <span title="画面帧率">
       画面 <b id="stat-fps">–</b> FPS
     </span>
     <span><b id="stat-frame">–</b> ms/帧</span>
@@ -26,12 +26,15 @@
     <span>显存 <b id="stat-mem">–</b> MiB</span>
   </div>
   <button id="btn-settings" class="icon topbar__gear" aria-expanded="false"
-          title="设置（全量配置：可改的即时生效，锁定的展示原因）">⚙</button>
+          title="设置">⚙</button>
 </header>
 
 <main>
   <section class="viewer">
-    <div class="stage">
+    <div class="stage" id="stage">
+      <!-- 对比画面在**左侧**：目标图（数据集 images/）在下，渲染在右。
+           开启对比时给 .stage 加 is-compare，用 CSS 改布局。 -->
+      <canvas id="canvas-target" width="512" height="512" hidden></canvas>
       <canvas id="canvas" width="512" height="512"></canvas>
       <div class="stage-overlay" id="overlay">
         <p id="overlay-text">等待连接…</p>
@@ -50,13 +53,11 @@
       </div>
 
       <div class="player-row player-row--sub">
-        <label class="inline">数据源
-          <select id="f-source">
-            <option value="checkpoint">数据集采样</option>
-            <option value="live">实时驱动（RDF）</option>
-          </select>
-        </label>
         <span class="hint" id="live-status" hidden></span>
+        <label class="inline" title="并排显示数据集原图并计算 PSNR">
+          <input id="f-compare" type="checkbox"> 对比原图
+        </label>
+        <span class="hint" id="psnr-out" hidden>–</span>
         <label class="inline">
           <input id="f-perturb" type="checkbox"> 调试·随机扰动
         </label>
@@ -68,19 +69,55 @@
     </div>
   </section>
 
-  <aside class="panel">
-    <p class="hint panel__note">
-      右侧只放**不影响持久化**的实时操作。渲染参数（背景色、高斯缩放、
-      分辨率比例、帧数上限）在右上角 <b>⚙ 设置</b> 里，改完会保存。
-    </p>
+  <!-- 轻量提示条：慢操作的结果（成功/失败）在这里停留几秒 -->
+  <div class="toast" id="toast" hidden><span id="toast-text"></span></div>
 
+  <!-- 全页加载浮窗：只在"慢且可能失败"的操作期间显示（换模型/换数据集）。
+       覆盖整个页面并拦交互 —— 这类操作期间点别的东西只会让状态更乱。 -->
+  <div class="busy" id="busy" hidden>
+    <div class="busy__box">
+      <div class="busy__spinner" aria-hidden="true"></div>
+      <p id="busy-text">正在处理…</p>
+    </div>
+  </div>
+
+  <aside class="panel">
+    <!-- 模型在最上面：先决定"渲染谁"，再决定"用什么驱动"。 -->
     <details open>
       <summary>模型</summary>
       <div class="fields">
-        <label>subject<input id="f-subject" type="text" value="duda"></label>
-        <label>work_name<input id="f-work-name" type="text" value="test"></label>
+        <label>对象
+          <select id="f-subject"></select>
+        </label>
+        <label>版本
+          <select id="f-work-name"></select>
+        </label>
         <button id="btn-load">加载模型</button>
-        <p class="hint" id="model-info">–</p>
+        <!-- 中途往 models/ 里放了新模型时，用它重新扫描 -->
+        <button id="btn-refresh-models" class="ghost" title="重新扫描 models/ 目录">
+          刷新列表
+        </button>
+        <p class="hint" id="model-info"></p>
+      </div>
+    </details>
+
+    <details open>
+      <summary>驱动</summary>
+      <div class="fields">
+        <label>方式
+          <select id="f-source">
+            <option value="checkpoint">数据集（自带参数）</option>
+            <option value="live">RDF 实时追踪</option>
+          </select>
+        </label>
+        <label>数据集
+          <select id="f-dataset"></select>
+        </label>
+        <!-- 中途往 data_root 里放了新数据集时，用它重新扫描 -->
+        <button id="btn-refresh-datasets" class="ghost" title="重新扫描数据集目录">
+          刷新列表
+        </button>
+        <p class="hint" id="dataset-info"></p>
       </div>
     </details>
 
@@ -94,8 +131,7 @@
     </details>
 
     <p class="hint" id="mock-note" hidden>
-      <b>mock 模式</b>：后端未连接，画面由前端本地生成，仅用于验证界面。
-      启动后端后刷新即可看到真实渲染。
+      本地预览：后端未连接。启动后端后刷新即可看到真实画面。
     </p>
   </aside>
 </main>

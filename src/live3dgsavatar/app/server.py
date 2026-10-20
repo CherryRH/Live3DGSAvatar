@@ -35,6 +35,7 @@ from .protocol import (
     RollingWindow,
     config_message,
     frame_interval,
+    MSG_TARGET,
     pack_frame,
     sleep_after,
 )
@@ -67,6 +68,46 @@ def _install_routes(app: FastAPI, session: Session) -> None:
     @app.get("/api/state")
     async def api_state() -> dict:
         return session.state()
+
+    @app.get("/api/models")
+    async def api_models() -> dict:
+        """可用模型列表（供面板的两个下拉框）。
+
+        只检查 `model.ply` 是否存在 —— 深度校验留给加载时的报错，
+        否则既慢又容易把能跑的目录误判成不可用。
+        """
+        from ..data.models import list_models
+
+        def collect() -> dict:
+            infos = list_models(session.cfg)
+            return {
+                "models": [i.to_dict() for i in infos],
+                "current": {"subject": str(session.cfg.subject),
+                            "work_name": str(session.cfg.work_name)},
+            }
+
+        return await asyncio.to_thread(collect)
+
+    @app.get("/api/datasets")
+    async def api_datasets() -> dict:
+        """可用数据集列表（供界面选择"用什么驱动"）。
+
+        只依赖目录结构和一个 npz 的 shape，不加载任何张量，
+        所以这个接口是毫秒级的、也不需要 GPU。
+        """
+        from ..data.datasets import list_datasets
+
+        def collect() -> dict:
+            infos = list_datasets(session.cfg)
+            model_subject = str(session.cfg.subject)
+            return {
+                "datasets": [{**i.to_dict(), "is_model": i.name == model_subject}
+                             for i in infos],
+                "model_subject": model_subject,
+                "current": session.params.drive_dataset,
+            }
+
+        return await asyncio.to_thread(collect)
 
     @app.get("/api/settings")
     async def api_settings() -> dict:
@@ -125,6 +166,34 @@ def _install_routes(app: FastAPI, session: Session) -> None:
             "render": session.params.to_dict(),
             "status": _status_payload(session),
         })
+
+    @app.post("/api/dataset")
+    async def api_dataset(payload: dict) -> JSONResponse:
+        """切换**驱动数据集**（慢操作，走 HTTP 而不是 WS）。
+
+        为什么单独一个接口：换数据集要重载整个 scene（磁盘 IO + 搬张量），
+        几百毫秒到几秒，还可能失败。前端需要"显示加载浮窗 → 等结果 →
+        成功才刷新界面"，这要求一次明确的请求/响应；WS 的 params 是即时的、
+        不保证顺序的，承载不了这个语义。
+
+        成功后**回到第 0 帧并暂停**：新数据集的时长与内容都不同。
+        """
+        name = str((payload or {}).get("dataset") or "")
+        try:
+            state = await asyncio.to_thread(session.set_drive_dataset, name)
+        except (FileNotFoundError, ValueError) as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        except RuntimeError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        except Exception as e:  # noqa: BLE001
+            logger.exception("切换驱动数据集失败")
+            raise HTTPException(status_code=400,
+                                detail=f"{type(e).__name__}: {e}") from e
+
+        # 帧数变了 → 让渲染循环补发 config（帧条要重排）；对比帧也要重发
+        app.state.stream_total = None
+        app.state.target_key = None
+        return JSONResponse(state)
 
     @app.post("/api/model")
     async def api_model(payload: dict) -> JSONResponse:
@@ -232,7 +301,7 @@ async def _serve_client(app: FastAPI, ws: WebSocket, session: Session) -> None:
                 continue
 
             try:
-                rgb, timings = await asyncio.to_thread(session.render)
+                rgb, target, timings = await asyncio.to_thread(session.render)
             except LiveUnavailable as e:
                 # 兜底：正常情况下 live 无数据会回退到数据集首帧（不抛异常），
                 # 走到这里说明是"连接了但取不到转换结果"这类异常情形。
@@ -253,10 +322,14 @@ async def _serve_client(app: FastAPI, ws: WebSocket, session: Session) -> None:
                         "message": f"渲染失败：{type(e).__name__}: {e}"}))
                 break
 
-            # 分辨率可能因 scale 变化而变；变化时补发一条 config
+            # 分辨率可能因 scale 变化而变；总帧数也可能因切换数据集而变。
+            # 两者任一变化都要补发 config，否则前端帧号条会错。
             h, w = rgb.shape[0], rgb.shape[1]
-            if (w, h) != (app.state.stream_size or (0, 0)):
+            total = int(session.scene.total_frames) if session.scene else 0
+            if ((w, h) != (app.state.stream_size or (0, 0))
+                    or total != app.state.stream_total):
                 app.state.stream_size = (w, h)
+                app.state.stream_total = total
                 with contextlib.suppress(Exception):
                     await ws.send_text(json.dumps(config_message(
                         w, h, session.params.background,
@@ -267,12 +340,27 @@ async def _serve_client(app: FastAPI, ws: WebSocket, session: Session) -> None:
                     and not session.params.is_live):
                 session.advance_frame()
 
-            frame = pack_frame(session.frames_served, rgb)
-            # 只保留最新帧：满了就丢最旧的（容量 1 的队列即背压）。
-            # 已被前端接收过的帧一律作废 —— 这是"视频流"而非"离线播放"的关键。
+            psnr = timings.get("psnr", float("nan"))
+            frame = pack_frame(session.frames_served, rgb, psnr=psnr)
+            # 对比帧**只在变化时发**：它随驱动帧号变，而渲染可能 45 fps
+            # 刷同一帧 —— 每帧都发会让数据量无谓翻倍。开关切换也要重发。
+            target_key = None
+            if target is not None:
+                target_key = (session._current_index(),)
+            if target is not None and target_key != app.state.target_key:
+                app.state.target_key = target_key
+                pair = (frame, pack_frame(session.frames_served, target,
+                                          kind=MSG_TARGET, psnr=psnr))
+            else:
+                if target is None:
+                    app.state.target_key = None
+                pair = (frame, None)
+
+            # 只保留最新**一对**：满了就丢最旧的（容量 1 的队列即背压）。
+            # 已被前端接收过的一律作废 —— 这是"视频流"而非"离线播放"的关键。
             while True:
                 try:
-                    queue.put_nowait(frame)
+                    queue.put_nowait(pair)
                     break
                 except asyncio.QueueFull:
                     try:
@@ -322,8 +410,11 @@ async def _serve_client(app: FastAPI, ws: WebSocket, session: Session) -> None:
     async def consume() -> None:
         """取最新帧发出去。发送慢时自然丢帧（队列容量 1）。"""
         while not stop.is_set():
-            frame = await queue.get()
-            await ws.send_bytes(frame)
+            render_bytes, target_bytes = await queue.get()
+            await ws.send_bytes(render_bytes)
+            # 对比帧紧跟在渲染帧之后：前端按类型分发，顺序保证同一帧号成对
+            if target_bytes is not None:
+                await ws.send_bytes(target_bytes)
             session.frames_served += 1
 
     async def control() -> None:
@@ -359,18 +450,24 @@ async def _handle_control(ws: WebSocket, session: Session, msg: dict) -> None:
     kind = msg.get("type")
 
     if kind == "params":
+        before = session.params.source_kind
         try:
             session.params.merge(msg)
         except (ValueError, TypeError) as e:
             await ws.send_text(json.dumps(
                 {"type": "error", "message": f"参数非法：{e}"}, ensure_ascii=False))
             return
+
+        # ---- 驱动方式变了：启停追踪线程 ----
+        if session.params.source_kind != before:
+            await asyncio.to_thread(session.sync_drive_mode)
+            await _send_config(ws, session)
+
         # `frame` / `playing` 由 timeline 权威保存，params 只是镜像
         if session.timeline is not None:
             drive = msg.get("drive") or {}
             if "frame" in drive:
-                index = session.timeline.set_index(int(drive["frame"]))
-                session.params.frame = index
+                session.jump_frame(int(drive["frame"]))
             if "playing" in drive:
                 session.set_playing(bool(drive["playing"]))
         await _send_status(ws, session)
@@ -393,6 +490,17 @@ async def _handle_control(ws: WebSocket, session: Session, msg: dict) -> None:
         logger.debug("未知控制消息 type=%r，已忽略", kind)
 
 
+async def _send_config(ws: WebSocket, session: Session) -> None:
+    """补发一条 config：分辨率或**总帧数**变了，前端据此重排帧号条。"""
+    if session.scene is None:
+        return
+    w, h = session.output_size()
+    with contextlib.suppress(Exception):
+        await ws.send_text(json.dumps(config_message(
+            w, h, session.params.background, session.scene.total_frames),
+            ensure_ascii=False))
+
+
 async def _send_status(ws: WebSocket, session: Session) -> None:
     """回一条 status，让前端立即看到 frame / playing 的权威值。"""
     await ws.send_text(json.dumps(
@@ -410,7 +518,7 @@ async def _capture(ws: WebSocket, session: Session, name: str | None) -> None:
     stem = name or time.strftime("%Y%m%d-%H%M%S")
     path = out_dir / f"{stem}.png"
 
-    rgb, _ = await asyncio.to_thread(session.render)
+    rgb, _target, _timings = await asyncio.to_thread(session.render)
     await asyncio.to_thread(Image.fromarray(rgb.numpy()).save, path)
     logger.info("已截取：%s", path)
     await ws.send_text(json.dumps(
@@ -513,8 +621,11 @@ def create_app(cfg: Config | None = None, session: Session | None = None) -> Fas
 
         **为什么在这里而不是 `Session.__init__`**：构造 `Session` 的场合很多
         （脚本、测试），不该顺手起一个后台线程去连网络。只有真正跑服务时才连。
+
+        启动时不无条件起线程：默认是数据集模式，追踪服务可能压根没跑。
+        由 `sync_drive_mode()` 按当前模式决定。
         """
-        session.live.start()
+        session.sync_drive_mode()
         try:
             yield
         finally:
@@ -525,6 +636,10 @@ def create_app(cfg: Config | None = None, session: Session | None = None) -> Fas
     app.state.session = session
     app.state.stream_task = None
     app.state.stream_size = None
+    #: 上次广播给前端的**总帧数**（切换数据集后要重发 config）
+    app.state.stream_total = None
+    #: 上次发送的对比帧键（帧号）；None 表示还没发过或已关闭对比
+    app.state.target_key = None
 
     _install_routes(app, session)
 

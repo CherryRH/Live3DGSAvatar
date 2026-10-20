@@ -41,20 +41,33 @@ def _raises(exc_type):
 def test_pack_frame_layout_matches_frontend() -> None:
     """帧布局必须与前端 `web/js/protocol.js::parseFrame` 一致。
 
-    前端按「4 字节 uint32 小端 seq + RGB8」解析；这里逐字节验证。
+    头是 `<B 类型><I seq><f psnr>`（9 字节），随后是行优先 RGB。
     """
     rgb = np.array([[[10, 20, 30], [40, 50, 60]]], dtype=np.uint8)   # 1×2
     buf = P.pack_frame(0x01020304, rgb)
 
     assert len(buf) == P.expected_frame_bytes(2, 1), "总长度"
-    assert buf[0:4] == bytes([0x04, 0x03, 0x02, 0x01]), "seq 应为小端"
-    assert buf[4:] == bytes([10, 20, 30, 40, 50, 60]), "像素应为行优先 RGB"
+    assert buf[0] == P.MSG_RENDER, "类型字节"
+    assert buf[1:5] == bytes([0x04, 0x03, 0x02, 0x01]), "seq 应为小端"
+    assert buf[9:] == bytes([10, 20, 30, 40, 50, 60]), "像素应为行优先 RGB"
 
 
 def test_pack_unpack_roundtrip() -> None:
     rgb = np.arange(2 * 3 * 3, dtype=np.uint8).reshape(2, 3, 3)
-    seq, body = P.unpack_frame(P.pack_frame(12345, rgb))
+    kind, seq, psnr, body = P.unpack_frame(P.pack_frame(12345, rgb))
+    assert kind == P.MSG_RENDER
     assert seq == 12345
+    assert body == rgb.tobytes()
+
+
+def test_target_frame_carries_psnr() -> None:
+    """对比帧带 PSNR：它必须与画面**同一帧号**，走 status 会错位。"""
+    rgb = np.zeros((1, 2, 3), np.uint8)
+    kind, seq, psnr, body = P.unpack_frame(
+        P.pack_frame(9, rgb, kind=P.MSG_TARGET, psnr=21.5))
+    assert kind == P.MSG_TARGET
+    assert seq == 9
+    assert abs(psnr - 21.5) < 1e-6
     assert body == rgb.tobytes()
 
 
@@ -62,14 +75,22 @@ def test_pack_frame_accepts_torch_tensor() -> None:
     torch = __import__("torch")
     t = torch.arange(2 * 2 * 3, dtype=torch.uint8).reshape(2, 2, 3)
     buf = P.pack_frame(7, t)
-    assert P.unpack_frame(buf)[0] == 7
+    assert P.unpack_frame(buf)[1] == 7
     assert len(buf) == P.expected_frame_bytes(2, 2)
 
 
 def test_pack_frame_seq_wraps_at_uint32() -> None:
     """seq 超出 uint32 应回绕而不是抛错（2^32 帧后才发生）。"""
     rgb = np.zeros((1, 1, 3), dtype=np.uint8)
-    assert P.unpack_frame(P.pack_frame(2**32 + 5, rgb))[0] == 5
+    assert P.unpack_frame(P.pack_frame(2**32 + 5, rgb))[1] == 5
+
+
+def test_merge_params_carries_compare_flag() -> None:
+    """对比开关是运行期参数：走 params，不持久化。"""
+    out = P.merge_params(_base(), {"compare": True})
+    assert out["compare"] is True
+    out = P.merge_params(out, {"compare": False})
+    assert out["compare"] is False
 
 
 def test_unpack_frame_rejects_short_buffer() -> None:
@@ -399,10 +420,11 @@ def test_merge_params_source_kind() -> None:
         P.merge_params(_base(), {"source": {"kind": "bogus"}})
 
 
-def test_live_source_ignores_checkpoint_fields() -> None:
-    """`live` 下帧号/驱动方式**不适用** → 忽略而不是报错。
+def test_live_keeps_frame_and_playing_but_drops_perturb() -> None:
+    """`live` 下**帧号与播放态仍然有效**（要能暂停/跳帧），只有调试扰动无意义。
 
-    这样前端切到 live 时不必先清空控件，切回 checkpoint 时也不必重设。
+    为什么变了：取帧线程现在按帧号送图 —— 暂停时重送同一帧、跳帧时立刻送目标帧。
+    所以播放条在两种驱动方式下语义一致。
     """
     base = _base()
     out = P.merge_params(base, {
@@ -410,9 +432,10 @@ def test_live_source_ignores_checkpoint_fields() -> None:
         "drive": {"frame": 9, "amplitude": 0.3, "playing": True, "perturb": True},
     })
     assert out["source_kind"] == "live"
-    assert out["frame"] == base["frame"], "帧号应保持原值（被忽略）"
-    assert out["playing"] == base["playing"], "播放状态应被忽略"
-    assert out["perturb"] == base["perturb"], "扰动开关应被忽略"
+    assert out["frame"] == 9, "live 下帧号必须生效（播放条要能跳帧）"
+    assert out["playing"] is True, "live 下播放态必须生效（要能暂停）"
+    assert out["perturb"] == base["perturb"], "扰动开关仍应被忽略"
+    assert out["amplitude"] == base["amplitude"], "扰动幅度仍应被忽略"
 
 
 def test_no_drive_mode_field() -> None:

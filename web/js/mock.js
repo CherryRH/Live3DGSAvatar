@@ -8,7 +8,7 @@
  * 见 docs/GUI_PROTOCOL.md §4「mock 模式」。
  */
 
-import { HEADER_BYTES, PROTOCOL_VERSION } from "./protocol.js";
+import { HEADER_BYTES, MSG_RENDER, PROTOCOL_VERSION } from "./protocol.js";
 
 const DEFAULT_GEOM = { width: 512, height: 512, channels: 3, numFrames: 254 };
 const STATUS_INTERVAL_MS = 500;
@@ -135,7 +135,10 @@ export class MockSource extends EventTarget {
     const buffer = new ArrayBuffer(bytes);
     const view = new DataView(buffer);
     this.seq += 1;
-    view.setUint32(0, this.seq, true);
+    // 与后端一致的 9 字节头：类型 / seq / psnr
+    view.setUint8(0, MSG_RENDER);
+    view.setUint32(1, this.seq, true);
+    view.setFloat32(5, Number.NaN, true);
 
     const px = new Uint8ClampedArray(buffer, HEADER_BYTES);
     this._renderPattern(px, w, h);

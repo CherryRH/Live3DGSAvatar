@@ -83,12 +83,17 @@ test("config 拒绝协议版本不匹配", () => {
 test("帧解析：seq 小端 + 像素偏移正确", () => {
   const w = 4, h = 2, geom = { width: w, height: h, channels: 3 };
   const buf = new ArrayBuffer(HEADER_BYTES + w * h * 3);
-  new DataView(buf).setUint32(0, 0x01020304, true);
+  const dv = new DataView(buf);
+  dv.setUint8(0, 1);                       // 类型 = 渲染帧
+  dv.setUint32(1, 0x01020304, true);       // seq
+  dv.setFloat32(5, 21.5, true);            // psnr
   const px = new Uint8ClampedArray(buf, HEADER_BYTES);
   for (let i = 0; i < px.length; i++) px[i] = i % 256;
 
   const frame = parseFrame(buf, geom);
+  assertEqual(frame.kind, 1, "类型字节");
   assertEqual(frame.seq, 0x01020304, "seq 应按小端读出");
+  assertEqual(frame.psnr, 21.5, "psnr 应能读出");
   assertEqual(frame.pixels.length, w * h * 3, "像素长度");
   assertEqual(frame.pixels[0], 0);
   assertEqual(frame.pixels[5], 5);
@@ -206,7 +211,10 @@ tests.push((async () => {
     // mock 直接给 {seq, pixels}；这里按真实二进制再走一遍解析路径
     const bytes = HEADER_BYTES + 64 * 32 * 3;
     const buf = new ArrayBuffer(bytes);
-    new DataView(buf).setUint32(0, raw.seq, true);
+    const dv = new DataView(buf);
+    dv.setUint8(0, 1);
+    dv.setUint32(1, raw.seq, true);
+    dv.setFloat32(5, Number.NaN, true);
     new Uint8ClampedArray(buf, HEADER_BYTES).set(raw.pixels);
     const parsed = parseFrame(buf, { width: 64, height: 32, channels: 3 });
     assertEqual(parsed.seq, raw.seq);

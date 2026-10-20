@@ -417,3 +417,104 @@ button:disabled { opacity: .5; cursor: default; }
   font-size: 10px;
   opacity: .55;
 }
+
+/* ------------------------------------------------------- 加载浮窗 -- */
+
+/* 覆盖整页并拦住交互：换模型/换数据集期间点别的东西只会让状态更乱。 */
+.busy {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(6, 7, 10, .72);
+  backdrop-filter: blur(1.5px);
+}
+.busy[hidden] { display: none; }
+
+.busy__box {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  padding: 22px 28px;
+  background: #14161c;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  min-width: 220px;
+}
+.busy__box p {
+  margin: 0;
+  color: var(--fg-dim);
+  font-size: 13px;
+  text-align: center;
+  max-width: 42ch;
+  white-space: pre-wrap;
+}
+
+.busy__spinner {
+  width: 26px;
+  height: 26px;
+  border: 2px solid rgba(255, 255, 255, .16);
+  border-top-color: #6ea8fe;
+  border-radius: 50%;
+  animation: busy-spin .8s linear infinite;
+}
+@keyframes busy-spin { to { transform: rotate(360deg); } }
+
+/* ----------------------------------------------------------- 提示条 -- */
+
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: 22px;
+  transform: translateX(-50%);
+  z-index: 110;
+  padding: 9px 16px;
+  border-radius: 6px;
+  background: #14161c;
+  border: 1px solid var(--line);
+  color: var(--fg-dim);
+  font-size: 13px;
+  max-width: 70vw;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, .45);
+}
+.toast[hidden] { display: none; }
+.toast.is-error { border-color: #7a2c2c; color: #ffb4b4; }
+
+/* ------------------------------------------------------- 对比布局 -- */
+
+/* 默认只有一个 canvas；开启对比时变成"目标 | 渲染"并排。
+   用 flex 而非绝对定位：两幅图按容器宽度等比伸缩，不会互相遮挡。 */
+.stage {
+  position: relative;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: center;
+}
+.stage.is-compare #canvas-target { display: block; }
+#canvas-target {
+  background: #000;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  image-rendering: pixelated;
+}
+
+/* 并排时两幅画都按可用宽度收缩，保证同时可见 */
+.stage.is-compare #canvas,
+.stage.is-compare #canvas-target {
+  max-width: calc(50% - 4px);
+  height: auto;
+}
+
+/* ------------------------------------------------------- 次要按钮 -- */
+
+/* 刷新列表这类"辅助"动作：弱化显示，不抢主按钮的注意力 */
+button.ghost {
+  background: transparent;
+  color: var(--fg-dim);
+  border: 1px dashed var(--line);
+}
+button.ghost:hover { color: var(--fg); border-style: solid; }

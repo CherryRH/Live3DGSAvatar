@@ -78,6 +78,7 @@ def load_scene(
     frames: int | None = None,
     subject: str | None = None,
     device: str | None = None,
+    data_dir: Path | None = None,
 ) -> Scene:
     """加载模板几何、相机与若干帧的网格顶点。
 
@@ -88,6 +89,8 @@ def load_scene(
         frames: 取前多少帧；``None`` 用 `render.frames`；``-1`` 表示全部
         subject: 覆盖 `subject`（人物名，同时是模型的一级目录名）
         device: 目标设备；``None`` 用 `runtime.device`（``cpu`` 便于无 GPU 自检）
+        data_dir: 直接指定数据集目录。**用任意数据集驱动**时走这里 ——
+            此时 `subject` 只决定模型路径，数据路径与它解耦
     """
     cfg = config or load_config()
     if subject is not None:
@@ -95,7 +98,7 @@ def load_scene(
     if device is None:
         device = str(cfg.get("runtime.device", "cuda"))
 
-    data_dir = resolve_data_dir(cfg)
+    data_dir = Path(data_dir) if data_dir is not None else resolve_data_dir(cfg)
     if not data_dir.exists():
         raise FileNotFoundError(
             f"数据集目录不存在：{data_dir}\n"

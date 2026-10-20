@@ -9,7 +9,15 @@ from __future__ import annotations
 import struct
 
 #: 二进制帧头长度（字节）：一个 uint32 的 seq。
-FRAME_HEADER_BYTES = 4
+#: 二进制帧头：`<B 类型><I seq><f psnr>`。
+#: 为什么把 PSNR 塞进帧头：对比图与 PSNR 必须**同步**（同一个帧号算出来的），
+#: 走 status 会因为周期推送而与画面错位。
+FRAME_HEADER_BYTES = 9
+#: 渲染结果帧
+MSG_RENDER = 1
+#: 对比用的目标帧（数据集 `images/` 的同一帧）
+MSG_TARGET = 2
+_FRAME_HEAD = struct.Struct("<BIf")
 #: 协议版本；与前端 `web/js/protocol.js` 的 `PROTOCOL_VERSION` 必须一致。
 PROTOCOL_VERSION = 1
 
@@ -18,7 +26,10 @@ PROTOCOL_VERSION = 1
 #: - `live`     ：实时 tracking（**空钩子，待接入**）
 SOURCE_KINDS = ("checkpoint", "live")
 #: `live` 数据源下帧号与驱动相关字段**不适用**，收到时忽略而不是报错。
-LIVE_IGNORED_FIELDS = ("frame", "playing", "perturb", "amplitude")
+#: `live` 模式下仍然无意义的字段。
+#: **帧号与播放态不在其中** —— 现在两种驱动方式都支持播放/暂停/跳帧：
+#: 暂停时取帧线程重送同一帧，跳帧时立刻送目标帧。
+LIVE_IGNORED_FIELDS = ("perturb", "amplitude")
 
 #: 分辨率比例允许的范围（前端控件与后端校验共用）。
 MIN_SCALE = 0.05
@@ -27,15 +38,18 @@ MAX_SCALE = 1.0
 MAX_AMPLITUDE = 1.0
 
 
-def pack_frame(seq: int, rgb) -> bytes:
-    """按协议打包一帧：4 字节 `seq`（uint32 **小端**）+ RGB8。
+def pack_frame(seq: int, rgb, *, kind: int = MSG_RENDER,
+               psnr: float = float("nan")) -> bytes:
+    """按协议打包一帧：9 字节头（类型/seq/psnr）+ RGB8。
 
     Args:
         seq: 帧序号；超出 uint32 会回绕（客户端靠跳号统计丢帧，
             回绕会导致一次误报，但 2^32 帧后才发生，可忽略）
         rgb: 形状 `[H, W, 3]` 的 uint8 张量或数组，行优先
+        kind: `MSG_RENDER`（渲染结果）或 `MSG_TARGET`（对比目标）
+        psnr: 与目标帧的 PSNR；渲染帧上无意义，填 NaN
     """
-    header = struct.pack("<I", seq & 0xFFFFFFFF)
+    header = _FRAME_HEAD.pack(kind & 0xFF, seq & 0xFFFFFFFF, float(psnr))
     if hasattr(rgb, "numpy"):          # torch.Tensor
         rgb = rgb.numpy()
     if hasattr(rgb, "tobytes"):
@@ -45,12 +59,12 @@ def pack_frame(seq: int, rgb) -> bytes:
     return header + body
 
 
-def unpack_frame(buffer: bytes) -> tuple[int, bytes]:
-    """`pack_frame` 的逆运算（测试与调试用）。"""
+def unpack_frame(buffer: bytes) -> tuple[int, int, float, bytes]:
+    """`pack_frame` 的逆运算，返回 `(kind, seq, psnr, rgb_bytes)`。"""
     if len(buffer) < FRAME_HEADER_BYTES:
         raise ValueError(f"帧太短：{len(buffer)} 字节")
-    (seq,) = struct.unpack("<I", buffer[:FRAME_HEADER_BYTES])
-    return seq, buffer[FRAME_HEADER_BYTES:]
+    kind, seq, psnr = _FRAME_HEAD.unpack(buffer[:FRAME_HEADER_BYTES])
+    return kind, seq, psnr, buffer[FRAME_HEADER_BYTES:]
 
 
 def expected_frame_bytes(width: int, height: int, channels: int = 3) -> int:
@@ -126,6 +140,9 @@ def merge_params(current: dict, msg: dict) -> dict:
             raise ValueError(f"target_fps 应在 [0, 480]（0 表示不限），实际 {v}")
         out["target_fps"] = v
 
+    if "compare" in msg:
+        out["compare"] = bool(msg["compare"])
+
     source = msg.get("source") or {}
     if "kind" in source:
         kind = str(source["kind"])
@@ -133,9 +150,12 @@ def merge_params(current: dict, msg: dict) -> dict:
             raise ValueError(
                 f"source.kind 只能是 {' | '.join(SOURCE_KINDS)}，实际 {kind!r}")
         out["source_kind"] = kind
+    # ⚠️ 数据集切换**刻意不走这里**：它要重载整个 scene（几百毫秒到几秒），
+    #    属于"慢且可能失败"的操作，走 `POST /api/dataset` 让前端能显示
+    #    加载浮窗并拿到明确的成功/失败结果。WS 的 params 只承载即时参数。
 
-    # ⚠️ `live` 数据源下，帧号与驱动方式**没有意义** —— 忽略而不是报错，
-    #    这样前端切到 live 时不必先清空控件，切回来也不用重设。
+    # `live` 下只有调试扰动无意义（它的驱动来自追踪结果，不来自数据集帧）。
+    # 帧号/播放态**保留**：live 模式同样要能暂停与跳帧。
     if out.get("source_kind") == "live":
         for field in LIVE_IGNORED_FIELDS:
             drive.pop(field, None)

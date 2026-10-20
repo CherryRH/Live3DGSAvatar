@@ -248,8 +248,9 @@ export class SettingsPanel {
     this.draft.clear();
     for (const f of this.fields) this.draft.set(f.key, f.value);
     if (this.el.source) {
-      const where = body.overrides_path ? `保存到 ${body.overrides_path}` : "";
-      this.el.source.textContent = where;
+      // 完整路径属于内部细节；这里只说"改动会保存"，路径留到悬停提示
+      this.el.source.textContent = body.overrides_path ? "改动会保存" : "";
+      this.el.source.title = body.overrides_path ?? "";
     }
     this.loaded = true;
     // 保持用户当前所在的页签；首次或该分组消失时回落到第一个
@@ -310,12 +311,8 @@ export class SettingsPanel {
       title.textContent = group.title;
       btn.append(title);
 
-      if (group.file) {
-        const file = document.createElement("span");
-        file.className = "tab__file";
-        file.textContent = group.file;
-        btn.append(file);
-      }
+      // 配置文件（render.yaml 等）是内部细节：不展示，只留悬停提示
+      if (group.file) btn.title = group.file;
 
       const count = document.createElement("span");
       count.className = "tab__count";
@@ -368,11 +365,8 @@ export class SettingsPanel {
     }
     row.append(value);
 
-    const key = document.createElement("code");
-    key.className = "srow__key";
-    key.textContent = field.key;
-    key.title = field.key;
-    row.append(key);
+    // 配置键名属于内部细节：不显示，只留悬停提示（排查时仍可看到）
+    row.title = field.key;
 
     return row;
   }

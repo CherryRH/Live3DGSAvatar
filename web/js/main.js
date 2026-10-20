@@ -25,6 +25,13 @@ const el = {
   build: document.querySelector("#build-tag"),
   canvas: document.querySelector("#canvas"),
   overlay: document.querySelector("#overlay"),
+  canvasTarget: document.querySelector("#canvas-target"),
+  refreshModels: document.querySelector("#btn-refresh-models"),
+  refreshDatasets: document.querySelector("#btn-refresh-datasets"),
+  busy: document.querySelector("#busy"),
+  toast: document.querySelector("#toast"),
+  toastText: document.querySelector("#toast-text"),
+  busyText: document.querySelector("#busy-text"),
   overlayText: document.querySelector("#overlay-text"),
   connDot: document.querySelector("#conn-dot"),
   connText: document.querySelector("#conn-text"),
@@ -43,6 +50,9 @@ el.build.textContent = BUILD_TAG;
 console.info(`[Live3DGSAvatar] 前端构建 ${BUILD_TAG}`);
 
 const view = new FrameView(el.canvas);
+// 对比画布：默认隐藏，开启"对比原图"时才显示（布局由 CSS 的 .is-compare 控制）。
+// 声明必须在使用之前：`targetView` 若只在事件回调里出现就是 ReferenceError。
+const targetView = el.canvasTarget ? new FrameView(el.canvasTarget) : null;
 
 /** mock 源；非 null 表示当前用的是 mock。 */
 let mock = null;
@@ -66,6 +76,35 @@ function setConn(state, text) {
     closed: "dot--off",
   }[state] ?? "dot--off");
   el.connText.textContent = text;
+}
+
+/**
+ * 全页加载浮窗。只用于**慢且可能失败**的操作（换模型、换数据集）。
+ *
+ * 语义是"别动，等结果"：期间覆盖整页并拦住交互。成功/失败都**必须**
+ * 调用 `hideBusy()` —— 忘记收起会留下一个永远转圈的页面。
+ */
+function showBusy(text) {
+  if (el.busy) el.busy.hidden = false;
+  if (el.busyText) el.busyText.textContent = text;
+}
+
+function hideBusy() {
+  if (el.busy) el.busy.hidden = true;
+}
+
+let toastTimer = null;
+
+/** 短暂提示（成功/失败都走它）。`isError` 只影响配色。 */
+function setStatusNote(text, isError = false) {
+  if (!el.toast) return;
+  el.toastText.textContent = text;
+  el.toast.classList.toggle("is-error", Boolean(isError));
+  el.toast.hidden = false;
+  if (toastTimer) clearTimeout(toastTimer);
+  // 失败多留一会儿：用户需要时间读原因
+  toastTimer = setTimeout(() => { el.toast.hidden = true; },
+                          isError ? 8000 : 4000);
 }
 
 function showOverlay(text) {
@@ -135,6 +174,9 @@ const controls = new Controls(document, {
       controls.showModelError("mock 模式下不能切换模型（请先连后端）");
       return;
     }
+    // 换模型同样"慢且可能失败"：浮窗覆盖 → 等结果 → 成功才刷新界面。
+    // 失败时**不动任何状态**（旧模型仍在跑，界面继续显示旧的）。
+    showBusy(`正在加载模型 ${subject}/${work_name}…`);
     fetch("/api/model", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -142,12 +184,58 @@ const controls = new Controls(document, {
     })
       .then(async (resp) => {
         const body = await resp.json().catch(() => ({}));
-        if (!resp.ok) throw new Error(body.error ?? `HTTP ${resp.status}`);
+        if (!resp.ok) throw new Error(body.detail ?? body.error ?? `HTTP ${resp.status}`);
+        controls.applyState(body);
+        refreshDatasets();      // 新模型的"自带数据集"可能不同
+        refreshModels();        // 版本列表以磁盘为准
+        showOverlay(null);
+        setStatusNote(`已加载模型 ${subject}/${work_name}，已回到第 0 帧并暂停`);
+      })
+      .catch((err) => {
+        controls.showModelError(`加载失败：${err.message}`);
+        setStatusNote(`加载模型失败：${err.message}`, true);
+      })
+      .finally(hideBusy);
+  },
+  /**
+   * 切换驱动数据集。
+   *
+   * 为什么用 HTTP 而不是 WS 的 params：这是个**慢且可能失败**的操作
+   * （重载 scene 要磁盘 IO，还可能拓扑不匹配）。前端需要"显示浮窗 → 等结果 →
+   * 成功才刷新界面"，这要求一次明确的请求/响应。
+   *
+   * 成功后：帧条回到 0、切回暂停、状态整体刷新（后端已把 timeline 归零）。
+   * 失败后：**不动任何状态**，只把下拉框退回上一次成功的值。
+   */
+  onDatasetChange(name) {
+    if (mock) {
+      controls.revertDataset();
+      controls.showModelError("mock 模式下不能切换数据集（请先连后端）");
+      return;
+    }
+    showBusy(`正在加载数据集 ${name || "（模型自带）"}…`);
+    fetch("/api/dataset", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ dataset: name }),
+    })
+      .then(async (resp) => {
+        const body = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(body.detail ?? body.error ?? `HTTP ${resp.status}`);
+        // 先刷新下拉框（提交新值），再整体应用状态
+        controls.commitDataset();
         controls.applyState(body);
         showOverlay(null);
+        setStatusNote(`已切到数据集 ${name || "（模型自带）"}：`
+          + `${body.dataset?.num_frames ?? "?"} 帧，已回到第 0 帧并暂停`);
       })
-      .catch((err) => controls.showModelError(`加载失败：${err.message}`));
+      .catch((err) => {
+        controls.revertDataset();
+        setStatusNote(`切换数据集失败：${err.message}`, true);
+      })
+      .finally(hideBusy);
   },
+
   onPause(next) {
     paused = next;
     controls.setPaused(paused);
@@ -192,6 +280,7 @@ function wireSource(src, { isMock }) {
   src.addEventListener("config", (ev) => {
     const g = ev.detail;
     view.resize(g.width, g.height, g.channels ?? 3);
+    if (targetView) targetView.resize(g.width, g.height, g.channels ?? 3);
     if (g.numFrames) controls.setFrameRange(g.numFrames);
     if (Array.isArray(g.background)) {
       controls.applyState({ render: { background: g.background } });
@@ -210,6 +299,21 @@ function wireSource(src, { isMock }) {
     // 前端自测画面帧率：在**真正画上去之后**打点
     fpsMeter.tick();
     if (src.dropped !== undefined) el.dropped.textContent = String(src.dropped);
+  });
+
+  src.addEventListener("target", (ev) => {
+    const frame = ev.detail;
+    // config 到达前不会有 target（后端要先知道尺寸才能发）；保险起见再挡一次
+    if (targetView && view.width && view.height) {
+      try {
+        targetView.resize(view.width, view.height, 3);
+        targetView.draw(frame);
+      } catch (err) {
+        console.error("[main] 对比帧绘制失败：", err);
+      }
+    }
+    // PSNR 来自帧头，与这幅图同一帧号
+    controls.applyPsnr(frame.psnr);
   });
 
   src.addEventListener("status", (ev) => updateStats(ev.detail));
@@ -244,12 +348,62 @@ function restartMock() {
   startMock("手动重连");
 }
 
+/** 拉一次可用模型列表（失败不影响主流程）。`announce` 为真时给出提示条。 */
+function refreshModels(announce = false) {
+  return fetch("/api/models")
+    .then((r) => {
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      return r.json();
+    })
+    .then((payload) => {
+      controls.applyModels(payload);
+      if (announce) {
+        const n = payload.models?.length ?? 0;
+        setStatusNote(n ? `已刷新模型列表：${n} 个` : "没找到模型（models/*/*/model.ply）",
+                      n === 0);
+      }
+    })
+    .catch((err) => {
+      console.warn("[main] /api/models 不可用：", err.message);
+      if (announce) setStatusNote(`刷新模型列表失败：${err.message}`, true);
+    });
+}
+
+/** 拉一次可用数据集列表（失败不影响主流程）。 */
+function refreshDatasets(announce = false) {
+  return fetch("/api/datasets")
+    .then((r) => {
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      return r.json();
+    })
+    .then((payload) => {
+      controls.applyDatasets(payload);
+      if (announce) {
+        const n = payload.datasets?.length ?? 0;
+        setStatusNote(n ? `已刷新数据集列表：${n} 个` : "没找到数据集", n === 0);
+      }
+    })
+    .catch((err) => {
+      console.warn("[main] /api/datasets 不可用：", err.message);
+      if (announce) setStatusNote(`刷新数据集列表失败：${err.message}`, true);
+    });
+}
+
 function connectToBackend() {
   backendTried = true;
   showOverlay("正在连接后端…");
 
   // 先取 /api/state 初始化控件；失败则回退 mock
-  fetch("/api/state")
+  // ⚠️ 顺序要紧：先填数据集下拉框，再 applyState。
+  //    否则恢复 `drive_dataset` 时选项还不存在，会被静默忽略。
+  // 手动刷新：中途往磁盘里放了新模型/新数据集时不必重启
+  el.refreshModels?.addEventListener("click", () => refreshModels(true));
+  el.refreshDatasets?.addEventListener("click", () => refreshDatasets(true));
+
+  // 顺序：先填模型与数据集下拉框，再 applyState（否则回填时选项还不存在）
+  refreshModels()
+    .then(refreshDatasets)
+    .then(() => fetch("/api/state"))
     .then((r) => {
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       return r.json();

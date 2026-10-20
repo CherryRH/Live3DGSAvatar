@@ -16,18 +16,21 @@ HTTP/WebSocket 层只做消息编解码，不碰张量 —— 便于把并发问
 
 from __future__ import annotations
 
+import logging
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import torch
 
-from ..config import Config, model_dir, resolve_model_ply
+from ..config import Config, model_dir, resolve_data_dir, resolve_model_ply
 
 # ⚠️ 直接从 `..core.types` 导入 `Mesh`。若写成 `import ..core.types as types`
 #    会遮蔽标准库的 `types` 模块，间接依赖随之行为异常且极难排查。
 from ..core.types import Mesh
 from .protocol import FrameTimeline, merge_params, output_size
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -43,9 +46,16 @@ class RenderParams:
     scale: float = 1.0          # 输出分辨率比例（1.0 = 原生）
     target_fps: float = 60.0    # **帧数上限**；0 表示不限
     source_kind: str = "checkpoint"  # checkpoint | live
+    #: 用哪个数据集驱动。空串 = 跟随模型（`paths.data_root/<subject>`）。
+    #: 只在 `source_kind == "checkpoint"` 时用于取网格与参数；
+    #: live 模式下它决定"送什么画面给追踪服务"。
+    drive_dataset: str = ""
     frame: int = 0
     #: 是否推进帧号。**暂停不代表停止渲染**，只是帧号停住。
     playing: bool = False
+    #: 是否并排显示"数据集原图"（`images/`）并计算 PSNR。
+    #: 运行期开关，不持久化 —— 它只影响显示与一个指标，不影响渲染结果。
+    compare: bool = False
     #: 调试：以当前帧为基准加随机扰动（探查训练分布外行为）。
     perturb: bool = False
     #: `perturb` 的幅度。
@@ -58,6 +68,7 @@ class RenderParams:
             "scale": self.scale,
             "target_fps": self.target_fps,
             "source_kind": self.source_kind,
+            "drive_dataset": self.drive_dataset,
             "frame": self.frame,
             "amplitude": self.amplitude,
             "playing": self.playing,
@@ -81,6 +92,8 @@ class RenderParams:
             "scale": self.scale,
             "target_fps": self.target_fps,
             "source_kind": self.source_kind,
+            "drive_dataset": self.drive_dataset,
+            "compare": self.compare,
         }
 
     def to_drive_dict(self) -> dict:
@@ -94,7 +107,7 @@ class RenderParams:
 
     @property
     def is_live(self) -> bool:
-        """`live` 数据源：实时 tracking，**待接入**。"""
+        """`live`：画面送给追踪服务，用返回的参数驱动。"""
         return self.source_kind == "live"
 
 
@@ -126,8 +139,18 @@ class Session:
         self._mesh_cache: dict[int, object] = {}
         #: 最近一次 `_frame_inputs()` 用的内容键（用于"没变就不重渲"）
         self._last_input_key: tuple | None = None
-        #: live 模式下当前是否在显示**回退帧**（摄像头未就绪）
+        #: live 模式下当前是否在显示**回退帧**（追踪服务未就绪）
         self.live_fallback = False
+        #: 当前 scene 对应的数据集目录（判断"要不要重载"）
+        self._active_dataset_dir: Path | None = None
+        #: 取帧器构造失败的原因（例如数据集缺画面目录）
+        self._live_frames_error: str | None = None
+        #: 对比帧缓存 `(key, rgb_u8, mask)`
+        self._target_cache = None
+        #: 模型自带数据集的拓扑 `(顶点数, 面数)` —— 切换驱动数据集时用它校验。
+        #: ⚠️ 不能用 `avatar.num_basis`：那是约简基的**个数 K**（20），
+        #:    不是顶点数。曾经拿它跟 5083 比，导致换任何数据集都报"不匹配"。
+        self._model_topology: tuple[int, int] | None = None
 
         from ..tracking.live_source import LiveSource  # noqa: PLC0415
 
@@ -193,6 +216,10 @@ class Session:
         self.avatar = avatar
         self.scene = scene
         self.model_path = model_ply
+        self._active_dataset_dir = resolve_data_dir(cfg)
+        if scene.num_frames > 0:
+            self._model_topology = (int(scene.frames[0]["mesh"].shape[0]),
+                                    int(scene.faces.shape[0]))
         self.camera = Camera.from_intrinsics_extrinsics(
             scene.K, scene.R, scene.T, scene.width, scene.height).to(self.device)
         self._rasterizer = SimpleRasterizer(
@@ -201,8 +228,126 @@ class Session:
         self._mesh_cache.clear()
         self.timeline = FrameTimeline(scene.num_frames)
         self.params.frame = 0
+        self.params.drive_dataset = ""
         self._reset_counters()
+        self._sync_live_frames()
+        self._push_live_index(0)
         return self.state()
+
+    # ------------------------------------------------------ 驱动数据集 --
+
+    def _dataset_dir(self, name: str) -> Path:
+        """按名字取数据集目录；空名字表示跟随模型自带的数据集。"""
+        from ..data.datasets import resolve_dataset_dir
+
+        if not name:
+            return resolve_data_dir(self.cfg)
+        return resolve_dataset_dir(self.cfg, name)
+
+    def set_drive_dataset(self, name: str) -> dict:
+        """切换**驱动数据集**（模型不变）。
+
+        为什么需要重载整个 scene 而不是只换帧：数据集带自己的**相机**与
+        **帧数**。渲染的相机必须与被驱动参数的坐标系一致，帧号上限也必须
+        跟着变 —— 否则要么画错，要么滑块越界。
+
+        Raises:
+            FileNotFoundError / ValueError: 数据集不存在或不可驱动
+            RuntimeError: 拓扑与本模型不兼容
+        """
+        from ..core.types import Camera
+        from ..data.scene import load_scene
+
+        name = str(name or "")
+        data_dir = self._dataset_dir(name)
+        if self.scene is not None and data_dir == self._active_dataset_dir:
+            # 同一个数据集：只更新参数，不做无谓重载
+            self.params.drive_dataset = name
+            return self.state()
+
+        preload = int(self.cfg.get("app.preload_frames", -1))
+        scene = load_scene(self.cfg, frames=preload, device=self.device,
+                           data_dir=data_dir)
+
+        # 拓扑必须与模型训练时的一致：每个高斯都绑在"某个面 + 重心坐标"上，
+        # 面数或顶点数一变，绑定就指向了错的三角形。
+        # 校验对象是**模型自带的数据集**，不是 `avatar.num_basis`（那是 K）。
+        if self._model_topology is not None and scene.num_frames > 0:
+            got = (int(scene.frames[0]["mesh"].shape[0]), int(scene.faces.shape[0]))
+            if got != self._model_topology:
+                mine_v, mine_f = self._model_topology
+                raise RuntimeError(
+                    f"数据集拓扑与模型不匹配：{data_dir.name} 是 "
+                    f"{got[0]} 顶点 / {got[1]} 面，模型训练用的是 "
+                    f"{mine_v} 顶点 / {mine_f} 面。\n"
+                    "驱动数据集必须与模型同拓扑（同一套 FLAME + 牙齿）。")
+
+        self.scene = scene
+        self._active_dataset_dir = data_dir
+        self.camera = Camera.from_intrinsics_extrinsics(
+            scene.K, scene.R, scene.T, scene.width, scene.height).to(self.device)
+        self._mesh_cache.clear()
+        self._target_cache = None
+        self.timeline = FrameTimeline(scene.num_frames)
+        self.params.frame = 0
+        self.params.drive_dataset = name
+        # 换了数据集就回到开头并暂停：新数据集的时长与内容都不同，
+        # 继续播下去只会让人以为"切成功了但画面乱跳"。
+        self.timeline.playing = False
+        self.params.playing = False
+        if self.live is not None:
+            self.live.set_playing(False)
+        self._sync_live_frames()
+        self._push_live_index(0)
+        return self.state()
+
+    def _sync_live_frames(self) -> None:
+        """把"送什么画面给追踪服务"与当前驱动数据集对齐。"""
+        from ..tracking.frame_source import DatasetFrames
+
+        if self.scene is None or self.live is None:
+            return
+        if not getattr(self, "_active_dataset_dir", None):
+            return
+        try:
+            frames = DatasetFrames(
+                self._active_dataset_dir,
+                fps=float(self.cfg.get("tracking.source_fps", 30.0)),
+                subdir=str(self.cfg.get("tracking.frame_subdir", "auto")))
+        except FileNotFoundError as e:
+            # 没有 input/ 的数据集（如 duda）不能喂 RDF —— 记录原因，
+            # 由 `_live_unavailable_reason()` 报给前端，而不是静默失败。
+            self.live.set_frames(None)
+            self._live_frames_error = str(e)
+            return
+        self._live_frames_error = None
+        self.live.set_frames(frames)
+        # 帧号回调：取线程推进后同步 timeline（播放条才不会与内容脱节）
+        self.live.on_index = self._on_live_index
+        self.live.seek(self.timeline.index if self.timeline else 0)
+        # 切到 live 时要带上当前的播放态，否则"正在播放"会变成"停住"
+        self.live.set_playing(bool(self.timeline.playing) if self.timeline else False)
+        # **只在 live 模式下真的开始请求追踪**：RDF 推理与渲染抢同一块 GPU，
+        # 数据集模式下没必要让它空转。取帧器照常挂上，切模式时立刻可用。
+        if self.params.is_live:
+            self.live.set_enabled(True)
+            self.live.start()
+
+    def sync_drive_mode(self) -> None:
+        """按 `source_kind` 启动/停止追踪线程。
+
+        只在需要时请求追踪：RDF 推理与渲染抢同一块 GPU，
+        数据集模式下没必要让它空转。
+        """
+        if self.live is None:
+            return
+        if self.params.is_live:
+            self.live.set_enabled(True)
+            self._sync_live_frames()
+            self.live.start()
+        else:
+            self.live.set_enabled(False)
+            self.live.stop()
 
     def live_brief(self) -> dict:
         """给 `status` 的紧凑 live 状态。"""
@@ -214,6 +359,9 @@ class Session:
             "fps": st["fps"],
             "age_s": st["age_s"],
             "max_age_s": st["max_age_s"],
+            #: 实际送的是哪个目录的画面（input / images），前端据此说明
+            "frames_subdir": (getattr(self.live.frames, "subdir", None)
+                              if self.live else None),
             "fallback": self.live_fallback,
             "reason": (self._live_unavailable_reason()
                        if self.live_fallback else None),
@@ -299,12 +447,18 @@ class Session:
             return (0, 0)
         return output_size(self.scene.width, self.scene.height, self.params.scale)
 
-    def render(self) -> tuple[torch.Tensor, dict]:
+    def render(self) -> tuple[torch.Tensor, "torch.Tensor | None", dict]:
         """按当前参数渲染一帧。
 
         Returns:
-            `(rgb_uint8_hwc, timing)`；`rgb` 为 CPU 上的 `[H, W, 3]` uint8，
-            即可以直接塞进协议帧的形状。
+            `(rgb, target, timings)`：
+
+            - `rgb`：CPU 上的 `[H, W, 3]` uint8，可直接塞进协议帧
+            - `target`：**对比用**的数据集原图（同尺寸 uint8）。
+              未开启 `params.compare`、或该帧没有 `images/` 时返回 ``None``
+            - `timings`：各阶段耗时（毫秒）
+
+        `timings` 里额外带 `psnr`（与 target 的掩码内 PSNR，无法计算时缺省）。
         """
         if not self.ready:
             raise RuntimeError("会话尚未加载模型，无法渲染")
@@ -337,6 +491,13 @@ class Session:
         if (w, h) != (rgb.shape[1], rgb.shape[0]):
             rgb = self._downscale(rgb, w, h)
 
+        # ---- 对比图与 PSNR（只在开启时做）----
+        target = None
+        if self.params.compare:
+            target, psnr = self._compare_target(rgb)
+            if psnr is not None:
+                timings["psnr"] = psnr
+
         timings["frame"] = (time.perf_counter() - t_all) * 1000.0
         self.last_deform_ms = timings["deform"]
         self.last_rasterize_ms = timings["rasterize"]
@@ -344,7 +505,55 @@ class Session:
         self.frames_rendered += 1
         self.peak_memory_mib = max(
             self.peak_memory_mib, torch.cuda.max_memory_allocated() / 2**20)
-        return rgb, timings
+        return rgb, target, timings
+
+    def _current_index(self) -> int:
+        """当前**驱动帧号**：live 模式由取帧线程持有，其余看 timeline。"""
+        if self.params.is_live and self.live is not None:
+            return int(self.live.index)
+        return int(self.timeline.index) if self.timeline is not None else 0
+
+    def _compare_target(self, rgb: torch.Tensor):
+        """取当前帧的抠图原图，返回 `(uint8[H,W,3], psnr)`；不可用时 `(None, None)`。
+
+        - 用 `images/` 而不是 `input/`：渲染是黑底的，两者同背景才有可比性
+        - **分辨率对齐**：渲染可能被 `scale` 缩小，目标图要缩到同一尺寸，
+          否则并排显示与 PSNR 都是错的
+        - 缓存按帧号：同一帧重复渲染时不重复读盘
+        """
+        import numpy as np
+        from PIL import Image
+
+        if self._active_dataset_dir is None or self.scene is None:
+            return None, None
+        index = self._current_index()
+        h, w = int(rgb.shape[0]), int(rgb.shape[1])
+        key = (index, w, h, str(self._active_dataset_dir))
+
+        cached = self._target_cache
+        if cached is not None and cached[0] == key:
+            target, mask = cached[1], cached[2]
+        else:
+            sub = str(self.cfg.get("paths.image_subdir", "images"))
+            path = self._active_dataset_dir / sub / f"{index:05d}.png"
+            try:
+                with Image.open(path) as im:
+                    rgba = np.asarray(im.convert("RGBA"))
+            except (OSError, ValueError) as e:
+                log.debug("对比帧不可用 %s：%s", path, e)
+                self._target_cache = None
+                return None, None
+
+            if (rgba.shape[1], rgba.shape[0]) != (w, h):
+                im = Image.fromarray(rgba).resize((w, h), Image.LANCZOS)
+                rgba = np.asarray(im)
+            target = np.ascontiguousarray(rgba[..., :3])
+            mask = rgba[..., 3] > 127
+            self._target_cache = (key, target, mask)
+
+        full, masked = _psnr_pair(rgb.numpy(), target, mask)
+        psnr = masked if masked is not None else full
+        return torch.from_numpy(target), psnr
 
     # ------------------------------------------------------------ 内部 --
 
@@ -422,17 +631,14 @@ class Session:
 
     def _live_unavailable_reason(self) -> str:
         """live 不可用时的**可执行**提示（而不是只报"无数据"）。"""
+        if self._live_frames_error:
+            return "这个数据集没有可用画面"
         st = self.live.status()
         if not st["enabled"]:
-            return "实时驱动已关闭（tracking.enabled = false）"
+            return "实时驱动已关闭"
         if not st["connected"]:
-            err = st.get("error")
-            return ("未连接 RDF 桥接进程"
-                    + (f"（{err}）" if err else "")
-                    + "。请先运行：conda activate realdenseface && "
-                      "python scripts/rdf_bridge.py --camera 0")
-        return ("已连接，但最近 "
-                f"{self.live.max_age_s:.1f}s 内没有新帧（RDF 可能卡住）")
+            return "未连接追踪服务"
+        return "已连接，等待画面"
 
     @staticmethod
     def _downscale(rgb: torch.Tensor, w: int, h: int) -> torch.Tensor:
@@ -468,13 +674,44 @@ class Session:
             return 0
         index = self.timeline.step(delta)
         self.params.frame = index
+        self._push_live_index(index)
         return index
 
     def set_playing(self, playing: bool) -> None:
+        """播放 / 暂停。**两种驱动方式语义一致**。
+
+        数据集模式：渲染循环推进帧号（渲染一帧 = 播放一帧）。
+        live 模式：由取帧线程推进（**追踪一帧 = 播放一帧**）—— 因为画面内容
+        只随追踪结果变化，按渲染帧率推进会让显示与内容对不上。
+        """
         if self.timeline is None:
             return
         self.timeline.playing = bool(playing)
         self.params.playing = bool(playing)
+        if self.live is not None:
+            self.live.set_playing(bool(playing))
+
+    def jump_frame(self, index: int) -> int:
+        """跳到指定帧（直播模式下也立即生效）。"""
+        if self.timeline is None:
+            return 0
+        index = self.timeline.set_index(int(index))
+        self.params.frame = index
+        self._push_live_index(index)
+        return index
+
+    def _push_live_index(self, index: int) -> None:
+        """把帧号告诉取帧线程（它在 live 模式下决定送哪一帧）。"""
+        if self.live is not None:
+            self.live.seek(int(index))
+
+    def _on_live_index(self, index: int) -> None:
+        """取帧线程推进后的回调：同步 timeline 与 params。"""
+        if self.timeline is not None:
+            self.timeline.index = int(index) % self.timeline.total
+            self.params.frame = self.timeline.index
+        else:
+            self.params.frame = int(index)
 
     def advance_frame(self) -> int:
         """播放推进一帧（回绕）。
@@ -491,3 +728,25 @@ class Session:
     def model_dir_hint(self) -> str:
         """模型缺失时给出的提示路径。"""
         return str(model_dir(self.cfg))
+
+
+def _psnr_pair(render, target, mask) -> tuple[float | None, float | None]:
+    """返回 `(全图 PSNR, 掩码内 PSNR)`（dB）。MSE 为 0 时给 99.0。
+
+    与离线评估口径一致：0–255、按 alpha>0.5 取前景。
+    """
+    import numpy as np
+
+    a = np.asarray(render, np.float32)
+    b = np.asarray(target, np.float32)
+    if a.shape != b.shape:
+        return None, None
+
+    def _psnr(mse: float) -> float:
+        return 99.0 if mse <= 0.0 else float(10.0 * np.log10((255.0 ** 2) / mse))
+
+    full = _psnr(float(((a - b) ** 2).mean()))
+    if mask is None or not bool(np.any(mask)):
+        return full, None
+    mse = float(((a[mask] - b[mask]) ** 2).mean())
+    return full, _psnr(mse)

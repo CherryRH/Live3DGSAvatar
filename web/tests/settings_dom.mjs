@@ -131,12 +131,14 @@ const rowsOf = (body) => allEls(body).filter((e) => hasClass(e, "srow"));
 
 console.log("\n渲染");
 
-t("三个页签各对应一个配置文件", () => {
+t("页签只显示组名，配置文件退到悬停提示", () => {
   const { root } = build();
   const tabs = root._map.get("#settings-tabs").children;
-  eq(tabs.length, GROUPS.length, "页签数应等于配置文件数");
-  const files = tabs.map((b) => b.children.find((c) => c.className === "tab__file")?.textContent);
-  eq(files, ["render.yaml", "train.yaml", "system.yaml"]);
+  eq(tabs.length, GROUPS.length, "页签数应等于组数");
+  // 界面上不展示 render.yaml 这类内部文件名，只在 title 里保留（排查用）
+  const labels = tabs.map((b) => b.children.map((c) => c.textContent).join(""));
+  ok(labels.every((s) => !s.includes(".yaml")), `页签不该出现文件名：${labels}`);
+  eq(tabs.map((b) => b.title), ["render.yaml", "train.yaml", "system.yaml"]);
 });
 
 t("默认只显示第一个页签的内容", () => {
@@ -223,10 +225,13 @@ t("带单位的数值显示单位", () => {
   ok(texts.includes("FPS"), "缺少单位后缀");
 });
 
-t("保存路径显示在标题栏", () => {
+t("标题栏只说会保存，路径退到悬停提示", () => {
   const { root } = build();
   const src = root._map.get("#settings-source");
-  ok(src.textContent.includes("local.yaml"), `实际：${src.textContent}`);
+  // 界面上不暴露 configs/local.yaml 这种内部路径
+  ok(!src.textContent.includes(".yaml"), `不该出现路径：${src.textContent}`);
+  ok(src.textContent.length > 0, "应有一句简短说明");
+  ok(String(src.title).includes("local.yaml"), `路径应在 title 里：${src.title}`);
 });
 
 console.log("\n交互");
