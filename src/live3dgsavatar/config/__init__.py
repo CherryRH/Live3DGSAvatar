@@ -51,15 +51,18 @@ _ENV_OVERRIDES = {
 # 代码内置兜底：仅当 YAML 缺失该字段时生效。
 # **刻意保持最小**——真正的默认量应当在 configs/*.yaml 里，便于用户查看与修改。
 _FALLBACK: dict[str, Any] = {
-    "subject": "duda",
-    "work_name": "test",
-    "paths.data_root": "data/INSTA",
-    "paths.data_dir": None,
+    # 对象与版本**不设默认值**：由界面选择，未选时为空。
+    # 写死具体名字会让"默认配置"与仓库状态耦合 —— 一改就产生差异。
+    "subject": "",
+    "work_name": "",
+    "paths.data_root": "datasets",
+
     "paths.output_dir": "output",
     "paths.models_dir": "models",
     "paths.flame_dir": None,
-    "paths.model_ply": None,
-    "paths.models_config": None,
+    # 文件名（相对模型目录）；写绝对路径则原样使用
+    "paths.model_ply": "model.ply",
+    "paths.models_config": "config.yaml",
     "paths.image_subdir": "images",
     "runtime.device": "cuda",
     "app.host": "localhost",
@@ -68,7 +71,7 @@ _FALLBACK: dict[str, Any] = {
     "app.preload_frames": -1,
     "app.stats_log_interval_s": 10.0,
     "runtime.split": "all",
-    "smoke.max_frames": None,
+    "smoke.max_frames": 0,
     "tracking.enabled": True,
     "tracking.host": "127.0.0.1",
     "tracking.port": 8980,
@@ -112,11 +115,10 @@ _FALLBACK: dict[str, Any] = {
 # 需要解析为绝对路径的字段（相对路径按**仓库根**解析，而非 cwd）
 _PATH_FIELDS = (
     "paths.data_root",
-    "paths.data_dir",
     "paths.output_dir",
     "paths.models_dir",
-    "paths.model_ply",
-    "paths.models_config",
+    # 目录型字段：必须解析成绝对路径，否则脚本从别处运行会按 cwd 解析
+    "paths.flame_dir",
 )
 
 # 仓库根下不存在的相对路径，按 cwd 解析更符合直觉的字段。
@@ -344,52 +346,58 @@ def repo_root() -> Path:
 # --------------------------------------------------------- 模型路径解析 --
 
 
+def model_selected(cfg: "Config" | None = None) -> bool:
+    """配置里是否已经指定了对象与版本。"""
+    cfg = cfg or load_config()
+    return bool(str(cfg.get("subject") or "").strip()
+                and str(cfg.get("work_name") or "").strip())
+
+
 def model_dir(cfg: "Config" | None = None) -> Path:
     """本项目自己的模型目录：`<models_dir>/<subject>/<work_name>/`。"""
     cfg = cfg or load_config()
-    return Path(cfg.paths.models_dir) / str(cfg.subject) / str(cfg.work_name)
+    subject = str(cfg.get("subject") or "").strip()
+    work = str(cfg.get("work_name") or "").strip()
+    if not (subject and work):
+        raise ValueError(
+            "还没有选择模型。请在界面右侧「模型」里选对象与版本，"
+            "或传 --subject/--work-name。")
+    return Path(cfg.paths.models_dir) / subject / work
 
 
 def resolve_model_ply(cfg: "Config" | None = None,
                       must_exist: bool = True) -> Path:
     """解析模型 `.ply` 路径。
 
-    查找顺序：
-
-    1. `paths.model_ply` —— 显式配置，直接用它
-    2. `<models_dir>/<subject>/<work_name>/model.ply`
+    `paths.model_ply` 是**文件名**（默认 `model.ply`），相对模型目录
+    `<models_dir>/<subject>/<work_name>/`；写绝对路径则原样使用
+    （脚本的 `--ply` 就是这么传的）。
 
     Args:
         cfg: 配置；``None`` 时读仓库根的 configs/
-        must_exist: 为真时，候选不存在就报错并列出尝试过的路径
+        must_exist: 为真且文件不存在时报错
 
     Raises:
-        FileNotFoundError: `must_exist` 为真且找不到候选
+        FileNotFoundError: `must_exist` 为真且文件不存在
     """
     cfg = cfg or load_config()
 
-    explicit = cfg.get("paths.model_ply")
-    if explicit is not None:
-        path = Path(explicit)
-        if must_exist and not path.exists():
-            raise FileNotFoundError(
-                f"paths.model_ply 指定的模型不存在：{path}\n"
-                "请检查 configs/system.yaml，或用 --ply 指定。")
-        return path
+    name = str(cfg.get("paths.model_ply") or "model.ply")
+    path = Path(name)
+    # 相对名 → 模型目录下；绝对路径 → 原样用（脚本的 --ply 会传绝对路径）
+    if not path.is_absolute():
+        path = model_dir(cfg) / path
 
-    candidates = [model_dir(cfg) / "model.ply"]
-    for path in candidates:
-        if path.exists():
-            return path
-
-    if must_exist:
-        tried = "\n".join(f"  {i}. {p}" for i, p in enumerate(candidates, 1))
+    if must_exist and not path.exists():
+        # 注意：未选模型时 `model_dir()` 本身会抛错，别让它盖住真正的错误
+        try:
+            where = f"\n模型目录：{model_dir(cfg)}"
+        except ValueError:
+            where = ""
         raise FileNotFoundError(
-            f"找不到模型（subject={cfg.subject}, "
-            f"work_name={cfg.work_name}）。尝试过：\n{tried}\n"
-            "请把模型放到 models/<subject>/<work_name>/ 下，"
-            "或改 configs/system.yaml，或用 --ply 指定。")
-    return candidates[0]
+            f"找不到模型文件：{path}{where}\n"
+            "请把模型放到 models/<对象>/<版本>/ 下，或在设置里改「模型文件名」。")
+    return path
 
 
 def resolve_model_config(cfg: "Config" | None = None) -> Path | None:
@@ -399,34 +407,23 @@ def resolve_model_config(cfg: "Config" | None = None) -> Path | None:
     找不到返回 ``None``。
     """
     cfg = cfg or load_config()
-    explicit = cfg.get("paths.models_config")
-    if explicit is not None:
-        return Path(explicit)
-    path = model_dir(cfg) / "config.yaml"
+    name = str(cfg.get("paths.models_config") or "config.yaml")
+    path = Path(name)
+    if not path.is_absolute():
+        path = model_dir(cfg) / path
     return path if path.exists() else None
 
 
 def resolve_data_dir(cfg: Config) -> Path:
-    """数据集目录。
+    """数据集目录：`<paths.data_root>/<subject>`。
 
-    优先级：
-
-    1. 显式 `paths.data_dir`（绝对路径，或相对**仓库根**）
-    2. 默认 `<paths.data_root>/<subject>`
-
-    为什么需要覆盖：`subject` 同时用于**模型**目录
-    （`models/<subject>/<work_name>/`），而数据集目录名未必与它相同。
-    例如模型在 `models/crh/crh_1/`（subject=`crh`），数据集却直接叫
-    `Datasets/INSTA/crh_1`，不是 `Datasets/INSTA/crh/crh_1`。
-    这种情况下设 `paths.data_dir` 即可，无需为了迁就目录名去改 `subject`。
+    `subject` 既是模型的一级目录，也是数据集目录名。
+    界面上选数据集走的是 `data/datasets.py::resolve_dataset_dir`（按目录名）。
     """
-    explicit = cfg.get("paths.data_dir")
-    if explicit:
-        p = Path(str(explicit))
-        if not p.is_absolute():
-            p = repo_root() / p
-        return p.resolve()
+    subject = str(cfg.get("subject") or "").strip()
+    if not subject:
+        raise ValueError("还没有选择数据集（subject 为空）")
     data_root = cfg.get("paths.data_root")
     if data_root is None:
-        raise ValueError("缺少 paths.data_root，且未设置 paths.data_dir")
-    return (Path(str(data_root)) / str(cfg.subject)).resolve()
+        raise ValueError("缺少 paths.data_root")
+    return (Path(str(data_root)) / subject).resolve()

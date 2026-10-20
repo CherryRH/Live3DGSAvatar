@@ -30,6 +30,7 @@ from live3dgsavatar.tracking import live_source as LS
 from live3dgsavatar.tracking import mesh_build as MB
 from live3dgsavatar.tracking import param_map as PM
 from live3dgsavatar.tracking import rdf_client as RC
+from live3dgsavatar.app.protocol import FrameTimeline as S_FrameTimeline
 from live3dgsavatar.tracking import rdf_wire as W
 
 NUM_VERTS = 5023
@@ -853,3 +854,40 @@ def test_dataset_switch_resets_to_paused_first_frame() -> None:
     assert session.timeline.playing is False
     assert session.params.playing is False
     assert playings[-1] is False, "必须通知取帧线程暂停"
+
+
+# --------------------------------------------------- 加载期的竞态 --
+
+
+def test_ready_stays_false_until_timeline_exists() -> None:
+    """加载必须"一次性就绪"：半初始化状态不能被当成可用。
+
+    真实事故：`load_model` 先设 `avatar`/`scene`、后设 `timeline`，
+    而渲染循环在轮询 `ready` —— 它恰好在那个窗口里醒来，于是
+    `_frame_inputs()` 撞上 `self.timeline is None`，连接被断开。
+
+    这里的断言锁定不变量：**没有 timeline 就不算就绪**，
+    因此"半初始化"不会被消费。
+    """
+    from live3dgsavatar.app.session import Session
+
+    session = Session(_cfg())
+    scene = _tiny_scene(num_frames=3)
+
+    session.avatar = object()          # 模拟"模型已就位"
+    session.scene = scene              # 模拟"数据集已就位"
+    assert session.ready is False, "没有 timeline 时不该算就绪"
+
+    session.timeline = S_FrameTimeline(3)
+    assert session.ready is True
+
+
+def test_frame_inputs_reports_not_ready_instead_of_asserting() -> None:
+    """未就绪时调用 `_frame_inputs` 要给可读的 RuntimeError，而不是 AssertionError。"""
+    from live3dgsavatar.app.session import Session
+
+    session = Session(_cfg())
+    session.scene = _tiny_scene()
+    session.timeline = None
+    with pytest.raises(RuntimeError, match="尚未就绪"):
+        session._frame_inputs()

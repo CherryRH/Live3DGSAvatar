@@ -232,6 +232,26 @@ t("PSNR 读数只在对比开启时显示", () => {
   c.destroy();
 });
 
+t("模型未加载时 applyState 不能用空值清空下拉框", () => {
+  const root = makeRoot();
+  const c = makeControls(root);
+  c.applyModels({
+    models: [{ subject: "crh_1", work_name: "test" },
+             { subject: "crh_2", work_name: "test" }],
+    current: { subject: "", work_name: "" },   // 后端还没加载模型
+  });
+  const subj = root._map["#f-subject"];
+  const work = root._map["#f-work-name"];
+  eq(subj.value, "crh_1", "应自动选中第一个对象");
+  eq(work.value, "test", "版本也要自动选中");
+
+  // 收到一份"空 subject/work_name"的 state：不得把上面的选择清掉
+  c.applyState({ subject: "", work_name: "", dataset: { num_frames: 10 } });
+  eq(subj.value, "crh_1", "空值不该清空对象");
+  eq(work.value, "test", "空值不该清空版本");
+  c.destroy();
+});
+
 t("勾选随机扰动 → drive.perturb=true，幅度控件启用", () => {
   const root = makeRoot(); let sent = null;
   const c = makeControls(root, { onParams: (m) => { sent = m; } });

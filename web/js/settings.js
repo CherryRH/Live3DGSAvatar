@@ -503,7 +503,9 @@ export class SettingsPanel {
         const n = Object.keys(patch).length;
         this._status(`已保存 ${n} 项并应用`);
       }
-      this.handlers.onApplied?.(body);
+      // 把 patch 一并交出去：调用方要知道改了哪些键（路径类改动需要重扫目录），
+      // 而 body.applied 只含立即生效的渲染参数。
+      this.handlers.onApplied?.(body, patch);
     } catch (err) {
       this._status(`保存失败：${err.message}`, true);
     } finally {

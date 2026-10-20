@@ -4,7 +4,7 @@
 # 用法：
 #   bash run_gui.sh                     # 默认读 configs/system.yaml 的 app.host / app.port
 #   bash run_gui.sh --port 8080         # 覆盖端口
-#   bash run_gui.sh --subject duda --work-name test
+#   bash run_gui.sh --subject <对象> --work-name <版本>   # 启动时直接加载
 #   bash run_gui.sh --help              # 透传给后端，见全部选项
 #
 # 前置：先跑过一次 `bash setup_env.sh`（建环境）。

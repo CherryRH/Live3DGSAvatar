@@ -88,8 +88,13 @@ def _finalize(args: argparse.Namespace, cfg: Config) -> argparse.Namespace:
     if args.ply is not None:
         cfg.set("paths.model_ply", args.ply)
 
-    args.subject = str(cfg.subject)
-    args.work_name = str(cfg.work_name)
+    if not (str(cfg.get("subject") or "").strip()
+            and str(cfg.get("work_name") or "").strip()):
+        raise SystemExit(
+            "[error] 需要指定模型：--subject 与 --work-name\n"
+            "        默认配置不再写死对象名，所以必须显式给出。")
+    args.subject = str(cfg.get("subject"))
+    args.work_name = str(cfg.get("work_name"))
     args.data = resolve_data_dir(cfg)
     args.ply = resolve_model_ply(cfg)
     args.model_config = resolve_model_config(cfg)

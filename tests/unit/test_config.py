@@ -30,10 +30,11 @@ def test_loads_defaults_from_yaml_files() -> None:
     assert cfg.get("model.network.num_basis_in") == 129
     assert cfg.get("model.network.num_basis_blend") == 20
     assert cfg.get("model.network.mlp_hidden") == [128, 128]
-    # 人物名/工作名与 RGBAvatar 的 CLI 与目录约定一致。
-    # ⚠️ 不写死具体人物名 —— 默认对象会随采集进度变化，测试只校验**约定**。
-    assert cfg.subject and cfg.work_name
+    # 默认配置**不写死**对象与版本：由界面下拉框选择。
+    # 写死会让"默认配置"与仓库状态耦合，一改就产生差异。
     assert isinstance(cfg.subject, str) and isinstance(cfg.work_name, str)
+    assert "subject:" not in (CONFIG_DIR / "system.yaml").read_text("utf-8"), (
+        "system.yaml 不应包含具体对象名")
 
 
 def test_path_fields_are_absolute_paths() -> None:
@@ -43,9 +44,9 @@ def test_path_fields_are_absolute_paths() -> None:
         value = cfg.get(key)
         assert isinstance(value, Path), f"{key} 应为 Path，实际 {type(value).__name__}"
         assert value.is_absolute(), f"{key} 应为绝对路径，实际 {value}"
-    # model_ply 允许为 None（表示按 models_dir/subject/work_name 推导）
-    assert cfg.get("paths.model_ply") is None or isinstance(
-        cfg.get("paths.model_ply"), Path)
+    # model_ply / models_config 是**文件名**（相对模型目录），不是路径字段
+    assert isinstance(cfg.get("paths.model_ply"), str)
+    assert isinstance(cfg.get("paths.models_config"), str)
 
 
 def test_tilde_is_expanded() -> None:
@@ -270,6 +271,8 @@ def test_resolve_model_config_finds_bundled_config(tmp_path) -> None:
     cfg = load_config()
     cfg.set("paths.models_dir", tmp_path / "models")
     cfg.set("paths.models_config", None)
+    cfg.set("subject", "alice")       # 未选模型时 model_dir 会明确报错
+    cfg.set("work_name", "run1")
     assert resolve_model_config(cfg) is None
 
     target = model_dir(cfg)
@@ -285,12 +288,15 @@ def test_resolve_model_ply_follows_model_dir(tmp_path) -> None:
     cfg = load_config()
     cfg.set("paths.models_dir", tmp_path / "models")
     cfg.set("paths.model_ply", None)
+    cfg.set("subject", "alice")
+    cfg.set("work_name", "run1")
 
     # 1) 不存在 → 报错，且信息里列出尝试过的路径
     with _raises(FileNotFoundError) as exc:
         resolve_model_ply(cfg)
-    assert f"subject={cfg.subject}" in str(exc.value)
-    assert f"work_name={cfg.work_name}" in str(exc.value)
+    # 错误里要有**完整路径**和模型目录 —— 这是用户唯一能自查的信息
+    assert "model.ply" in str(exc.value)
+    assert str(tmp_path / "models" / "alice" / "run1") in str(exc.value)
 
     # 2) 建好后命中
     target = model_dir(cfg)
@@ -299,8 +305,8 @@ def test_resolve_model_ply_follows_model_dir(tmp_path) -> None:
     assert resolve_model_ply(cfg) == target / "model.ply"
 
 
-def test_explicit_model_ply_wins(tmp_path) -> None:
-    """`paths.model_ply` 显式配置时直接用它，不做目录推导。"""
+def test_model_ply_accepts_absolute_path(tmp_path) -> None:
+    """`paths.model_ply` 是**文件名**；写绝对路径时原样使用（脚本 --ply 走这条）。"""
     from live3dgsavatar.config import resolve_model_ply
 
     explicit = tmp_path / "custom.ply"
@@ -313,7 +319,8 @@ def test_explicit_model_ply_wins(tmp_path) -> None:
     cfg.set("paths.model_ply", tmp_path / "missing.ply")
     with _raises(FileNotFoundError) as exc:
         resolve_model_ply(cfg)
-    assert "paths.model_ply" in str(exc.value)
+    # 错误里必须给出**实际查找的完整路径**，否则用户无从下手
+    assert str(tmp_path / "missing.ply") in str(exc.value)
 def test_render_test_guards_image_access_for_no_save() -> None:
     """**回归测试**：`--no-save` 下不得对空图像字典取值。
 

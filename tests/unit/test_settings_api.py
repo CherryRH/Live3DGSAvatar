@@ -188,9 +188,10 @@ def test_post_rejects_whole_batch_if_one_item_invalid(tmp_path) -> None:
 
         with pytest.raises(HTTPException) as exc:
             asyncio.run(table[("/api/settings", "POST")]({
-                "patch": {"render.target_fps": 30, "app.port": 9999}}))
+                "patch": {"render.target_fps": 30,
+                          "model.network.tex_size": 1024}}))
         assert exc.value.status_code == 400
-        # 端口是锁定项 → 连合法的 target_fps 也不该被应用
+        # 模型结构是锁定项 → 连合法的 target_fps 也不该被应用
         assert session.cfg.get("render.target_fps") == before
         assert not target.exists(), "校验失败不应写盘"
 

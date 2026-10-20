@@ -159,12 +159,16 @@ export class Controls {
   applyState(state) {
     if (!state) return;
     const el = this.el;
-    // 下拉框里没有的选项不能直接赋值（会变成空值），先判断存在
-    if (state.subject !== undefined
-        && [...(el.subject.options ?? [])].some((o) => o.value === state.subject)) {
+    // 下拉框里没有的选项不能直接赋值（会变成空值），先判断存在。
+    // ⚠️ **空字符串一律忽略**：模型未加载时后端返回 subject=""，
+    //    若照写会把已经自动选好的第一项清空（曾经因此"对象选了、版本空着"）。
+    const subjectOk = Boolean(state.subject)
+      && [...(el.subject.options ?? [])].some((o) => o.value === state.subject);
+    if (subjectOk) {
       el.subject.value = state.subject;
       this._fillWorkNames(state.work_name);
-    } else if (state.work_name !== undefined) {
+    } else if (Boolean(state.work_name)
+        && [...(el.workName.options ?? [])].some((o) => o.value === state.work_name)) {
       el.workName.value = state.work_name;
     }
 

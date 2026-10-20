@@ -117,7 +117,12 @@ def _setup(args) -> Setup:
         cfg.set("work_name", args.work_name)
     if args.subject:
         cfg.set("subject", args.subject)
-    model_subject = str(cfg.subject)
+    if not (str(cfg.get("subject") or "").strip()
+            and str(cfg.get("work_name") or "").strip()):
+        raise SystemExit(
+            "[error] 需要指定模型：--subject 与 --work-name\n"
+            "        默认配置不再写死对象名，所以必须显式给出（或写进 configs/local.yaml）。")
+    model_subject = str(cfg.get("subject"))
 
     # ---- 模型侧（趁 subject 还指向模型）----
     ply = resolve_model_ply(cfg)

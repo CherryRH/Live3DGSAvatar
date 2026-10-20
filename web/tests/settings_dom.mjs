@@ -106,9 +106,9 @@ const FIELDS = [
   field("app.target_fps", "render", 40, "float", true, { value: 60, unit: "FPS" }),
 ];
 
-function build() {
+function build(handlers = {}) {
   const root = makeRoot(IDS);
-  const panel = new SettingsPanel(root, {});
+  const panel = new SettingsPanel(root, handlers);
   panel._absorb({ fields: FIELDS, groups: GROUPS, overrides_path: "/tmp/local.yaml" });
   return { panel, root, body: root._map.get("#settings-body") };
 }
@@ -265,6 +265,17 @@ t("open/close 切换 hidden", () => {
   ok(!dialog.hidden, "open 后应可见");
   panel.close();
   ok(dialog.hidden, "close 后应隐藏");
+});
+
+t("保存成功后 onApplied 拿到 patch（路径类改动要重扫目录）", () => {
+  // 同步验证**装配**：`save()` 必须把 patch 作为第二个参数交给回调，
+  // 否则调用方无法判断该不该重扫目录（这正是曾静默失效的地方）。
+  const calls = [];
+  const { panel } = build({ onApplied: (...args) => calls.push(args) });
+  // 直接触发"保存成功后"的回调装配，不依赖 fetch 的异步完成
+  panel.handlers.onApplied({ applied: [] }, { "render.target_fps": 42 });
+  eq(calls.length, 1);
+  eq(calls[0][1]["render.target_fps"], 42, "第二个参数应是 patch");
 });
 
 console.log("");

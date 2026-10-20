@@ -55,15 +55,13 @@ python scripts/show_config.py --json          # 机器可读
 
 | 字段 | 说明 |
 |---|---|
-| `subject` | **人物名**。既用于数据集（`<data_root>/<subject>/`），也用于模型的一级目录 |
-| `work_name` | 工作名（一次训练/导出的名字），通常为 `test` |
-| `paths.data_root` | 数据集根目录；下需含 `<subject>/images/` 与 `<subject>/checkpoint/` |
+| `paths.data_root` | 数据集根目录（默认 `datasets`）。每个子目录是一个数据集，含 `images/` 与 `render_inputs.npz` 或 `checkpoint/`。**可在界面设置里改** |
 | `paths.models_dir` | **本项目自己的模型根目录**（默认 `models`）。模型放 `<models_dir>/<subject>/<work_name>/` |
 | `paths.output_dir` | 产物根目录。各脚本写到 `<output_dir>/<脚本名>/` |
 | `paths.flame_dir` | FLAME 资产目录（`generic_model.pkl` + `flame_uv.npz`）。`null` 表示仓库根的 `data/FLAME2020/` |
-| `paths.model_ply` | 显式指定模型文件。`null` 表示按下面的顺序自动查找 |
-| `paths.models_config` | 显式指定模型随附的 `config.yaml`。`null` 表示从模型目录里读 |
-| `paths.image_subdir` | 数据集原图子目录（默认 `images`），用作 PSNR 的 GT |
+| `paths.model_ply` | 模型**文件名**（默认 `model.ply`），相对模型目录；写绝对路径则原样使用 |
+| `paths.models_config` | 模型配置文件名（默认 `config.yaml`），同上 |
+| `paths.image_subdir` | 数据集里**抠好人像**（黑底）的子目录，默认 `images`。用作对比与 PSNR 的参照 |
 | `tracking.enabled` | 实时驱动总开关。关闭后 `live` 不可用 |
 | `tracking.host` / `tracking.port` | 追踪服务地址（默认 `127.0.0.1:8980`）|
 | `tracking.max_age_s` | 超过此时长没有新观测即视为中断（秒）|
@@ -72,7 +70,6 @@ python scripts/show_config.py --json          # 机器可读
 | `runtime.device` | `cuda` 或 `cpu`。`cpu` 仅供不依赖 CUDA 内核的自检 |
 | `runtime.split` | 数据集切分：`all` / `train` / `test` |
 | `smoke.max_frames` | 采样帧数上限；`null` 表示不限制 |
-| `paths.data_dir` | 显式指定数据集目录（绝对路径或相对仓库根）。`null` 表示用 `<paths.data_root>/<subject>`。**数据集目录名与 `subject` 不同时用它** |
 | `app.host` / `app.port` | GUI 服务监听地址与端口。默认 `localhost:8000`。**本机回环地址会用 dual-stack socket 监听**，使 `localhost` / `127.0.0.1` / `::1` 三种写法都能访问（见下） |
 | `app.stats_log_interval_s` | 后端统计日志间隔（秒）。日志走 stdout，与前端 FPS 解耦 |
 | `app.autostart` | 打开页面是否自动推帧 |
@@ -85,10 +82,9 @@ models/<subject>/<work_name>/model.ply          ← 渲染统一用这里
 models/<subject>/<work_name>/config.yaml        ← 模型随附配置
 ```
 
-**查找顺序**（`resolve_model_ply`）：
-
-1. `paths.model_ply` —— 显式配置时直接用它（文件不存在则报错，不静默回退）
-2. `<models_dir>/<subject>/<work_name>/model.ply`
+**模型文件定位**（`resolve_model_ply`）：`<models_dir>/<对象>/<版本>/<paths.model_ply>`。
+`paths.model_ply` 默认 `model.ply`；写绝对路径时原样使用（脚本 `--ply` 走这条）。
+文件不存在会报错并打印**实际查找的完整路径**，不会静默回退。
 
 ### 数据集格式（自动识别）
 
@@ -132,15 +128,18 @@ models/<subject>/<work_name>/config.yaml        ← 模型随附配置
 
 ### 切换对象
 
+**界面里选**：服务启动后，右侧「模型」下拉框列出所有含 `model.ply` 的目录，
+选好后点「加载模型」。数据来源在「驱动」里选，可以是任意数据集。
+
+**命令行/脚本**：`--subject` / `--work-name` 可临时指定。
+只有想让它们成为默认值时，才写进 `configs/local.yaml`：
+
 ```yaml
-# configs/system.yaml
-subject: crh_1          # 模型目录 <models_dir>/<subject>/<work_name>/
-work_name: test
-paths:
-  data_dir: null        # null → <data_root>/<subject>
+subject: <对象名>
+work_name: <版本名>
 ```
 
-若数据集目录名与 `subject` 不一致，设 `paths.data_dir` 即可，不必改 `subject`。
+数据集目录名与对象名不同也没关系 —— 界面按目录名选择，两者互不影响。
 
 ### 路径写法
 

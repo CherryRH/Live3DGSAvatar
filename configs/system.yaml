@@ -13,76 +13,40 @@
 #
 # 用 `python scripts/show_config.py` 查看**解析后**的最终值。
 
-# 人物名 / 工作名 —— 两级目录：models/<subject>/<work_name>/
-#
-#   * subject   人物名。既用于**数据集**（<data_root>/<subject>/），
-#               也用于**模型**（<models_dir>/<subject>/<work_name>/）
-#   * work_name 一次训练/导出的名字（通常为 `test`）
-#
-# 参照实现与本项目用同一套名字解析各自的模型路径：
-#   模型 → <paths.models_dir>/<subject>/<work_name>/model.ply
-#
-# 切换对象只需改这两处（脚本的 --subject / --work-name 可临时覆盖）。
-# 当前使用的对象。模型在 <models_dir>/<subject>/<work_name>/，
-# 数据集目录与 subject 同名时无需设 data_dir（见下）。
-#
-# 现有对象：
-#   duda / test         旧数据集（checkpoint 格式，需 FLAME 前向；仅作回归对照）
-#   crh_1 / test        新采集（render_inputs.npz，自包含，**推荐**）
-#   crh_2 / test        新采集（同上）
-subject: crh_1
-work_name: test
-
 paths:
-  # 数据集根目录。默认读取 <data_root>/<subject>/。
-  # 数据集目录名与 subject 不一致时，用下面的 data_dir 显式指定。
-  data_root: /home/crh/Datasets/INSTA
-
-  # 显式指定数据集目录（绝对路径，或相对仓库根）。null 表示用
-  # <data_root>/<subject>。
-  #
-  # 为什么需要它：`subject` 同时用于**模型**目录（models/<subject>/<work_name>/），
-  # 而数据集目录名未必与它相同。例如：
-  #   model  → models/crh/crh_1/model.ply        (subject=crh, work_name=crh_1)
-  #   data   → Datasets/INSTA/crh_1              (而非 INSTA/crh/crh_1)
-  # 这种情形设 data_dir 即可，不必为了目录名去改 subject。
-  data_dir: null
+  # 数据集根目录：每个子目录是一个数据集（<data_root>/<名字>/）。
+  # 具体用哪个由界面选择，不在这里写死；启动时为空也没关系。
+  data_root: datasets
 
   # 产物根目录。设置类脚本默认写到 <output_dir>/<脚本名>/
   # （例如 output_dir=output 时，渲染测试写 output/render_test/）。
   output_dir: output
 
-  # 本项目自己的模型根目录。模型按 <models_dir>/<subject>/<work_name>/ 存放，
-  # 模型按两级目录存放，便于同一人物多个训练版本共存。
+  # 模型根目录。按 <models_dir>/<对象>/<版本>/ 两级存放，
+  # 便于同一对象保留多个版本。
   models_dir: models
 
   # FLAME 资产目录（含 generic_model.pkl 与 flame_uv.npz）。
-  # null 表示用仓库根的 data/FLAME2020/。
-  flame_dir: null
+  flame_dir: data/FLAME2020
 
-  # 显式指定模型文件。留空（null）表示用
-  # <models_dir>/<subject>/<work_name>/model.ply。
-  # 若模型在别处，直接写绝对路径。
-  #
-  # 也可用 models_config 显式指定各模型随附的 config.yaml；
-  # null 表示从模型目录里读 config.yaml。
-  model_ply: null
-  models_config: null
+  # 模型文件名（相对 <models_dir>/<对象>/<版本>/）。
+  # 若模型放在别处，可写绝对路径（脚本的 --ply 就是这么用的）。
+  model_ply: model.ply
+  models_config: config.yaml
 
-  # 渲染结果图（数据集原图）相对 <data_root>/<subject>/ 的子目录。
-  # 用作 PSNR 的 GT。
+  # 数据集里**抠好人像**的子目录（黑底 RGBA）。
+  # 用作训练/在线更新的目标，以及界面上「对比原图」与 PSNR 的参照。
   image_subdir: images
 
-# 实时驱动（live 数据源）。RDF 以**独立进程**运行（环境不兼容），
-# 通过本机 TCP 把参数与顶点送过来。见 docs/LIVE_DRIVING.md。
+# 实时驱动。追踪器以**独立进程**运行（环境不兼容），本项目把画面发过去、
+# 拿回参数与顶点。见 docs/LIVE_DRIVING.md。
 tracking:
-  # 总开关。关闭后 live 数据源不可用，前端会显示原因。
+  # 总开关。关闭后实时驱动不可用，界面会显示原因。
   enabled: true
-  # 桥接进程的地址（scripts/rdf_bridge.py 监听）。
+  # 追踪服务地址（scripts/rdf_bridge.py 监听）。
   host: 127.0.0.1
   port: 8980
-  # 超过这么久没有新帧就认为 live 中断（秒）。
-  # 太大会让"画面冻住但仍在渲染"难以察觉；太小会在 RDF 抖动时闪烁。
+  # 超过这么久没有新观测就认为中断（秒）。
   max_age_s: 1.0
   # 送给追踪服务的画面节奏上限（帧/秒）。0 表示不限（以追踪速度为准）。
   # 追踪一次约 60–70 ms，设太高只会让服务器排队。
@@ -121,4 +85,5 @@ app:
 # GPU 冒烟 / 渲染测试的采样规模上限。
 # 帧数取 min(该值, 数据集实际帧数)；null 表示全部。
 smoke:
-  max_frames: null
+  # 0 表示不限制
+  max_frames: 0

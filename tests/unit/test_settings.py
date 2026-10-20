@@ -27,7 +27,8 @@ def test_fields_cover_every_config_key_exactly() -> None:
     少了：面板上看不到它，用户不知道有这个参数。
     """
     registered = set(S.BY_KEY)
-    known = set(_FALLBACK)
+    # 运行时状态（当前模型）不是设置项：它们由 /api/model 决定
+    known = set(_FALLBACK) - set(S.RUNTIME_ONLY_KEYS)
     assert registered == known, (
         f"注册表与配置键不一致\n"
         f"  缺（面板看不到）：{sorted(known - registered)}\n"

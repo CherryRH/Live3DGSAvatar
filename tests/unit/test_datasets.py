@@ -114,9 +114,11 @@ def test_resolve_dataset_dir_reports_unusable(tmp_path) -> None:
 
 def test_real_datasets_are_discoverable() -> None:
     """在有数据集的机器上，至少要能列出本项目的两个对象。"""
-    if not _DATA.is_dir():
-        pytest.skip("没有 INSTA 数据集")
     cfg = load_config()
+    # 默认 `data_root` 是仓库内的 `datasets/`（可能为空）。若这里不可用，
+    # 回退到常见的采集目录，让这条测试在有数据的机器上仍然生效。
+    if not D.list_datasets(cfg) and _DATA.is_dir():
+        cfg.set("paths.data_root", str(_DATA))
     infos = {i.name: i for i in D.list_datasets(cfg)}
     if not infos:
         pytest.skip("data_root 下没有数据集可用")
@@ -135,16 +137,12 @@ def test_real_datasets_are_discoverable() -> None:
         assert infos["duda"].format == "checkpoint"
 
 
-def test_model_dataset_dir_matches_subject() -> None:
-    """`resolve_data_dir`（模型自带数据集）应与按名字解析一致。"""
-    if not _DATA.is_dir():
-        pytest.skip("没有 INSTA 数据集")
-    cfg = load_config()
-    name = str(cfg.subject)
-    sub = _DATA / name
-    if not sub.is_dir():
-        pytest.skip(f"缺少 {sub}")
-    assert resolve_data_dir(cfg) == D.resolve_dataset_dir(cfg, name)
+def test_resolve_data_dir_matches_named_dataset(tmp_path) -> None:
+    """`resolve_data_dir`（跟随 subject）应与按名字解析一致。"""
+    _make_manifest(tmp_path, "alice", 3)
+    cfg = _cfg_with_root(tmp_path)
+    cfg.set("subject", "alice")
+    assert resolve_data_dir(cfg) == D.resolve_dataset_dir(cfg, "alice")
 
 # --------------------------------------------------------- 后端接口 --
 

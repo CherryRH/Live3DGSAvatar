@@ -61,10 +61,14 @@ def _make_manifest(tmp_path, *, n=3, v=8, d=129, bad_d=False):
 
 
 def _cfg_with(tmp_path):
+    """把数据集根指到 `tmp_path` 的**父目录**，数据集名就是目录名。
+
+    `paths.data_dir` 已移除：数据集定位统一是 `<data_root>/<名字>`。
+    """
     cfg = load_config()
-    cfg.set("subject", "synthetic")
+    cfg.set("subject", tmp_path.name)
     cfg.set("work_name", "test")
-    cfg.set("paths.data_dir", tmp_path)
+    cfg.set("paths.data_root", tmp_path.parent)
     return cfg
 
 
@@ -97,28 +101,26 @@ def test_manifest_requires_all_fields(tmp_path) -> None:
 
 def test_manifest_missing_dataset_dir_is_reported(tmp_path) -> None:
     cfg = load_config()
-    cfg.set("paths.data_dir", tmp_path / "nope")
+    cfg.set("subject", "nope")
+    cfg.set("paths.data_root", tmp_path)
     with _raises(FileNotFoundError) as box:
         load_scene(cfg, frames=1, device="cpu")
     assert "数据集目录不存在" in str(box["error"])
 
 
-def test_data_dir_overrides_subject_path(tmp_path) -> None:
-    """`paths.data_dir` 优先于 `<data_root>/<subject>`。
+def test_data_dir_is_removed(tmp_path) -> None:
+    """`paths.data_dir` 已删除：数据集定位统一是 `<data_root>/<名字>`。
 
-    数据集目录名常与 `subject` 不一致（例如 `Datasets/INSTA/crh_1` 而
-    subject 也是 `crh_1`，但 `data_root` 下并没有同名父目录），
-    因此必须允许显式覆盖。
+    留着它会有两条互相覆盖的规则，而界面只会用其中一条 ——
+    用户改了看不出来为什么没生效。
     """
-    cfg = load_config()
-    cfg.set("paths.data_root", tmp_path / "root")
-    cfg.set("paths.data_dir", tmp_path / "explicit")
     from live3dgsavatar.config import resolve_data_dir
 
-    assert resolve_data_dir(cfg) == (tmp_path / "explicit").resolve()
-
-    cfg.set("paths.data_dir", None)
-    assert resolve_data_dir(cfg) == (tmp_path / "root" / str(cfg.subject)).resolve()
+    cfg = load_config()
+    cfg.set("paths.data_root", tmp_path / "root")
+    cfg.set("subject", "alice")
+    assert resolve_data_dir(cfg) == (tmp_path / "root" / "alice").resolve()
+    assert cfg.get("paths.data_dir", None) is None
 
 
 def test_manifest_rejects_wrong_vertex_count(tmp_path) -> None:

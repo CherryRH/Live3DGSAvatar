@@ -276,7 +276,7 @@ button:active { background: var(--bg); }
   padding: 12px 16px;
   border-bottom: 1px solid var(--line);
 }
-.dialog__head h2 { margin: 0; font-size: 15px; font-weight: 600; }
+.dialog__head h2 { margin: 0; font-size: 16px; font-weight: 600; }
 .dialog__head .hint { font-family: ui-monospace, monospace; font-size: 11px; }
 
 .dialog__body {
@@ -322,32 +322,38 @@ button:disabled { opacity: .5; cursor: default; }
 /* ---- 行 ---- */
 .srow {
   display: grid;
-  grid-template-columns: minmax(0, 1.6fr) minmax(120px, 1fr) auto;
+  grid-template-columns: minmax(0, 1.6fr) minmax(150px, 1fr) auto;
   align-items: center;
   gap: 12px;
-  padding: 7px 8px;
+  padding: 9px 10px;          /* 行高与字号一起放大，便于阅读与点选 */
   border-radius: 5px;
 }
 .srow:hover { background: var(--panel-2); }
 .srow--locked { opacity: .62; }
 
-.srow__label { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
-.srow__name { font-size: 13px; }
-.srow__help { font-size: 11px; color: var(--fg-dim); }
+.srow__label { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.srow__name { font-size: 14px; }
+.srow__help { font-size: 12px; color: var(--fg-dim); }
 .srow__reason {
-  font-size: 11px;
+  font-size: 12px;
   color: #d8a33a;
   margin-top: 2px;
 }
 
 .srow__value { display: flex; justify-content: flex-end; }
+/* 值比标签更显眼：它是用户真正要读/改的东西 */
 .srow__value input[type="number"],
 .srow__value input[type="text"],
-.srow__value select { width: 100%; max-width: 220px; }
+.srow__value select {
+  width: 100%;
+  max-width: 240px;
+  font-size: 14px;
+  padding: 5px 8px;
+}
 
 .srow__readonly {
   font-family: ui-monospace, monospace;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--fg-dim);
   text-align: right;
   overflow-wrap: anywhere;
@@ -366,9 +372,10 @@ button:disabled { opacity: .5; cursor: default; }
 
 /* 颜色三分量 / 带单位的数字 */
 .scolor { display: flex; gap: 6px; }
-.scolor input { width: 62px; }
+.scolor { align-items: center; }
+.scolor input { width: 68px; font-size: 14px; padding: 5px 6px; }
 .sunit { display: flex; align-items: center; gap: 6px; width: 100%; max-width: 220px; }
-.sunit__suffix { font-size: 11px; color: var(--fg-dim); }
+.sunit__suffix { font-size: 12px; color: var(--fg-dim); }
 
 @media (max-width: 760px) {
   .dialog { padding: 8px; }

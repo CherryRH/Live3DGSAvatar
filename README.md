@@ -45,12 +45,15 @@ bash run_gui.sh
 ## 数据与模型放置
 
 ```
-<data_root>/<name>/            # 数据集：render_inputs.npz 或 checkpoint/，以及 images/
-<models_dir>/<subject>/<work_name>/    # 模型：model.ply + config.yaml
-data/FLAME2020/                # FLAME 资产
+datasets/<名字>/                 # 数据集：render_inputs.npz 或 checkpoint/，以及 images/
+models/<对象>/<版本>/             # 模型：model.ply + config.yaml
+data/FLAME2020/                 # FLAME 资产（启动前必须就位）
 ```
 
-路径都可在 `configs/system.yaml` 修改。可用的模型与数据集会在界面下拉框里自动列出。
+**只有 FLAME 资产是启动必需的**：模型与数据集可以先空着，起服务后在界面的
+「设置 → 数据集根目录」里指到实际位置，再在「模型 / 驱动」里选。
+
+路径都在 `configs/system.yaml`，界面里改的项会存进 `configs/local.yaml`。
 
 ## 文档
 

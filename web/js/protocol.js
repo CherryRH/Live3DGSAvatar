@@ -24,7 +24,7 @@ export const PROTOCOL_VERSION = 1;
  *
  * 改前端时请顺手更新此值。
  */
-export const BUILD_TAG = "2026-02-gui16";
+export const BUILD_TAG = "2026-02-gui20";
 
 /**
  * 解析一条二进制帧。

@@ -157,6 +157,13 @@ const settings = new SettingsPanel(document, {
     // `render` 是渲染参数的权威值（与 /api/state 同构）。
     // 目前右侧面板不再镜像这些参数，保留这条同步是为了将来加控件时不必再想一遍。
     if (body?.render) controls.applyState({ render: body.render });
+    // 路径类设置（尤其数据集根目录）改完后，下拉框里的内容可能已经变了。
+    // 这里直接重扫，用户不必再去点「刷新列表」。
+    const applied = body?.applied ?? [];
+    if (applied.some((k) => k.startsWith("paths."))) {
+      refreshModels();
+      refreshDatasets().then(() => setStatusNote("路径已更新，数据集列表已重新扫描"));
+    }
   },
   onError(err) {
     console.warn("[main] 设置面板不可用：", err.message);

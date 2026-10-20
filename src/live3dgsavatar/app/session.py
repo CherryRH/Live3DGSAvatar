@@ -164,6 +164,10 @@ class Session:
         self.frames_served = 0
         self.frames_dropped = 0
         self.model_path: Path | None = None
+        #: 已加载模型的对象/版本（未加载时为空串）。
+        #: 不从 `cfg.subject` 反推：配置里可能还没选，或刚被改过。
+        self.model_subject: str = ""
+        self.model_work_name: str = ""
 
     # ------------------------------------------------------------ 加载 --
 
@@ -175,10 +179,14 @@ class Session:
             FileNotFoundError: 模型或数据集不存在（消息里给出解析路径）
             RuntimeError: 需要 GPU 但不可用
         """
-        if subject is not None:
-            self.cfg.set("subject", subject)
-        if work_name is not None:
-            self.cfg.set("work_name", work_name)
+        subject = (subject or self.cfg.get("subject") or "").strip() or None
+        work_name = (work_name or self.cfg.get("work_name") or "").strip() or None
+        if subject is None or work_name is None:
+            raise ValueError(
+                "还没有选择模型。请在右侧「模型」里选对象与版本，"
+                "或用 POST /api/model 指定 subject 与 work_name。")
+        self.cfg.set("subject", subject)
+        self.cfg.set("work_name", work_name)
 
         if not torch.cuda.is_available():
             raise RuntimeError(
@@ -213,9 +221,15 @@ class Session:
         avatar = load_ply(model_ply, config=av_cfg, device=self.device)
 
         # 状态一致性：先算完再替换，避免中途失败留下半初始化状态
+        # ⚠️ **赋值顺序决定并发安全**：`ready` 由 `avatar` / `scene` / `timeline`
+        #    共同决定，三者必须"一次性"就绪。渲染循环会轮询 `ready`，
+        #    若先设 `scene` 再设 `timeline`，中间那个窗口里 `render()` 会在
+        #    `self.timeline is None` 上崩掉（真实发生过的竞态）。
+        #    所以：其余全部先备好，**`scene` 最后赋值**，它一到位就全到位。
         self.avatar = avatar
-        self.scene = scene
         self.model_path = model_ply
+        self.model_subject = str(subject)
+        self.model_work_name = str(work_name)
         self._active_dataset_dir = resolve_data_dir(cfg)
         if scene.num_frames > 0:
             self._model_topology = (int(scene.frames[0]["mesh"].shape[0]),
@@ -226,9 +240,12 @@ class Session:
             sh_degree=int(cfg.get("render.sh_degree", 0)),
             scaling_modifier=self.params.scaling_modifier)
         self._mesh_cache.clear()
+        self._target_cache = None
         self.timeline = FrameTimeline(scene.num_frames)
         self.params.frame = 0
         self.params.drive_dataset = ""
+        # ↓ 最后一步：`ready` 从这一刻起为真
+        self.scene = scene
         self._reset_counters()
         self._sync_live_frames()
         self._push_live_index(0)
@@ -371,8 +388,8 @@ class Session:
         """/api/state 的返回体。"""
         cfg = self.cfg
         out: dict = {
-            "subject": str(cfg.subject),
-            "work_name": str(cfg.work_name),
+            "subject": self.model_subject or str(cfg.get("subject") or ""),
+            "work_name": self.model_work_name or str(cfg.get("work_name") or ""),
             "render": self.params.to_dict(),
             "drive": self.params.to_drive_dict(),
             "live": {**self.live.status(),
@@ -439,7 +456,13 @@ class Session:
 
     @property
     def ready(self) -> bool:
-        return self.avatar is not None and self.scene is not None
+        """模型、数据集、时间线三者齐备才算就绪。
+
+        `timeline` 也纳入判定：它是渲染循环每帧都要用的，缺了会在渲染中途崩，
+        不如让"就绪"这个概念本身就不成立。
+        """
+        return (self.avatar is not None and self.scene is not None
+                and self.timeline is not None)
 
     def output_size(self) -> tuple[int, int]:
         """当前参数下的输出分辨率（已应用 `scale`）。"""
@@ -581,7 +604,8 @@ class Session:
             self._last_input_key = ("live-fallback",)
             return self._dataset_frame(0)
 
-        assert self.timeline is not None
+        if self.timeline is None:          # 防御：正常路径不会到这里
+            raise RuntimeError("会话尚未就绪（没有时间线），请先加载模型")
         idx = self.timeline.index
         self.live_fallback = False
         self._last_input_key = ("dataset", idx, self.params.perturb,
@@ -662,7 +686,7 @@ class Session:
         if not self.ready:
             return "（未加载）"
         w, h = self.output_size()
-        return (f"{self.cfg.subject}/{self.cfg.work_name} · "
+        return (f"{self.model_subject}/{self.model_work_name} · "
                 f"{self.avatar.num_gaussians} 高斯 · K={self.avatar.num_basis} · "
                 f"输出 {w}×{h} · 模型 {self.model_path}")
 

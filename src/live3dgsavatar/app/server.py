@@ -29,7 +29,8 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from ..config import Config, load_config
+from ..config import (Config, load_config, model_selected,
+                     resolve_model_ply)
 from .protocol import (
     IntervalLogger,
     RollingWindow,
@@ -82,8 +83,12 @@ def _install_routes(app: FastAPI, session: Session) -> None:
             infos = list_models(session.cfg)
             return {
                 "models": [i.to_dict() for i in infos],
-                "current": {"subject": str(session.cfg.subject),
-                            "work_name": str(session.cfg.work_name)},
+                "current": {
+                    "subject": session.model_subject or str(
+                        session.cfg.get("subject") or ""),
+                    "work_name": session.model_work_name or str(
+                        session.cfg.get("work_name") or ""),
+                },
             }
 
         return await asyncio.to_thread(collect)
@@ -99,7 +104,8 @@ def _install_routes(app: FastAPI, session: Session) -> None:
 
         def collect() -> dict:
             infos = list_datasets(session.cfg)
-            model_subject = str(session.cfg.subject)
+            model_subject = (session.model_subject
+                             or str(session.cfg.get("subject") or ""))
             return {
                 "datasets": [{**i.to_dict(), "is_model": i.name == model_subject}
                              for i in infos],
@@ -232,11 +238,25 @@ def _restart_stream(app: FastAPI) -> None:
 
 async def _serve_client(app: FastAPI, ws: WebSocket, session: Session) -> None:
     """一个客户端的完整生命周期：发 config → 推帧 + 并发收控制消息。"""
+    # 模型可能还没加载：**不要断开连接**（断开会让前端反复重连、日志刷满）。
+    # 提示一次，然后轮询等待；用户在界面里点「加载模型」后自动接上。
     if not session.ready:
-        await ws.send_text(json.dumps({
-            "type": "error", "message": "模型尚未加载，请先调用 POST /api/model"}))
-        await ws.close(code=1011)
-        return
+        with contextlib.suppress(Exception):
+            await ws.send_text(json.dumps({
+                "type": "error", "transient": True,
+                "message": "还没有加载模型：在右侧选择后点「加载模型」"},
+                ensure_ascii=False))
+        ready_log = IntervalLogger(interval_s=10.0)
+        while not session.ready:
+            await asyncio.sleep(0.3)
+            try:
+                # 心跳，用来及时发现客户端已断开
+                if ready_log.due(asyncio.get_running_loop().time()):
+                    await ws.send_text(json.dumps({"type": "status"}))
+            except Exception:  # noqa: BLE001
+                return
+        if not session.ready:  # pragma: no cover - 防御
+            return
 
     width, height = session.output_size()
     await ws.send_text(json.dumps(config_message(
@@ -658,6 +678,45 @@ def create_app(cfg: Config | None = None, session: Session | None = None) -> Fas
 # ------------------------------------------------------------------- CLI --
 
 
+def _pick_startup_model(cfg) -> tuple[str, str] | None:
+    """决定启动时加载哪个模型。
+
+    规则：配置里写了的优先；否则用列表里的**第一个**可用模型 ——
+    界面上下拉框默认也选第一个，两者保持一致，避免"界面显示 crh_1、
+    后端却没加载"的割裂。
+
+    返回 `(subject, work_name)`；一个都没有时返回 ``None``（允许空启动）。
+    """
+    from ..data.models import list_models
+
+    if model_selected(cfg):
+        try:
+            resolve_model_ply(cfg)
+            return str(cfg.get("subject")), str(cfg.get("work_name"))
+        except (FileNotFoundError, ValueError) as e:
+            logger.warning("配置里的模型不可用（%s），改用列表里的第一个", e)
+
+    infos = list_models(cfg)
+    if not infos:
+        return None
+    first = infos[0]
+    return first.subject, first.work_name
+
+
+def _missing_flame_assets(cfg) -> list[str]:
+    """启动自检：FLAME 资产是否齐备。返回缺失的文件名（空 = 没问题）。
+
+    只查这一项：模型与数据集都可能还没有 —— 那不影响服务启动，
+    用户可以先打开界面再选。但缺 FLAME 时渲染一定失败，提前拦下更省事。
+    """
+    from ..config import repo_root
+    from ..data.flame_topology import asset_paths
+
+    explicit = cfg.get("paths.flame_dir")
+    flame_dir = Path(str(explicit)) if explicit else repo_root() / "data" / "FLAME2020"
+    return [p.name for p in asset_paths(flame_dir) if not p.is_file()]
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """命令行 = 对 `configs/*.yaml` 的覆盖层（见 docs/CONFIG.md）。"""
     p = argparse.ArgumentParser(
@@ -672,7 +731,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--work-name", default=None)
     p.add_argument("--target-fps", type=float, default=None)
     p.add_argument("--no-preload-model", action="store_true",
-                   help="启动时不加载模型（之后用 POST /api/model 加载）")
+                   help="启动时不加载模型（之后在界面里选）")
     p.add_argument("--reload", action="store_true",
                    help="代码变更自动重载（开发用；需 uvicorn[standard]）")
     p.add_argument("--log-level", default="info")
@@ -697,19 +756,30 @@ def main(argv: list[str] | None = None) -> int:
     host = args.host or str(cfg.get("app.host", "127.0.0.1"))
     port = args.port or int(cfg.get("app.port", 8000))
 
+    # 启动前只检查**必要资产**（FLAME）：模型与数据集允许为空 ——
+    # 用户可以先起服务，再在界面里选。缺 FLAME 则渲染必然失败，直接拦下。
+    missing = _missing_flame_assets(cfg)
+    if missing:
+        logger.error("缺少 FLAME 资产：%s", "、".join(missing))
+        logger.error("请把 generic_model.pkl / flame_uv.npz 放到 %s",
+                     cfg.get("paths.flame_dir") or "data/FLAME2020/")
+        return 1
+
     session = Session(cfg)
     if not args.no_preload_model:
-        logger.info("加载模型：%s/%s", cfg.subject, cfg.work_name)
-        try:
-            session.load_model()
-            logger.info("就绪：%s", session.describe())
-        except FileNotFoundError as e:
-            logger.error("模型或数据集不存在：\n%s", e)
-            logger.error("提示：本项目模型应放在 %s", session.model_dir_hint())
-            return 1
-        except Exception as e:  # noqa: BLE001
-            logger.error("加载失败：%s: %s", type(e).__name__, e)
-            return 1
+        chosen = _pick_startup_model(cfg)
+        if chosen is not None:
+            subject, work_name = chosen
+            logger.info("加载模型：%s/%s", subject, work_name)
+            try:
+                session.load_model(subject, work_name)
+                logger.info("就绪：%s", session.describe())
+            except Exception as e:  # noqa: BLE001
+                # **不退出**：用户可以在界面里换一个
+                logger.warning("启动时加载模型失败（可在界面里重新选择）：%s: %s",
+                               type(e).__name__, e)
+        else:
+            logger.info("没有可用模型：请在浏览器里选择后点「加载模型」")
 
     app = create_app(cfg, session)
 
