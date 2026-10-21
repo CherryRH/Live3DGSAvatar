@@ -197,9 +197,12 @@ Live3DGSAvatar/
 │   └── unit/                    # 单测（133 项，全部无需 GPU）
 ├── scripts/
 │   ├── env_check.py             # 环境自检（无 GPU 可跑）
+│   ├── bench.py                 # 性能测试：渲染 / 跟踪 / 全链路（无前后端）
 │   ├── render_test.py           # 渲染测试：core vs 数据集原图（质量 + 性能）
 │   ├── online_update.py         # 在线更新（闭式颜色校正 + 梯度微调）
-│   ├── profile_deform.py        # deform 阶段耗时分解
+│   ├── rdf_bridge.py            # 追踪服务（realdenseface 环境，画面进参数出）
+│   ├── rdf_dump.py              # 离线导出 RDF 结果（标定/回归对照）
+│   ├── calibrate_rdf.py         # 标定：RDF 结果 vs 数据集真值
 │   ├── show_config.py           # 查看生效配置
 │   └── _compat_shim.py          # 独立脚本用的精简兼容补丁
 ├── pyproject.toml               # 打包配置（src 布局 + console script）

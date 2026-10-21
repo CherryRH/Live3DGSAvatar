@@ -1,7 +1,7 @@
 """「几何 + 驱动参数 → 图像」的唯一组合路径。
 
 **为什么要有这个函数**：同一条组合（`deform` → `rasterize`）以前在
-`app/session.py`、`scripts/render_test.py`、`scripts/profile_deform.py`
+`app/session.py`、`scripts/render_test.py`、`scripts/bench.py`
 里各写一遍。热更新也要用它，如果各处自己拼装，**任何一处漏掉
 `scaling_modifier` 或背景色都会造成"同一模型两处结果不一致"**。
 

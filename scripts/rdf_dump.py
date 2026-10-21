@@ -11,8 +11,8 @@
     conda activate realdenseface
     cd ~/Projects/Live3DGSAvatar
     python scripts/rdf_dump.py \
-        --images ~/Datasets/INSTA/crh_2/input \
-        --out output/rdf/crh_2.npz --limit 300
+        --images ~/Datasets/INSTA/<数据集>/input \
+        --out output/rdf/<数据集>.npz --limit 300
 
 产出：``x`` (N,118)、``verts`` (N,V,3)、``identity`` (300)、相机参数、
 以及每帧对应的图像文件名。``verts`` 由 RDF 用**它自己的 FLAME2023** 算出，

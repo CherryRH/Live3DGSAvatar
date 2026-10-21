@@ -18,8 +18,8 @@
 用法::
 
     python scripts/calibrate_rdf.py \
-        --rdf output/rdf/crh_2.npz \
-        --data ~/Datasets/INSTA/crh_2 \
+        --rdf output/rdf/<数据集>.npz \
+        --data ~/Datasets/INSTA/<数据集> \
         --limit 200
 """
 
@@ -48,7 +48,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--rdf", type=Path, required=True, help="rdf_dump.py 的输出 npz")
     p.add_argument("--data", type=Path, default=None,
                    help="数据集目录（含 render_inputs.npz）；默认按配置推导")
-    p.add_argument("--subject", default="crh_2", help="数据集 subject（默认 crh_2）")
+    p.add_argument("--subject", default=None,
+                   help="数据集名（默认取配置里的 subject）")
     p.add_argument("--limit", type=int, default=0, help="最多用多少帧；0 = 全部")
     p.add_argument("--out", type=Path, default=None,
                    help="把标定结果写成 json（可选）")
@@ -95,11 +96,15 @@ def main() -> int:
     rdf_names = [str(n) for n in rdf["names"]]
 
     cfg = load_config()
-    data_dir = args.data or (resolve_data_dir(cfg) if cfg.subject == args.subject
-                             else None)
+    # 数据集名：显式 > 配置里的 subject。配置里没写时必须显式给出。
+    subject = args.subject or str(cfg.get("subject") or "").strip()
+    if args.data is None and not subject:
+        print("[error] 需要指定数据集：--subject <数据集名>（或 --data <目录>）",
+              file=sys.stderr)
+        return 1
+    data_dir = args.data
     if data_dir is None:
-        # 显式按 subject 推导，避免依赖当前配置里的 subject
-        cfg.set("subject", args.subject)
+        cfg.set("subject", subject)
         data_dir = resolve_data_dir(cfg)
     data_dir = Path(data_dir)
 

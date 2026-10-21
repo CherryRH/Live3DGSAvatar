@@ -199,11 +199,11 @@ weights [B,K]  ×  base [N,·] + Σ_k weights[:,k] · basis[k] [K,N,·]
 
 | **绑定层的原理性不变量**（刚性等变等） | `tests/unit/test_deform.py` | 否 |
 | core 渲染 vs 数据集原图 | `scripts/render_test.py` | **是** |
-| 批大小对耗时的实际影响 | `scripts/render_test.py --sweep-batch 1 4 10` | **是** |
+| 批大小对耗时的实际影响 | `scripts/bench.py --parts render` | **是** |
 | 渲染链路的形状/约定 + 指标函数 + 参数校验 + 摘要打印 | `scripts/render_test.py --dry-run` | 否 |
 | 全项目无未定义名字（含 GPU-only 分支） | `tests/unit/test_architecture.py` | 否 |
 | 配置是否指对路径 | `scripts/show_config.py` | 否 |
-| GPU 上单帧耗时分解 | `scripts/profile_deform.py` | **是** |
+| 渲染 / 跟踪 / 全链路性能 | `scripts/bench.py`（可指定数据集、模型与帧数）| **是** |
 | GUI 前端（协议/绘制/控件） | `node web/tests/all.mjs` | 否 |
 
 

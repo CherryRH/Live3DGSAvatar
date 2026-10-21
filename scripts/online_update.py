@@ -33,10 +33,10 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="在线更新（热更新）")
     p.add_argument("--subject", default=None,
-                   help="**模型**所属对象（crh_1）。默认取配置")
+                   help="**模型**的对象名。默认取配置")
     p.add_argument("--work-name", default=None)
     p.add_argument("--data-subject", default=None,
-                   help="**观测/驱动数据**所属对象（crh_2）。默认与 --subject 相同；"
+                   help="**观测/驱动数据**的数据集名。默认与 --subject 相同；"
                         "两者不同时即「用别的一段视频更新这个模型」")
     p.add_argument("--compare-frames", type=int, default=0,
                    help="对比多少帧：从**第 0 帧开始**连续取 N 帧；"
@@ -46,7 +46,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="对比图目录；默认 <output_dir>/online_update/<实验名>/")
     p.add_argument("--exp-name", default=None,
                    help="实验名（输出子目录）。默认由关键参数自动生成，"
-                        "例如 `crh_1__from-crh_2__f300__noop__L2__all`")
+                        "例如 `<对象>__from-<数据集>__f300__noop__L2__all`")
     # 默认值取自 configs/system.yaml 的 online_update 节（None 表示用配置）
     p.add_argument("--frames", type=int, default=None,
                    help="用于更新的帧数（现实中几十帧通常就够）")
@@ -95,7 +95,7 @@ def _cfg_get(args, cfg, name, key, default):
 class Setup:
     """模型侧与数据侧**分开**解析后的路径集合。
 
-    为什么要分开：这次是"用 crh_2 的画面更新 crh_1 的模型"。
+    为什么要分开：这是"用另一个数据集的画面更新本模型"。
     `cfg.subject` 同时决定模型目录和数据集目录，一旦切换就会互相干扰，
     所以先把模型侧全部解析完，再把 `subject` 指向数据侧。
     """
@@ -155,7 +155,7 @@ def experiment_name(args, *, model_subject: str, data_subject: str,
     为什么不用时间戳：同参数重跑应当覆盖同一目录（便于比较、不会堆一堆结果）；
     参数一变目录就变，不会把不同实验混在一起。
 
-    形如 `crh_1__from-crh_2__f300__noop__L2__all`。
+    形如 `<对象>__from-<数据集>__f300__noop__L2__all`。
     """
     if args.exp_name:
         return str(args.exp_name)

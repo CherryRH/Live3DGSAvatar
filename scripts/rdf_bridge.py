@@ -1,28 +1,30 @@
 #!/usr/bin/env python
-"""**在 `realdenseface` 环境里运行**：把 RDF 的实时结果推给本项目。
+"""**在 `realdenseface` 环境里运行**：通用的"画面进、参数出"追踪服务。
 
-本进程是 TCP **服务端**，本项目（`live3dgs`）作为客户端连上来。
-两边的环境不兼容（RDF 的 `flame_solver` 是 cpython-311），所以必须分进程；
+本项目（`live3dgs`）把一帧画面发过来，本进程做追踪，回一帧参数与顶点。
+两边环境不兼容（RDF 的 `flame_solver` 是 cpython-311），所以必须分进程；
 细节见 `docs/LIVE_DRIVING.md`。
 
-## 为什么先做"图像序列回放"
+## 通用性
 
-真摄像头只能跑一次、不可重复，出错时也分不清是采集还是链路的问题。
-图像序列（`crh_2/input`）可重复、可逐帧核对，而且 RDF 的
-`OnlineGNOptimizer` 本来就是按帧喂的 —— 回放与摄像头的区别只在**取图**这一层。
-所以 `--images` 先跑通，加摄像头时只需要再写十几行。
+服务**不关心画面从哪来** —— 数据集回放、摄像头、单张图片都行，只要按协议发。
+取帧由客户端负责，所以加新画面来源时这里一行都不用改。
 
-用法::
+## 用法
+
+::
 
     conda activate realdenseface
     cd ~/Projects/Live3DGSAvatar
 
-    # 等本项目连上来，然后按 30 fps 推送
-    python scripts/rdf_bridge.py \
-        --images ~/Datasets/INSTA/crh_2/input --port 8980 --fps 30 --loop
+    # 起来等客户端（先加载模型再监听，端口不通说明还没好）
+    python scripts/rdf_bridge.py --port 8980
 
-    # 只跑一遍就退出（调试用）
-    python scripts/rdf_bridge.py --images ... --limit 300 --once
+    # 首次跑得太慢可以关掉 torch.compile（起得快、每帧慢一点）
+    python scripts/rdf_bridge.py --port 8980 --no-compile
+
+    # 只做一个会话就退出（调试用）
+    python scripts/rdf_bridge.py --port 8980 --once
 
 ⚠️ 本脚本**不修改 RDF 仓库**，只 import 它。
 """
