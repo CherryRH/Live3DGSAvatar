@@ -148,12 +148,35 @@ def wait_for_service(host: str, port: int, proc: subprocess.Popen | None,
         if proc is not None and proc.poll() is not None:
             raise RuntimeError(
                 f"追踪服务提前退出（退出码 {proc.returncode}）。"
-                "请检查上面的日志：常见原因是环境不对（缺 flame_solver）或端口被占用。")
+                "请检查上面的日志；常见原因是 RDF 资产缺失（weights/ 未部署）、"
+                "环境不对（缺 flame_solver）或端口被占用。\n"
+                "        可单独验证：realdenseface 环境下运行 "
+                "python scripts/rdf_bridge.py --check-deps")
         time.sleep(0.3)
     raise RuntimeError(
         f"等待追踪服务超时（{timeout_s:.0f}s，{host}:{port}）。"
         "首次启动含 torch.compile，可能需要更久；也可先手动起好服务再 "
         "加 --no-launch-rdf 复用。")
+
+
+def check_tracker_ready(python: Path, rdf_root: Path | None = None) -> None:
+    """先用 `--check-deps` 做一次预检，**在启动之前**把可诊断的问题说清楚。
+
+    不做这一步的后果：追踪服务在构建模型时崩在第三层调用栈里（例如
+    `torch.load` 找不到权重），而我们只看到"子进程退出码 1" ——
+    部署到新机器时几乎必然踩到（权重目录没一起拷过去）。
+    """
+    cmd = [str(python), str(REPO_ROOT / "scripts" / "rdf_bridge.py"),
+           "--check-deps"]
+    if rdf_root is not None:
+        cmd += ["--rdf-root", str(rdf_root)]
+    res = subprocess.run(cmd, cwd=str(REPO_ROOT), capture_output=True, text=True)
+    if res.returncode != 0:
+        raise SystemExit(
+            "[error] 追踪服务自检未通过：\n"
+            + (res.stdout + res.stderr).rstrip()
+            + "\n\n        RDF 仓库需要 weights/ 与 configs/ 一起部署；"
+              "只测渲染可用 --parts render。")
 
 
 def launch_tracker(args, host: str, port: int) -> subprocess.Popen:
@@ -166,8 +189,12 @@ def launch_tracker(args, host: str, port: int) -> subprocess.Popen:
             "        或设置环境变量 LIVE3DGS_RDF_PYTHON\n"
             "        （只测纯渲染则加 --parts render，不需要它）")
 
+    check_tracker_ready(python, args.rdf_root)
+
     cmd = [str(python), str(REPO_ROOT / "scripts" / "rdf_bridge.py"),
            "--host", host, "--port", str(port)]
+    if args.rdf_root is not None:
+        cmd += ["--rdf-root", str(args.rdf_root)]
     if args.rdf_no_compile:
         cmd.append("--no-compile")
     print(f"  启动追踪服务：{python}", flush=True)
@@ -381,6 +408,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help=f"追踪服务端口（默认取配置，兜底 {DEFAULT_PORT}）")
     p.add_argument("--rdf-python", default=None,
                    help="realdenseface 环境的解释器（默认自动探测）")
+    p.add_argument("--rdf-root", default=None,
+                   help="RealDenseFace 仓库路径（默认取 rdf_bridge.py 的默认值）")
     p.add_argument("--no-launch-rdf", action="store_true",
                    help="不启动追踪服务，直接连已有的（需先在别处起好）")
     p.add_argument("--rdf-no-compile", action="store_true",

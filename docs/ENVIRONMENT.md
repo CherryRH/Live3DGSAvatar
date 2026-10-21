@@ -323,14 +323,39 @@ python scripts/render_test.py --frames 20
 
 ---
 
-## 6. 验证记录
+## 6. RDF 资产（实时驱动才需要）
+
+实时驱动要一个独立的 `realdenseface` 环境**和**一份 RealDenseFace 仓库，
+两者都必须齐备。仓库里除了代码，还必须有以下文件（相对仓库根）：
+
+| 文件 | 用途 |
+|---|---|
+| `weights/realdenseface/vits.pth` | 人脸参数推理权重（`--model vitb` 则为 `vitb.pth`）|
+| `weights/flame/flame2023.pkl` | FLAME 2023 模型 |
+| `weights/flame/flame_assets.npz` | FLAME 拓扑 / UV |
+| `weights/facebox/face_box.pth` | 人脸检测 |
+| `configs/model/vits.yaml` | 模型配置 |
+| `configs/fitting/video_online.yaml` | 在线拟合配置 |
+
+**只部署代码是跑不起来的**：`torch.load` 会在构建模型时抛
+`FileNotFoundError`，而调用栈很深、看起来像"环境问题"。先把代码与
+`weights/`、`configs/` 一起拷过去，再自检：
+
+```bash
+conda activate realdenseface
+python scripts/rdf_bridge.py --check-deps      # 缺什么会一次列全
+```
+
+不打算用实时驱动时，`bench.py --parts render`、GUI 的「数据集」模式都不需要它。
+
+## 7. 验证记录
 
 `setup_env.sh` 在第 6、7 步会自行校验扩展算子与运行完整自检，无需手工记录。
-渲染与性能报告由 `scripts/render_test.py` 写入 `output/render_test/report.json`。
+渲染与性能的数字用 `scripts/bench.py` 测（质量对比用 `scripts/render_test.py`）。
 
 ---
 
-## 7. 已知坑与排错
+## 8. 已知坑与排错
 
 | 现象 | 根因 | 处置 |
 |---|---|---|
@@ -350,7 +375,7 @@ python scripts/render_test.py --frames 20
 
 ---
 
-## 8. 相关文件
+## 9. 相关文件
 
 | 文件 | 用途 |
 |---|---|

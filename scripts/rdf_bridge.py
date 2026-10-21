@@ -48,16 +48,36 @@ if str(REPO_ROOT / "src") not in sys.path:
 REQUIRED = ("torch", "cv2", "numpy", "timm", "roma", "trimesh")
 
 
-def preflight(root: Path) -> list[str]:
-    """确认在正确的环境里（理由同 `rdf_dump.py`）。"""
-    problems: list[str] = []
+#: 追踪服务启动所需的 RDF 资产（相对 RDF 仓库根）。
+#: 缺任何一个都会在**构建模型时**才崩，报错信息还埋在三层调用栈里 ——
+#: 所以在预检阶段就查一遍，一次说清缺什么、该放哪。
+def required_assets(root: Path, model: str) -> list[tuple[Path, str]]:
+    """返回 `[(路径, 说明)]`：跑起来之前必须存在的文件。"""
+    return [
+        (root / f"weights/realdenseface/{model}.pth",
+         f"{model} 的推理权重"),
+        (root / "weights/flame/flame2023.pkl", "FLAME 2023 模型"),
+        (root / "weights/flame/flame_assets.npz", "FLAME 资产（拓扑/UV）"),
+        (root / "weights/facebox/face_box.pth", "人脸检测权重"),
+        (root / f"configs/model/{model}.yaml", "模型配置"),
+        (root / "configs/fitting/video_online.yaml", "在线拟合配置"),
+    ]
+
+
+def preflight(root: Path, model: str = "vits") -> list[tuple[str, str]]:
+    """确认在正确的环境里、且资产齐备。
+
+    **环境与资产分开报**：前者说明"该用哪个解释器"，后者说明"该拷哪些文件" ——
+    部署到新机器时最常缺的就是后者，而它原来只在构建模型时才暴露。
+    """
+    problems: list[tuple[str, str]] = []
     if sys.version_info < (3, 11):
-        problems.append(
+        problems.append(("env",
             f"Python {sys.version.split()[0]} 太旧：flame_solver 是 cpython-311 "
-            "编译产物，需要 Python ≥ 3.11")
+            "编译产物，需要 Python ≥ 3.11"))
     elif sys.version_info >= (3, 12):
-        problems.append(
-            f"Python {sys.version.split()[0]} 太新：flame_solver 只提供 cpython-311")
+        problems.append(("env",
+            f"Python {sys.version.split()[0]} 太新：flame_solver 只提供 cpython-311"))
 
     missing = []
     for name in REQUIRED:
@@ -66,15 +86,25 @@ def preflight(root: Path) -> list[str]:
         except ImportError:
             missing.append(name)
     if missing:
-        problems.append(f"缺少依赖：{', '.join(missing)}")
+        problems.append(("env", f"缺少依赖：{', '.join(missing)}"))
 
     if not (root / "tracker").is_dir():
-        problems.append(f"找不到 RDF 仓库：{root}")
+        problems.append(("env", f"找不到 RDF 仓库：{root}"))
 
     try:
         import flame_solver  # noqa: F401
     except ImportError:
-        problems.append("flame_solver 无法导入（需在本环境编译）")
+        problems.append(("env", "flame_solver 无法导入（需在本环境编译）"))
+
+    # 资产检查：只在仓库目录存在时才有意义
+    if (root / "tracker").is_dir():
+        missing = [(p, why) for p, why in required_assets(root, model)
+                   if not p.is_file()]
+        if missing:
+            lines = "；".join(f"{p.relative_to(root)}（{why}）" for p, why in missing)
+            problems.append(("asset",
+                f"RDF 资产不完整，缺 {len(missing)} 项：{lines}。"
+                f"请把 RealDenseFace 的 weights/ 与 configs/ 一并部署到 {root}"))
     return problems
 
 
@@ -253,7 +283,7 @@ def main() -> int:
     args = parse_args()
     root = args.rdf_root.expanduser().resolve()
 
-    problems = preflight(root)
+    problems = preflight(root, args.model)
     if args.check_deps or problems:
         print(f"Python {sys.version.split()[0]}  |  RDF 仓库 {root}")
         try:
@@ -262,11 +292,16 @@ def main() -> int:
         except ImportError:
             print("torch 未安装")
         if problems:
-            print("\n[error] 运行环境不满足要求：", file=sys.stderr)
-            for i, p in enumerate(problems, 1):
-                print(f"  {i}. {p}", file=sys.stderr)
-            print("\n请在 `realdenseface` 环境里运行：\n"
-                  "  conda activate realdenseface", file=sys.stderr)
+            print("\n[error] 无法启动追踪服务：", file=sys.stderr)
+            for i, (_kind, text) in enumerate(problems, 1):
+                print(f"  {i}. {text}", file=sys.stderr)
+            kinds = {k for k, _ in problems}
+            if "env" in kinds:
+                print("\n环境问题：请在 `realdenseface` 环境里运行\n"
+                      "  conda activate realdenseface", file=sys.stderr)
+            if "asset" in kinds:
+                print("\n资产问题：把 RealDenseFace 的 weights/ 与 configs/ 一起部署，\n"
+                      "详见 docs/ENVIRONMENT.md「RDF 资产」", file=sys.stderr)
             return 1
         print("✓ 环境检查通过")
         if args.check_deps:

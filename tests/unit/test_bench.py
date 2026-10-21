@@ -149,3 +149,30 @@ def test_dry_run_reports_dataset_error() -> None:
         cfg)
     assert info.get("dataset") is None
     assert info.get("dataset_error"), "应记录数据集为何不可用"
+
+
+# ------------------------------------------------- 追踪服务预检 --
+
+
+def test_check_tracker_ready_reports_missing_assets(tmp_path) -> None:
+    """缺权重时要在**启动之前**报清楚，而不是让子进程崩在 torch.load。
+
+    真实事故：服务器上只部署了 RealDenseFace 的代码、没拷 weights/，
+    结果 bench 只看到"子进程退出码 1"，真正原因埋在第三层调用栈里。
+    """
+    bench = _load()
+    python = bench.default_rdf_python()
+    if python is None:
+        pytest.skip("没有 realdenseface 环境")
+
+    fake = tmp_path / "rdf"
+    (fake / "tracker").mkdir(parents=True)      # 只有代码目录，没有任何资产
+
+    try:
+        bench.check_tracker_ready(python, fake)
+    except SystemExit as e:
+        msg = str(e)
+        assert "资产" in msg, msg
+        assert "vits.pth" in msg, msg
+    else:
+        raise AssertionError("缺资产时应当报错退出")
