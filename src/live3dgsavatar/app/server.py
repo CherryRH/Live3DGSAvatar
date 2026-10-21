@@ -238,30 +238,30 @@ def _restart_stream(app: FastAPI) -> None:
 
 async def _serve_client(app: FastAPI, ws: WebSocket, session: Session) -> None:
     """一个客户端的完整生命周期：发 config → 推帧 + 并发收控制消息。"""
+    # ⚠️ 所有写入都必须经过它：`produce`/`consume`/`control` 三个任务并发跑，
+    #    直接 `ws.send_*` 会让 websockets 底层的 waiter 断言失败并断开连接。
+    sender = _Sender(ws)
+
     # 模型可能还没加载：**不要断开连接**（断开会让前端反复重连、日志刷满）。
     # 提示一次，然后轮询等待；用户在界面里点「加载模型」后自动接上。
     if not session.ready:
-        with contextlib.suppress(Exception):
-            await ws.send_text(json.dumps({
-                "type": "error", "transient": True,
-                "message": "还没有加载模型：在右侧选择后点「加载模型」"},
-                ensure_ascii=False))
+        await sender.json({
+            "type": "error", "transient": True,
+            "message": "还没有加载模型：在右侧选择后点「加载模型」"})
         ready_log = IntervalLogger(interval_s=10.0)
         while not session.ready:
             await asyncio.sleep(0.3)
-            try:
-                # 心跳，用来及时发现客户端已断开
-                if ready_log.due(asyncio.get_running_loop().time()):
-                    await ws.send_text(json.dumps({"type": "status"}))
-            except Exception:  # noqa: BLE001
-                return
+            # 心跳，用来及时发现客户端已断开
+            if ready_log.due(asyncio.get_running_loop().time()):
+                if not await sender.json({"type": "status"}):
+                    return
         if not session.ready:  # pragma: no cover - 防御
             return
 
     width, height = session.output_size()
-    await ws.send_text(json.dumps(config_message(
-        width, height, session.params.background, session.scene.total_frames),
-        ensure_ascii=False))
+    await sender.json(config_message(
+        width, height, session.params.background,
+        session.scene.total_frames))
 
     queue: asyncio.Queue = asyncio.Queue(maxsize=1)
     stop = asyncio.Event()
@@ -314,10 +314,8 @@ async def _serve_client(app: FastAPI, ws: WebSocket, session: Session) -> None:
                     session.cfg.get("render.status_interval_s", 0.25)))
                 now = loop.time()
                 if status_logger.due(now):
-                    with contextlib.suppress(Exception):
-                        await ws.send_text(json.dumps(
-                            {"type": "status", **_status_payload(session)},
-                            ensure_ascii=False))
+                    await sender.json({"type": "status",
+                                       **_status_payload(session)})
                 continue
 
             try:
@@ -328,18 +326,14 @@ async def _serve_client(app: FastAPI, ws: WebSocket, session: Session) -> None:
                 # **等一会儿再试，不要断开连接** —— 断开会让前端反复重连。
                 if live_warn.due(loop.time()):
                     logger.info("实时驱动等待中：%s", e)
-                with contextlib.suppress(Exception):
-                    await ws.send_text(json.dumps(
-                        {"type": "error", "message": str(e),
-                         "transient": True}, ensure_ascii=False))
+                await sender.json({"type": "error", "message": str(e),
+                                   "transient": True})
                 await asyncio.sleep(0.1)
                 continue
             except Exception as e:  # noqa: BLE001
                 logger.exception("渲染失败")
-                with contextlib.suppress(Exception):
-                    await ws.send_text(json.dumps({
-                        "type": "error",
-                        "message": f"渲染失败：{type(e).__name__}: {e}"}))
+                await sender.json({"type": "error",
+                                   "message": f"渲染失败：{type(e).__name__}: {e}"})
                 break
 
             # 分辨率可能因 scale 变化而变；总帧数也可能因切换数据集而变。
@@ -350,10 +344,9 @@ async def _serve_client(app: FastAPI, ws: WebSocket, session: Session) -> None:
                     or total != app.state.stream_total):
                 app.state.stream_size = (w, h)
                 app.state.stream_total = total
-                with contextlib.suppress(Exception):
-                    await ws.send_text(json.dumps(config_message(
-                        w, h, session.params.background,
-                        session.scene.total_frames), ensure_ascii=False))
+                await sender.json(config_message(
+                    w, h, session.params.background,
+                    session.scene.total_frames))
 
             # 播放推进：**渲染一帧 = 播放一帧**（由渲染循环负责，前端不参与）
             if (session.timeline is not None and session.timeline.playing
@@ -383,8 +376,11 @@ async def _serve_client(app: FastAPI, ws: WebSocket, session: Session) -> None:
                     queue.put_nowait(pair)
                     break
                 except asyncio.QueueFull:
+                    # 丢最旧的，并**计数**：客户端带宽不够时这里会持续触发，
+                    # 是"服务端 55 FPS、前端只有 30"最直接的解释。
                     try:
                         queue.get_nowait()
+                        session.frames_dropped += 1
                     except asyncio.QueueEmpty:  # pragma: no cover
                         pass
 
@@ -397,10 +393,8 @@ async def _serve_client(app: FastAPI, ws: WebSocket, session: Session) -> None:
                 session.cfg.get("app.stats_log_interval_s", 10.0)))
             now = loop.time()
             if status_logger.due(now):
-                with contextlib.suppress(Exception):
-                    await ws.send_text(json.dumps(
-                        {"type": "status", **_status_payload(session)},
-                        ensure_ascii=False))
+                await sender.json({"type": "status",
+                                   **_status_payload(session)})
 
             # 后端吞吐统计与周期日志
             window.add(now)
@@ -411,14 +405,16 @@ async def _serve_client(app: FastAPI, ws: WebSocket, session: Session) -> None:
                 # 这是判断"要不要把某段搬到别的线程"的唯一依据。
                 gpu_ms = session.last_deform_ms + session.last_rasterize_ms
                 overhead_ms = session.last_frame_ms - gpu_ms
+                sent_mib = float(getattr(app.state, "sent_mib", 0.0))
+                mib_s = sent_mib / stats_log_interval_s
                 logger.info(
                     "[stats] %.1fs  渲染 %d 帧  平均 %.1f FPS  平均 %.2f ms/帧"
                     "（deform %.2f + raster %.2f + 其它 %.2f）"
-                    "峰值显存 %.0f MiB  丢帧 %d",
+                    "已发 %.0f MiB（%.1f MiB/s）峰值显存 %.0f MiB  丢帧 %d",
                     stats_log_interval_s, session.frames_rendered,
                     window.rate(now), session.last_frame_ms,
                     session.last_deform_ms, session.last_rasterize_ms,
-                    overhead_ms,
+                    overhead_ms, sent_mib, mib_s,
                     session.peak_memory_mib, session.frames_dropped)
 
             # 帧数上限：上一轮没超时就等满间隔；超时则立刻继续（不补帧）
@@ -429,13 +425,20 @@ async def _serve_client(app: FastAPI, ws: WebSocket, session: Session) -> None:
 
     async def consume() -> None:
         """取最新帧发出去。发送慢时自然丢帧（队列容量 1）。"""
+        sent_bytes = 0
         while not stop.is_set():
             render_bytes, target_bytes = await queue.get()
-            await ws.send_bytes(render_bytes)
+            if not await sender.bytes(render_bytes):
+                return                       # 已断开：让其它任务收手
+            sent_bytes += len(render_bytes)
             # 对比帧紧跟在渲染帧之后：前端按类型分发，顺序保证同一帧号成对
-            if target_bytes is not None:
-                await ws.send_bytes(target_bytes)
+            if target_bytes is not None and not await sender.bytes(target_bytes):
+                return
+            sent_bytes += len(target_bytes or b"")
             session.frames_served += 1
+            # 带宽是远端部署的头号瓶颈：把实际发出的字节数交给统计日志，
+            # 与"渲染 FPS"对不上时就说明卡在网络而不是渲染。
+            app.state.sent_mib = sent_bytes / 2 ** 20
 
     async def control() -> None:
         """收控制消息。与 produce/consume 并发跑。"""
@@ -446,7 +449,7 @@ async def _serve_client(app: FastAPI, ws: WebSocket, session: Session) -> None:
             except json.JSONDecodeError:
                 logger.warning("收到非 JSON 控制消息，已忽略")
                 continue
-            await _handle_control(ws, session, msg)
+            await _handle_control(sender, session, msg)
 
     tasks = [asyncio.create_task(f()) for f in (produce, consume, control)]
     try:
@@ -466,7 +469,56 @@ async def _serve_client(app: FastAPI, ws: WebSocket, session: Session) -> None:
         logger.info("客户端断开")
 
 
-async def _handle_control(ws: WebSocket, session: Session, msg: dict) -> None:
+class _Sender:
+    """串行化对同一个 WebSocket 的所有写。
+
+    ## 为什么必须有它
+
+    Starlette/websockets 的 `send` **不支持并发调用**。连接建立后我们同时跑三个
+    任务（渲染推流 / 帧发送 / 控制消息），它们都可能写：
+    底层的 `_drain_helper` 用单个 waiter 表示"正在等下一位"，两个协程同时进来
+    就触发 `assert waiter is None or waiter.cancelled()` —— 连接随即被强制关闭。
+
+    表现就是"点一下界面就断开"：控制消息要回 status，恰好撞上正在发帧。
+    这把锁是**唯一**的写入入口，不要绕过它直接 `ws.send_*`。
+
+    写失败（客户端已断开）时置 `closed` 并返回 ``False``，调用方据此收手，
+    不必各自 try/except。
+    """
+
+    def __init__(self, ws: WebSocket) -> None:
+        self._ws = ws
+        self._lock = asyncio.Lock()
+        self.closed = False
+
+    async def text(self, payload: str) -> bool:
+        async with self._lock:
+            if self.closed:
+                return False
+            try:
+                await self._ws.send_text(payload)
+                return True
+            except Exception:                                   # noqa: BLE001
+                self.closed = True
+                return False
+
+    async def bytes(self, payload: bytes) -> bool:
+        async with self._lock:
+            if self.closed:
+                return False
+            try:
+                await self._ws.send_bytes(payload)
+                return True
+            except Exception:                                   # noqa: BLE001
+                self.closed = True
+                return False
+
+    async def json(self, payload: dict) -> bool:
+        return await self.text(json.dumps(payload, ensure_ascii=False))
+
+
+async def _handle_control(sender: "_Sender", session: Session,
+                         msg: dict) -> None:
     kind = msg.get("type")
 
     if kind == "params":
@@ -474,14 +526,13 @@ async def _handle_control(ws: WebSocket, session: Session, msg: dict) -> None:
         try:
             session.params.merge(msg)
         except (ValueError, TypeError) as e:
-            await ws.send_text(json.dumps(
-                {"type": "error", "message": f"参数非法：{e}"}, ensure_ascii=False))
+            await sender.json({"type": "error", "message": f"参数非法：{e}"})
             return
 
         # ---- 驱动方式变了：启停追踪线程 ----
         if session.params.source_kind != before:
             await asyncio.to_thread(session.sync_drive_mode)
-            await _send_config(ws, session)
+            await _send_config(sender, session)
 
         # `frame` / `playing` 由 timeline 权威保存，params 只是镜像
         if session.timeline is not None:
@@ -490,44 +541,42 @@ async def _handle_control(ws: WebSocket, session: Session, msg: dict) -> None:
                 session.jump_frame(int(drive["frame"]))
             if "playing" in drive:
                 session.set_playing(bool(drive["playing"]))
-        await _send_status(ws, session)
+        await _send_status(sender, session)
 
     elif kind == "step":
         # 单帧前进/后退。用**独立的 op**（而不是 frame=frame+delta），
         # 这样前端不必知道当前帧号，也不会因丢帧而算错。
         delta = int(msg.get("delta", 1))
         index = session.step_frame(delta)
-        await _send_status(ws, session)
+        await _send_status(sender, session)
         logger.debug("单步 delta=%+d → 第 %d 帧", delta, index)
 
     elif kind == "stream":
         session.paused = bool(msg.get("paused"))
 
     elif kind == "capture":
-        await _capture(ws, session, msg.get("name"))
+        await _capture(sender, session, msg.get("name"))
 
     else:
         logger.debug("未知控制消息 type=%r，已忽略", kind)
 
 
-async def _send_config(ws: WebSocket, session: Session) -> None:
+async def _send_config(sender: "_Sender", session: Session) -> None:
     """补发一条 config：分辨率或**总帧数**变了，前端据此重排帧号条。"""
     if session.scene is None:
         return
     w, h = session.output_size()
-    with contextlib.suppress(Exception):
-        await ws.send_text(json.dumps(config_message(
-            w, h, session.params.background, session.scene.total_frames),
-            ensure_ascii=False))
+    await sender.json(config_message(
+        w, h, session.params.background, session.scene.total_frames))
 
 
-async def _send_status(ws: WebSocket, session: Session) -> None:
+async def _send_status(sender: "_Sender", session: Session) -> None:
     """回一条 status，让前端立即看到 frame / playing 的权威值。"""
-    await ws.send_text(json.dumps(
-        {"type": "status", **_status_payload(session)}, ensure_ascii=False))
+    await sender.json({"type": "status", **_status_payload(session)})
 
 
-async def _capture(ws: WebSocket, session: Session, name: str | None) -> None:
+async def _capture(sender: "_Sender", session: Session,
+                   name: str | None) -> None:
     """把当前帧以无损 PNG 落到 output/gui_captures/。"""
     import time
 
@@ -541,8 +590,7 @@ async def _capture(ws: WebSocket, session: Session, name: str | None) -> None:
     rgb, _target, _timings = await asyncio.to_thread(session.render)
     await asyncio.to_thread(Image.fromarray(rgb.numpy()).save, path)
     logger.info("已截取：%s", path)
-    await ws.send_text(json.dumps(
-        {"type": "captured", "path": str(path)}, ensure_ascii=False))
+    await sender.json({"type": "captured", "path": str(path)})
 
 
 def _status_payload(session: Session) -> dict:
