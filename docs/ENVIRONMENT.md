@@ -11,7 +11,7 @@
 |---|---|---|
 | 操作系统 | WSL2 (kernel 6.6.87.2-microsoft-standard) | GPU 直通依赖 `/dev/dxg` + `/usr/lib/wsl/lib/libcuda.so` |
 | Python | 3.10 | CUDA 扩展编译产物为 `cpython-310` |
-| CUDA Toolkit | **13.0** | 见 §3.4 的双工具链说明 |
+| CUDA Toolkit | **13.0** | 可用系统安装或 conda 安装，需版本匹配；见 §3.4 |
 | PyTorch | **2.14.0+cu130** | 实测可用，不再改动 |
 | numpy | **2.2.6**（不 pin） | 由其他依赖自然解析；chumpy 兼容性由 `src/live3dgsavatar/compat/` 修补，见 §3.6 |
 | torchvision | 0.29.0+cu130 | |
@@ -54,7 +54,7 @@ python scripts/render_test.py --frames 20
 | `ENV_NAME` / `ENV_PREFIX` | `live3dgs` / 空 | 环境位置 |
 | `TORCH_CUDA_ARCH_LIST` | `8.6` | 编译目标架构 |
 | `MAX_JOBS` / `NVCC_THREADS` | `2` / `2` | 编译并发；WSL 内存不足时下调 |
-| `CUDA_CHANNEL` | `nvidia/label/cuda-13.0.0` | CUDA Toolkit 来源 |
+| `CUDA_CHANNEL` | `nvidia/label/cuda-13.0.0` | 装 conda 版 CUDA Toolkit 时用的 channel（见 §3.4）|
 
 > **不需要联网 clone 任何源码**：`nvdiffrast`、`fused-ssim`、光栅化扩展全部已 vendor 到 `submodules/`。
 
@@ -85,17 +85,32 @@ pip install torch torchvision
 
 > **不要**加 `--index-url`。pip 默认源已能解析出 `+cu130` 构建（实测得到 `2.14.0+cu130`）。指定旧版本 cu 源反而会引入不匹配。
 
-### 3.4 关于双 CUDA 工具链
+### 3.4 CUDA 工具链：用系统的还是 conda 的
 
-本环境下同时存在两套 CUDA 13.0：
+`setup_env.sh` 支持两种来源，由 `LIVE3DGS_CUDA` 控制：
 
-| 位置 | 版本 | 来源 | 何时被用到 |
-|---|---|---|---|
-| `$CONDA_PREFIX/bin/nvcc` | 13.0.**48** | §3.2 的 conda 安装 | **优先**：conda 环境激活后 PATH 首位即此 |
-| `/usr/local/cuda-13.0/bin/nvcc` | 13.0.**88** | 系统安装 | 回退：未装 conda cuda-toolkit 时 |
+| 取值 | 行为 | 何时用 |
+|---|---|---|
+| `auto`（默认）| 系统里有**主.次版本匹配**的 nvcc 就用它，否则装 conda 的 | 大多数情况 |
+| `system` | 强制用系统 CUDA；没有匹配版本则报错 | 机器已装好 CUDA 且不想再装一份 |
+| `conda` | 强制装 conda 的 `cuda-toolkit` | 系统没有 CUDA，或版本不匹配 |
 
-两者都是完整的 CUDA 13.0（含 CCCL/Thrust 头文件），**都可以用**。差异仅在补丁级，对 ABI 无影响。
-`scripts/env_check.py` 会校验「nvcc ↔ torch 头文件版本一致」，只要都是 13.0 即通过。
+```bash
+bash setup_env.sh                      # auto：有系统 13.0 就跳过 conda 安装
+LIVE3DGS_CUDA=system bash setup_env.sh # 强制用系统 CUDA
+LIVE3DGS_CUDA=conda  bash setup_env.sh # 强制装 conda 的（约 1.5 GB，连带 gcc）
+```
+
+**这不影响运行时**：torch 自带 CUDA 运行库，`cuda-toolkit` 只在编译三个扩展时被用到。
+所以系统里已有匹配版本时，装 conda 那份纯属多余 —— 而且它会连带 `gcc_linux-64`，
+带出 §8 里那个 deactivate 钩子的坑。
+
+脚本会在装完 torch 后**校验版本一致**：若 `torch.version.cuda` 与工具链的主.次版本
+不符，会明确警告（扩展会以奇怪的方式编译失败），并提示改用 `LIVE3DGS_CUDA=conda`。
+
+> 用系统 CUDA 时唯一要留意的是 **宿主 g++ 版本**：CUDA 13 对 gcc 有上限要求。
+> 若 `nvcc` 报 "unsupported GNU version"，改用 `LIVE3DGS_CUDA=conda`
+> （conda 会装一份匹配的 gcc）。
 
 ### 3.5 补全构建工具与 Python 依赖
 

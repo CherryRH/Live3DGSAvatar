@@ -10,6 +10,11 @@
 #   ENV_PREFIX=$PWD/.conda/envs/live3dgs bash setup_env.sh # 建在工作区内
 #   FORCE=1 bash setup_env.sh                             # 已存在则重建
 #
+# CUDA 工具链从哪来（只影响编译扩展，不影响运行）：
+#   LIVE3DGS_CUDA=auto    默认：系统里有**版本匹配**的 nvcc 就用它，否则装 conda 的
+#   LIVE3DGS_CUDA=system  强制用系统 CUDA（没有匹配版本则报错）
+#   LIVE3DGS_CUDA=conda   强制装 conda 的 cuda-toolkit（会连带 gcc，约 1.5 GB）
+#
 # 幂等：重复执行会跳过已完成步骤。
 # =============================================================================
 
@@ -25,6 +30,10 @@ set -eo pipefail
 PY_VER="${PY_VER:-3.10}"
 ENV_NAME="${ENV_NAME:-live3dgs}"
 CUDA_CHANNEL="${CUDA_CHANNEL:-nvidia/label/cuda-13.0.0}"
+# CUDA 工具链来源：auto | system | conda（见文件头的说明）
+CUDA_MODE="${LIVE3DGS_CUDA:-auto}"
+# 期望的 CUDA 版本（主.次）；与 torch 的 cu130 对应
+EXPECTED_CUDA="${EXPECTED_CUDA:-13.0}"
 TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST:-8.6}"   # RTX 3060 = sm_86
 MAX_JOBS="${MAX_JOBS:-1}"                             # WSL 内存有限，限制并发
 NVCC_THREADS="${NVCC_THREADS:-2}"
@@ -42,6 +51,29 @@ fi
 log()  { printf '\n\033[1;36m==> %s\033[0m\n' "$*"; }
 warn() { printf '\033[1;33m[warn]\033[0m %s\n' "$*"; }
 die()  { printf '\033[1;31m[error]\033[0m %s\n' "$*" >&2; exit 1; }
+
+# nvcc 的主.次版本（如 13.0）；读不到时输出空
+_nvcc_version() {
+    "$1/bin/nvcc" --version 2>/dev/null \
+        | sed -n 's/.*release \([0-9]*\.[0-9]*\).*/\1/p' | head -1
+}
+
+# 找**系统** CUDA：优先 $CUDA_HOME，其次 /usr/local/cuda*。
+# ⚠️ 必须排除 conda 环境自己那份 —— conda 激活时可能已把 CUDA_HOME 指向
+#    $CONDA_PREFIX，若不排除，日志会显示"使用系统 CUDA"而实际用的是 conda 的。
+_find_system_cuda() {
+    local cand
+    for cand in "${CUDA_HOME:-}" /usr/local/cuda; do
+        [[ -n "$cand" ]] || continue
+        [[ "$cand" == "$CONDA_PREFIX"* ]] && continue
+        if [[ -x "$cand/bin/nvcc" ]]; then echo "$cand"; return 0; fi
+    done
+    for cand in /usr/local/cuda-*; do
+        [[ "$cand" == "$CONDA_PREFIX"* ]] && continue
+        if [[ -x "$cand/bin/nvcc" ]]; then echo "$cand"; return 0; fi
+    done
+    return 1
+}
 
 # ------------------------------------------------- 0. conda 与前置检查 ----
 log "0/7 检查前置条件"
@@ -80,14 +112,52 @@ conda activate "$ACTIVATE_TARGET"
 log "已激活：$CONDA_PREFIX"
 python -V
 
-# --------------------------------------------- 2. CUDA Toolkit 13.0 ----
-log "2/7 安装 CUDA Toolkit 13.0（conda channel: $CUDA_CHANNEL）"
-if [[ -x "$CONDA_PREFIX/bin/nvcc" ]]; then
-    warn "环境内已有 nvcc，跳过"
-else
-    conda install -y -c "$CUDA_CHANNEL" cuda-toolkit
+# ------------------------------------------------- 2. CUDA 工具链 ----
+# 只影响**编译扩展**：torch 自带 CUDA 运行库，所以系统里已有匹配版本时
+# 没必要再往 conda 里塞一份 cuda-toolkit（那会连带 gcc_linux-64，约 1.5 GB，
+# 还带出 deactivate 钩子的坑，见文件头）。
+log "2/7 确定 CUDA 工具链（LIVE3DGS_CUDA=$CUDA_MODE，期望 $EXPECTED_CUDA）"
+
+SYS_CUDA=""
+if sys_home="$(_find_system_cuda)"; then
+    sys_ver="$(_nvcc_version "$sys_home")"
+    if [[ "$sys_ver" == "$EXPECTED_CUDA"* ]]; then
+        SYS_CUDA="$sys_home"
+        log "  发现系统 CUDA：$sys_home（$sys_ver）"
+    else
+        warn "系统 CUDA $sys_ver 与期望 $EXPECTED_CUDA 不匹配，忽略：$sys_home"
+    fi
 fi
-"$CONDA_PREFIX/bin/nvcc" --version | tail -2
+
+USE_SYSTEM_CUDA=0
+case "$CUDA_MODE" in
+    conda)  USE_SYSTEM_CUDA=0 ;;
+    system)
+        [[ -n "$SYS_CUDA" ]] || die "LIVE3DGS_CUDA=system 但没找到匹配的系统 CUDA（需要 $EXPECTED_CUDA）。
+        装一份 CUDA $EXPECTED_CUDA，或改用 LIVE3DGS_CUDA=conda。"
+        USE_SYSTEM_CUDA=1 ;;
+    auto)
+        if [[ -n "$SYS_CUDA" ]]; then USE_SYSTEM_CUDA=1; fi ;;
+    *) die "LIVE3DGS_CUDA 只能是 auto | system | conda，实际：$CUDA_MODE" ;;
+esac
+
+if (( USE_SYSTEM_CUDA )); then
+    export CUDA_HOME="$SYS_CUDA"
+    export PATH="$CUDA_HOME/bin:$PATH"      # 让 cuobjdump 等工具也能被找到
+    [[ -f "$CUDA_HOME/include/cuda_runtime.h" ]] \
+        || warn "找不到 $CUDA_HOME/include/cuda_runtime.h —— 系统 CUDA 可能只装了 runtime"
+    log "使用系统 CUDA（不安装 conda 的 cuda-toolkit）：$CUDA_HOME"
+    nvcc --version | tail -2
+else
+    log "安装 CUDA Toolkit $EXPECTED_CUDA（conda channel: $CUDA_CHANNEL）"
+    if [[ -x "$CONDA_PREFIX/bin/nvcc" ]]; then
+        warn "环境内已有 nvcc，跳过"
+    else
+        conda install -y -c "$CUDA_CHANNEL" cuda-toolkit
+    fi
+    export CUDA_HOME="$CONDA_PREFIX"
+    "$CONDA_PREFIX/bin/nvcc" --version | tail -2
+fi
 
 # ------------------------------------------------- 3. PyTorch ----
 log "3/7 安装 PyTorch（由 pip 解析与 CUDA 13 匹配的版本）"
@@ -103,6 +173,14 @@ print(f"  torch cuda  {torch.version.cuda}")
 print(f"  torchvision {torchvision.__version__}")
 assert torch.version.cuda is not None, "torch 是 CPU-only 构建，请检查 pip 安装源"
 PY
+
+# 工具链与 torch 的 CUDA 版本必须对得上 —— 否则编译扩展会以奇怪的方式失败
+TORCH_CUDA="$(python -c 'import torch; print(torch.version.cuda or "")')"
+case "$TORCH_CUDA" in
+    "$EXPECTED_CUDA"*) log "torch 编译于 CUDA $TORCH_CUDA，与工具链一致" ;;
+    *) warn "torch 编译于 CUDA ${TORCH_CUDA:-未知}，而工具链是 $EXPECTED_CUDA。
+         扩展可能编译失败。可改用 LIVE3DGS_CUDA=conda 让 conda 装匹配的工具链。" ;;
+esac
 
 # ------------------------------------------- 4. 构建工具 + 依赖 ----
 # ⚠️ 顺序关键，两步都不能省：
@@ -173,7 +251,7 @@ fi
 # ------------------------------------------------ 6. 光栅化扩展 ----
 log "6/7 编译光栅化扩展（TORCH_CUDA_ARCH_LIST=$TORCH_CUDA_ARCH_LIST）"
 
-# 供 cuobjdump / nvcc 定位 CUDA 13 工具链；两者路径一致时无副作用
+# CUDA_HOME 已在第 2 步确定（系统 CUDA 或 conda 的）；这里只兜底
 export CUDA_HOME="${CUDA_HOME:-$CONDA_PREFIX}"
 export TORCH_EXTENSIONS_DIR="${TORCH_EXTENSIONS_DIR:-$REPO_ROOT/.conda/torch_extensions}"
 mkdir -p "$TORCH_EXTENSIONS_DIR"

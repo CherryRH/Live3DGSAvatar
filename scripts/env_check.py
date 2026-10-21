@@ -42,9 +42,14 @@ class Report:
 
 
 def _nvcc_version() -> str | None:
-    """从 conda 环境或 PATH 中取 nvcc 版本。优先环境内 nvcc。"""
+    """取 nvcc 版本：环境内 → CUDA_HOME → PATH。
+
+    `CUDA_HOME` 排在 PATH 之前：用系统 CUDA 时（`LIVE3DGS_CUDA=system`），
+    真正参与编译的是它指向的那份，而 PATH 里可能还有别的版本。
+    """
     candidates = [
         os.path.join(sys.prefix, "bin", "nvcc"),
+        os.path.join(os.environ.get("CUDA_HOME", ""), "bin", "nvcc"),
         shutil.which("nvcc"),
     ]
     for exe in candidates:
