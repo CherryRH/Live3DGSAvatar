@@ -24,7 +24,7 @@ export const PROTOCOL_VERSION = 1;
  *
  * 改前端时请顺手更新此值。
  */
-export const BUILD_TAG = "2026-02-gui21";
+export const BUILD_TAG = "2026-02-gui24";
 
 /**
  * 解析一条二进制帧。
@@ -34,21 +34,26 @@ export const BUILD_TAG = "2026-02-gui21";
  * @returns {{seq:number, pixels:Uint8ClampedArray}}
  * @throws {Error} 几何未配置或长度不符时抛出（宁可报错也不画出错位的图）
  */
-/** 二进制帧类型：1 = 渲染结果，2 = 对比目标（数据集原图）。 */
+/** 二进制帧类型。1/2 是原始 RGB，3/4 是同样内容的 JPEG。 */
 export const MSG_RENDER = 1;
 export const MSG_TARGET = 2;
+export const MSG_RENDER_JPEG = 3;
+export const MSG_TARGET_JPEG = 4;
+
+/** 原始像素的帧类型（只有这些需要校验长度）。 */
+const RAW_KINDS = new Set([MSG_RENDER, MSG_TARGET]);
+/** 编码帧对应的"解出来是什么"。 */
+export const DECODED_KIND = new Map([
+  [MSG_RENDER_JPEG, MSG_RENDER],
+  [MSG_TARGET_JPEG, MSG_TARGET],
+]);
 
 export function parseFrame(buffer, geom) {
   if (!geom || !geom.width || !geom.height) {
     throw new Error("尚未收到 config，无法解析帧");
   }
-  const channels = geom.channels ?? 3;
-  const expected = HEADER_BYTES + geom.width * geom.height * channels;
-  if (buffer.byteLength !== expected) {
-    throw new Error(
-      `帧长度不符：期望 ${expected} 字节（${geom.width}×${geom.height}×${channels} + ${HEADER_BYTES}），` +
-      `实际 ${buffer.byteLength}`
-    );
+  if (buffer.byteLength < HEADER_BYTES) {
+    throw new Error(`帧太短：${buffer.byteLength} 字节`);
   }
 
   const view = new DataView(buffer);
@@ -56,8 +61,25 @@ export function parseFrame(buffer, geom) {
   const kind = view.getUint8(0);
   const seq = view.getUint32(1, /* littleEndian = */ true);
   const psnr = view.getFloat32(5, /* littleEndian = */ true);
-  const pixels = new Uint8ClampedArray(buffer, HEADER_BYTES);
-  return { kind, seq, psnr, pixels };
+
+  if (RAW_KINDS.has(kind)) {
+    const channels = geom.channels ?? 3;
+    const expected = HEADER_BYTES + geom.width * geom.height * channels;
+    if (buffer.byteLength !== expected) {
+      throw new Error(
+        `帧长度不符：期望 ${expected} 字节（${geom.width}×${geom.height}×${channels} + ${HEADER_BYTES}），` +
+        `实际 ${buffer.byteLength}`
+      );
+    }
+    return { kind, seq, psnr, pixels: new Uint8ClampedArray(buffer, HEADER_BYTES) };
+  }
+
+  if (!DECODED_KIND.has(kind)) {
+    throw new Error(`未知的帧类型：${kind}（前后端版本可能不一致）`);
+  }
+  // 编码帧：长度随内容变化，不做定长校验；交给浏览器解码
+  const bytes = new Uint8Array(buffer, HEADER_BYTES);
+  return { kind, seq, psnr, blob: new Blob([bytes], { type: "image/jpeg" }) };
 }
 
 /**

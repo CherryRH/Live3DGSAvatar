@@ -81,6 +81,8 @@ _FALLBACK: dict[str, Any] = {
     "render.sh_degree": 0,
     "render.target_fps": 60,
     "render.status_interval_s": 0.25,
+    "render.encode": "jpeg",
+    "render.encode_quality": 85,
     "render.scale": 1.0,
     "render.batch_size": 1,
     "render.frames": 1,

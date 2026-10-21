@@ -111,3 +111,29 @@ def test_json_helper_encodes_chinese() -> None:
 
     asyncio.run(run())
     assert "渲染中" in ws.texts[0], ws.texts[0]
+
+
+# ------------------------------------------------- 吞吐统计口径 --
+
+
+def test_throughput_uses_interval_delta() -> None:
+    """速率必须用**区间增量**：拿累计值除以间隔会得到"只增不减"的假数字。
+
+    真实事故：日志打出 `已发 4722 MiB（472.2 MiB/s）`，而实际只有 ~0.8 MiB/s ——
+    累计值被当成了区间值，越跑越大。
+    """
+    from live3dgsavatar.app.server import _throughput_mib_s
+
+    mib = 2 ** 20
+    # 累计 100 MiB → 110 MiB，过去 10 s：应报 1 MiB/s
+    assert abs(_throughput_mib_s(110 * mib, 100 * mib, 10.0) - 1.0) < 1e-6
+    # 换成极端值：累计 4722 MiB、区间 10 s、上次也是 4722 MiB → 0
+    assert _throughput_mib_s(4722 * mib, 4722 * mib, 10.0) == 0.0
+
+
+def test_throughput_handles_reset_and_zero_span() -> None:
+    """新连接会把累计值清零（增量为负）；间隔为 0 时不能除零。"""
+    from live3dgsavatar.app.server import _throughput_mib_s
+
+    assert _throughput_mib_s(10, 100, 5.0) == 0.0, "增量负值按 0"
+    assert _throughput_mib_s(100, 0, 0.0) == 0.0, "不能除零"

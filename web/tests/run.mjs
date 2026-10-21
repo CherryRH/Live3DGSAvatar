@@ -99,10 +99,41 @@ test("帧解析：seq 小端 + 像素偏移正确", () => {
   assertEqual(frame.pixels[5], 5);
 });
 
-test("帧解析拒绝长度不符（宁可报错也不画错位图）", () => {
+test("原始帧拒绝长度不符（宁可报错也不画错位图）", () => {
   const geom = { width: 4, height: 2, channels: 3 };
-  assertThrows(() => parseFrame(new ArrayBuffer(10), geom), /帧长度不符/);
-  assertThrows(() => parseFrame(new ArrayBuffer(HEADER_BYTES), geom), /帧长度不符/);
+  const tooLong = new ArrayBuffer(10);
+  new DataView(tooLong).setUint8(0, 1);          // kind=1 原始渲染帧
+  assertThrows(() => parseFrame(tooLong, geom), /帧长度不符/);
+  const headerOnly = new ArrayBuffer(HEADER_BYTES);
+  new DataView(headerOnly).setUint8(0, 1);
+  assertThrows(() => parseFrame(headerOnly, geom), /帧长度不符/);
+  assertThrows(() => parseFrame(new ArrayBuffer(4), geom), /帧太短/);
+});
+
+test("编码帧不做定长校验，解出 Blob", () => {
+  const geom = { width: 4, height: 2, channels: 3 };
+  const payload = 200;                           // 随便多长都应接受
+  const buf = new ArrayBuffer(HEADER_BYTES + payload);
+  const dv = new DataView(buf);
+  dv.setUint8(0, 3);                             // kind=3 JPEG 渲染帧
+  dv.setUint32(1, 5, true);
+  dv.setFloat32(5, 21.25, true);
+  for (let i = 0; i < payload; i++) {
+    new Uint8Array(buf, HEADER_BYTES)[i] = 0xff;
+  }
+  const frame = parseFrame(buf, geom);
+  assertEqual(frame.kind, 3);
+  assertEqual(frame.seq, 5);
+  assertEqual(frame.psnr, 21.25);
+  assert(frame.blob && frame.blob.size === payload, `blob 应含 ${payload} 字节`);
+  assert(!frame.pixels, "编码帧不该给像素数组");
+});
+
+test("未知帧类型要报错（版本不一致时别画错位图）", () => {
+  const geom = { width: 4, height: 2, channels: 3 };
+  const buf = new ArrayBuffer(HEADER_BYTES + 8);
+  new DataView(buf).setUint8(0, 99);
+  assertThrows(() => parseFrame(buf, geom), /未知的帧类型/);
 });
 
 test("帧解析在未收到 config 时明确报错", () => {

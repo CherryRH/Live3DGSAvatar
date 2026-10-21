@@ -166,6 +166,8 @@ output_dir: output                     # output 特殊：相对**当前工作目
 | `target_fps` | `60` | **帧数上限**：每秒最多渲染几帧。同时决定播放推进速度（30 时动作比 60 慢一倍）。`0` 表示不限 |
 | `status_interval_s` | `0.25` | `status` 消息推送间隔。前端据此更新帧号条；太小占满通道，太大帧号一跳一跳 |
 | `sh_degree` | `0` | 球谐阶数。本项目只用 DC 项 |
+| `encode` | `jpeg` | 推流编码：`jpeg`（约 24 KiB/帧，编码 0.7 ms）或 `raw`（768 KiB）。默认 jpeg —— 本机也更快 |
+| `encode_quality` | `85` | JPEG 质量 1–100。85 实测约 24 KiB/帧且肉眼无差别 |
 | `batch_size` | `4` | 批大小。6GB 显存建议 ≤ 4 |
 | `frames` | `20` | 默认渲染帧数；`-1` 为全部 |
 | `max_batch_size` / `max_gaussian_size` / `num_streams` | `10` / `60353` / `3` | 训练用的预分配上限（训练待接入，先保留） |

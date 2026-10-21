@@ -36,7 +36,7 @@ def _session_with(tmp_path: Path, frames: int = 3) -> Session:
     img_dir.mkdir(parents=True)
     for i in range(frames):
         rgba = np.zeros((8, 8, 4), np.uint8)
-        rgba[..., :3] = 40 * (i + 1)
+        rgba[..., :3] = (40 * (i + 1)) % 256     # 保持 uint8 范围
         rgba[2:6, 2:6, 3] = 255          # 中间 4×4 是前景
         Image.fromarray(rgba).save(img_dir / f"{i:05d}.png")
 
@@ -135,9 +135,40 @@ def test_compare_target_cached_by_frame(tmp_path) -> None:
     assert cached is not None
 
     session._compare_target(rgb)
-    # 命中缓存 ⇒ 缓存元组对象没被替换（没有重新读盘）
-    assert session._target_cache is cached, "同一帧应命中缓存"
+    # 命中缓存 ⇒ 复用**同一块像素数组**（没有重新解码）
+    assert session._target_cache[1] is cached[1], "同一帧应命中缓存"
 
     session.timeline.set_index(1)
     session._compare_target(rgb)
-    assert session._target_cache is not cached, "换帧后应重新读"
+    assert session._target_cache[1] is not cached[1], "换帧后应重新读"
+
+
+def test_target_pool_is_bounded_and_reuses_arrays(tmp_path) -> None:
+    """目标帧池要复用同一块像素数组，并且有上限（不能无限吃内存）。
+
+    为什么需要池：顺序播放时每帧都要新图，而解一张 512² PNG 要 7–10 ms，
+    比渲染本身还慢。池 + 后台预取把这段成本移出了渲染线程。
+    """
+    session = _session_with(tmp_path, frames=20)
+    rgb = torch.zeros(8, 8, 3, dtype=torch.uint8)
+
+    first = session._compare_target(rgb)[0]
+    second = session._compare_target(rgb)[0]
+    # `torch.from_numpy` 每次都新建张量对象，所以比的是**内存**是否共享
+    assert np.shares_memory(first.numpy(), second.numpy()), \
+        "同一帧应复用同一块数组（没有重新解码）"
+
+    for i in range(20):
+        session.timeline.set_index(i)
+        session._compare_target(rgb)
+    # 上限 8：池子里只留最近几帧，播放时不至于把整个数据集读进内存
+    assert len(session._target_store) <= 8, len(session._target_store)
+
+
+def test_prefetch_is_deduplicated(tmp_path) -> None:
+    """同一帧被反复排队时只应有一个在飞任务（避免线程爆炸）。"""
+    session = _session_with(tmp_path, frames=10)
+    for _ in range(5):
+        session._prefetch_target(3, 8, 8)
+    # 在飞集合最多一个 key（重复提交会被拦下）
+    assert len(session._target_inflight) <= 1, session._target_inflight

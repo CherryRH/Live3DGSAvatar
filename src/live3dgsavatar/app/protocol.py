@@ -13,10 +13,14 @@ import struct
 #: 为什么把 PSNR 塞进帧头：对比图与 PSNR 必须**同步**（同一个帧号算出来的），
 #: 走 status 会因为周期推送而与画面错位。
 FRAME_HEADER_BYTES = 9
-#: 渲染结果帧
+#: 渲染结果帧（原始 RGB）
 MSG_RENDER = 1
 #: 对比用的目标帧（数据集 `images/` 的同一帧）
 MSG_TARGET = 2
+#: 渲染结果帧（JPEG 编码）
+MSG_RENDER_JPEG = 3
+#: 对比目标帧（JPEG 编码）
+MSG_TARGET_JPEG = 4
 _FRAME_HEAD = struct.Struct("<BIf")
 #: 协议版本；与前端 `web/js/protocol.js` 的 `PROTOCOL_VERSION` 必须一致。
 PROTOCOL_VERSION = 1
@@ -65,6 +69,21 @@ def unpack_frame(buffer: bytes) -> tuple[int, int, float, bytes]:
         raise ValueError(f"帧太短：{len(buffer)} 字节")
     kind, seq, psnr = _FRAME_HEAD.unpack(buffer[:FRAME_HEADER_BYTES])
     return kind, seq, psnr, buffer[FRAME_HEADER_BYTES:]
+
+
+def pack_blob(seq: int, blob: bytes, *, kind: int,
+              psnr: float = float("nan")) -> bytes:
+    """打包**已编码**的负载（如 JPEG）。
+
+    与 `pack_frame` 共用同一个帧头，只是这里不校验负载长度 ——
+    编码后的大小随内容变化，由前端按帧头里的类型决定怎么解。
+    """
+    if not isinstance(blob, (bytes, bytearray)):
+        raise TypeError(f"blob 应为 bytes，实际 {type(blob)!r}")
+    if not blob:
+        raise ValueError("blob 为空")
+    head = _FRAME_HEAD.pack(kind & 0xFF, seq & 0xFFFFFFFF, float(psnr))
+    return head + bytes(blob)
 
 
 def expected_frame_bytes(width: int, height: int, channels: int = 3) -> int:

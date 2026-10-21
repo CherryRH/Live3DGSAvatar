@@ -79,6 +79,27 @@ export class FrameView {
     this.lastSeq = frame.seq;
   }
 
+  /**
+   * 画一张已解码的位图（JPEG 帧走这条路）。
+   *
+   * 为什么不用 `putImageData`：那要求逐像素 RGB，浏览器拿到的活是解码后的
+   * `ImageBitmap`。`drawImage` 直接把它画到 canvas，还能顺带做缩放。
+   *
+   * 位图由调用方负责 `close()`（不关会一直占 GPU/内存）。
+   */
+  drawBitmap(bitmap, seq = null) {
+    if (!this.ctx) throw new Error("无法取得 2D 上下文");
+    // 编码帧的尺寸可能与 config 一致，也可能因缩放不同；以位图为准重设画布
+    if (bitmap.width !== this.width || bitmap.height !== this.height) {
+      // 走 `resize` 而不是手改宽高：它会把像素缓冲一起重建，
+      // 这样切回原始帧（或反过来）时两条路径都能直接画。
+      this.resize(bitmap.width, bitmap.height, 3);
+    }
+    this.ctx.drawImage(bitmap, 0, 0);
+    this.framesDrawn += 1;
+    if (seq !== null) this.lastSeq = seq;
+  }
+
   /** 把当前画面导出为 PNG blob（用于"截取当前帧"）。 */
   async toBlob(type = "image/png") {
     return new Promise((resolve) => this.canvas.toBlob(resolve, type));

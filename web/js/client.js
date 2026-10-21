@@ -10,7 +10,9 @@
  * 3. **重连用指数退避**：后端重启时不至于把日志刷满。
  */
 
-import { MSG_TARGET, parseFrame, parseMessage, geometryFromConfig } from "./protocol.js";
+import {
+  DECODED_KIND, MSG_TARGET, parseFrame, parseMessage, geometryFromConfig,
+} from "./protocol.js";
 
 const RECONNECT_BASE_MS = 500;
 const RECONNECT_MAX_MS = 8000;
@@ -150,6 +152,13 @@ export class RenderClient extends EventTarget {
       return;
     }
 
+    // 编码帧：先解码成 ImageBitmap，再按"解出来是什么"走原有分发。
+    // 解码是异步的，所以迟到判定放在回调里（见 `_dispatchDecoded`）。
+    if (DECODED_KIND.has(frame.kind)) {
+      this._decode(frame);
+      return;
+    }
+
     // 对比帧独立派发：它不参与"最新一帧"的节流（那是渲染帧的逻辑）。
     // 顺序上后端保证它紧跟同一 seq 的渲染帧，所以直接画即可。
     if (frame.kind === MSG_TARGET) {
@@ -164,6 +173,44 @@ export class RenderClient extends EventTarget {
     this.lastSeq = frame.seq;
 
     this._pending = frame;
+    this._pump();
+  }
+
+  /**
+   * 解码 JPEG 帧并派发。
+   *
+   * 两个必须处理的点：
+   * 1. **乱序**：解码是异步的，旧帧可能后完成。用 seq 比较丢弃迟到的。
+   * 2. **位图泄漏**：`ImageBitmap` 不关会一直占显存；画完立刻 `close()`。
+   */
+  async _decode(frame) {
+    let bitmap;
+    try {
+      bitmap = await createImageBitmap(frame.blob);
+    } catch (err) {
+      this._emitError(new Error(`JPEG 解码失败：${err.message}`));
+      return;
+    }
+
+    const kind = DECODED_KIND.get(frame.kind);
+    const decoded = { kind, seq: frame.seq, psnr: frame.psnr, bitmap };
+
+    // 对比帧不参与渲染帧的"最新一帧"节流，先处理它（且不受 seq 迟到判定影响）
+    if (kind === MSG_TARGET) {
+      this.dispatchEvent(new CustomEvent("target", { detail: decoded }));
+      return;
+    }
+
+    if (this.lastSeq !== null && frame.seq <= this.lastSeq) {
+      bitmap.close();                 // 迟到的旧帧，丢掉
+      return;
+    }
+    if (this.lastSeq !== null && frame.seq > this.lastSeq + 1) {
+      this.dropped += frame.seq - this.lastSeq - 1;
+    }
+    this.lastSeq = frame.seq;
+
+    this._pending = decoded;
     this._pump();
   }
 

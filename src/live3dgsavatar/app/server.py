@@ -36,7 +36,10 @@ from .protocol import (
     RollingWindow,
     config_message,
     frame_interval,
+    MSG_RENDER_JPEG,
     MSG_TARGET,
+    MSG_TARGET_JPEG,
+    pack_blob,
     pack_frame,
     sleep_after,
 )
@@ -265,6 +268,10 @@ async def _serve_client(app: FastAPI, ws: WebSocket, session: Session) -> None:
 
     queue: asyncio.Queue = asyncio.Queue(maxsize=1)
     stop = asyncio.Event()
+    # 本连接的发送字节统计：`total` 为累计，`logged` 是上次打日志时的值。
+    # ⚠️ 速率必须用**区间增量**算：拿累计值除以固定间隔会得到"只增不减"的假速率
+    #    （曾经把 4722 MiB 当成 472 MiB/s 打了出来）。
+    sent = {"total": 0, "logged": 0, "at": asyncio.get_running_loop().time()}
     stats_log_interval_s = float(
         session.cfg.get("app.stats_log_interval_s", 10.0))
     stats_window_s = max(3.0, stats_log_interval_s)
@@ -354,7 +361,22 @@ async def _serve_client(app: FastAPI, ws: WebSocket, session: Session) -> None:
                 session.advance_frame()
 
             psnr = timings.get("psnr", float("nan"))
-            frame = pack_frame(session.frames_served, rgb, psnr=psnr)
+            # ---- 编码：raw 或 JPEG ----
+            # 每帧从 cfg 读：设置面板改完立即生效，不必重连。
+            # 编码放到线程里做（512² 约 0.7 ms），不占事件循环。
+            use_jpeg = str(session.cfg.get("render.encode", "raw")).lower() == "jpeg"
+            if use_jpeg:
+                quality = int(session.cfg.get("render.encode_quality", 85))
+                render_kind, target_kind = MSG_RENDER_JPEG, MSG_TARGET_JPEG
+                blob = await asyncio.to_thread(_encode_jpeg, rgb, quality)
+                if blob is None:                # 编码失败：退回 raw，别断流
+                    use_jpeg = False
+            if use_jpeg:
+                frame = pack_blob(session.frames_served, blob,
+                                  kind=render_kind, psnr=psnr)
+            else:
+                frame = pack_frame(session.frames_served, rgb, psnr=psnr)
+
             # 对比帧**只在变化时发**：它随驱动帧号变，而渲染可能 45 fps
             # 刷同一帧 —— 每帧都发会让数据量无谓翻倍。开关切换也要重发。
             target_key = None
@@ -362,8 +384,15 @@ async def _serve_client(app: FastAPI, ws: WebSocket, session: Session) -> None:
                 target_key = (session._current_index(),)
             if target is not None and target_key != app.state.target_key:
                 app.state.target_key = target_key
-                pair = (frame, pack_frame(session.frames_served, target,
-                                          kind=MSG_TARGET, psnr=psnr))
+                if use_jpeg:
+                    t_blob = await asyncio.to_thread(
+                        _encode_jpeg, target.numpy(), quality)
+                if use_jpeg and t_blob is not None:
+                    pair = (frame, pack_blob(session.frames_served, t_blob,
+                                             kind=MSG_TARGET_JPEG, psnr=psnr))
+                else:
+                    pair = (frame, pack_frame(session.frames_served, target,
+                                              kind=MSG_TARGET, psnr=psnr))
             else:
                 if target is None:
                     app.state.target_key = None
@@ -405,16 +434,21 @@ async def _serve_client(app: FastAPI, ws: WebSocket, session: Session) -> None:
                 # 这是判断"要不要把某段搬到别的线程"的唯一依据。
                 gpu_ms = session.last_deform_ms + session.last_rasterize_ms
                 overhead_ms = session.last_frame_ms - gpu_ms
-                sent_mib = float(getattr(app.state, "sent_mib", 0.0))
-                mib_s = sent_mib / stats_log_interval_s
+                now_t = loop.time()
+                elapsed_s = max(0.5, now_t - sent["at"])
+                mib_s = _throughput_mib_s(sent["total"], sent["logged"],
+                                          elapsed_s)
+                sent["logged"] = sent["total"]
+                sent["at"] = now_t
+                sent_mib = sent["total"] / 2 ** 20
                 logger.info(
                     "[stats] %.1fs  渲染 %d 帧  平均 %.1f FPS  平均 %.2f ms/帧"
                     "（deform %.2f + raster %.2f + 其它 %.2f）"
-                    "已发 %.0f MiB（%.1f MiB/s）峰值显存 %.0f MiB  丢帧 %d",
+                    "发送 %.1f MiB/s（累计 %.0f MiB）峰值显存 %.0f MiB  丢帧 %d",
                     stats_log_interval_s, session.frames_rendered,
                     window.rate(now), session.last_frame_ms,
                     session.last_deform_ms, session.last_rasterize_ms,
-                    overhead_ms, sent_mib, mib_s,
+                    overhead_ms, mib_s, sent_mib,
                     session.peak_memory_mib, session.frames_dropped)
 
             # 帧数上限：上一轮没超时就等满间隔；超时则立刻继续（不补帧）
@@ -425,20 +459,16 @@ async def _serve_client(app: FastAPI, ws: WebSocket, session: Session) -> None:
 
     async def consume() -> None:
         """取最新帧发出去。发送慢时自然丢帧（队列容量 1）。"""
-        sent_bytes = 0
         while not stop.is_set():
             render_bytes, target_bytes = await queue.get()
             if not await sender.bytes(render_bytes):
                 return                       # 已断开：让其它任务收手
-            sent_bytes += len(render_bytes)
+            sent["total"] += len(render_bytes)
             # 对比帧紧跟在渲染帧之后：前端按类型分发，顺序保证同一帧号成对
             if target_bytes is not None and not await sender.bytes(target_bytes):
                 return
-            sent_bytes += len(target_bytes or b"")
+            sent["total"] += len(target_bytes or b"")
             session.frames_served += 1
-            # 带宽是远端部署的头号瓶颈：把实际发出的字节数交给统计日志，
-            # 与"渲染 FPS"对不上时就说明卡在网络而不是渲染。
-            app.state.sent_mib = sent_bytes / 2 ** 20
 
     async def control() -> None:
         """收控制消息。与 produce/consume 并发跑。"""
@@ -591,6 +621,41 @@ async def _capture(sender: "_Sender", session: Session,
     await asyncio.to_thread(Image.fromarray(rgb.numpy()).save, path)
     logger.info("已截取：%s", path)
     await sender.json({"type": "captured", "path": str(path)})
+
+
+def _throughput_mib_s(total_bytes: int, logged_bytes: int,
+                      elapsed_s: float) -> float:
+    """区间吞吐（MiB/s）。用**增量**，不是累计值。
+
+    参数里的两个数都是累计字节数；`elapsed_s` 是距上次统计的真实耗时
+    （而不是标称间隔 —— 渲染循环可能被拖慢，标称间隔会算偏）。
+    新连接会把累计值清零，所以增量可能为负，按 0 处理。
+    """
+    if elapsed_s <= 0:
+        return 0.0
+    delta = max(0, int(total_bytes) - int(logged_bytes))
+    return delta / 2 ** 20 / elapsed_s
+
+
+_encode_warned = False
+
+
+def _encode_jpeg(rgb, quality: int):
+    """JPEG 编码；失败返回 ``None``（调用方回退 raw）。
+
+    单独包一层是为了**只警告一次**：Pillow 缺失或图像异常时若每帧都打日志，
+    终端会被刷满，反而看不出真正的问题。
+    """
+    global _encode_warned
+    try:
+        from ..streaming import encode_jpeg
+
+        return encode_jpeg(rgb.numpy() if hasattr(rgb, "numpy") else rgb, quality)
+    except Exception as e:                                      # noqa: BLE001
+        if not _encode_warned:
+            logger.warning("JPEG 编码不可用，回退 raw：%s: %s", type(e).__name__, e)
+            _encode_warned = True
+        return None
 
 
 def _status_payload(session: Session) -> dict:

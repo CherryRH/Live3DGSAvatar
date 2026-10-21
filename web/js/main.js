@@ -297,9 +297,17 @@ function wireSource(src, { isMock }) {
   });
 
   src.addEventListener("frame", (ev) => {
+    const frame = ev.detail;
     try {
-      view.draw(ev.detail);
+      if (frame.bitmap) {
+        // 编码帧：直接画位图，画完立刻释放（不关会一直占显存）
+        view.drawBitmap(frame.bitmap, frame.seq);
+        frame.bitmap.close();
+      } else {
+        view.draw(frame);
+      }
     } catch (err) {
+      frame.bitmap?.close?.();
       console.error("[main] 绘制失败：", err);
       showOverlay(`绘制失败：${err.message}`);
     }
@@ -310,12 +318,19 @@ function wireSource(src, { isMock }) {
 
   src.addEventListener("target", (ev) => {
     const frame = ev.detail;
-    // config 到达前不会有 target（后端要先知道尺寸才能发）；保险起见再挡一次
-    if (targetView && view.width && view.height) {
+    // 对比帧同样可能是编码的（bitmap）或原始的（pixels）
+    if (targetView) {
       try {
-        targetView.resize(view.width, view.height, 3);
-        targetView.draw(frame);
+        if (frame.bitmap) {
+          targetView.drawBitmap(frame.bitmap, frame.seq);
+          frame.bitmap.close();
+        } else if (view.width && view.height) {
+          // config 到达前不会有 target；保险起见再挡一次
+          targetView.resize(view.width, view.height, 3);
+          targetView.draw(frame);
+        }
       } catch (err) {
+        frame.bitmap?.close?.();
         console.error("[main] 对比帧绘制失败：", err);
       }
     }

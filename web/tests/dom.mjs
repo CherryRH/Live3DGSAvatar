@@ -44,6 +44,8 @@ function makeCanvas() {
     getContext: () => ({
       createImageData: (w, h) => ({ width: w, height: h, data: new Uint8ClampedArray(w * h * 4) }),
       putImageData: (img) => { canvas0.lastPainted = img; },
+      // JPEG 帧走 drawImage：记录最后一次调用的尺寸，便于断言
+      drawImage: (bmp, x, y, w, h) => { canvas0.lastBitmap = { bmp, x, y, w, h }; },
       save() {}, restore() {}, setTransform() {}, fillRect() {}, fillStyle: "",
     }),
     toBlob: (cb) => cb(null),
@@ -454,6 +456,22 @@ t("applyState 写入模型信息、总帧数与驱动方式", () => {
   eq(root._map["#f-frame"].value, "5");
   ok(root._map["#f-perturb"].checked, "扰动开关应回填");
   c.destroy();
+});
+
+t("drawBitmap 按位图尺寸重设画布并自增计数", () => {
+  const canvas = makeCanvas();
+  const v = new FrameView(canvas);
+  v.resize(512, 512, 3);
+  // 位图尺寸与 config 不同（例如后端换了分辨率）
+  v.drawBitmap({ width: 256, height: 128 }, 7);
+  eq(canvas.width, 256, "画布宽应跟随位图");
+  eq(canvas.height, 128, "画布高应跟随位图");
+  eq(v.width, 256);
+  eq(v.framesDrawn, 1);
+  eq(v.lastSeq, 7);
+  // 切回原始帧也应能画：drawBitmap 用了 resize，缓冲已按新尺寸重建
+  v.draw({ pixels: new Uint8ClampedArray(256 * 128 * 3), seq: 8 });
+  eq(v.framesDrawn, 2);
 });
 
 t("暂停时仍发送 playing=false（渲染继续，只是帧号停住）", () => {
