@@ -35,8 +35,6 @@ CUDA_MODE="${LIVE3DGS_CUDA:-auto}"
 # 期望的 CUDA 版本（主.次）；与 torch 的 cu130 对应
 EXPECTED_CUDA="${EXPECTED_CUDA:-13.0}"
 TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST:-8.6}"   # RTX 3060 = sm_86
-MAX_JOBS="${MAX_JOBS:-1}"                             # WSL 内存有限，限制并发
-NVCC_THREADS="${NVCC_THREADS:-2}"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SUBMODULES="$REPO_ROOT/submodules"
