@@ -130,8 +130,13 @@ def test_build_fit_npz_has_every_key_cap4d_reads() -> None:
         fx=500.0, fy=500.0, cx=256.0, cy=256.0,
         width=512, height=512, fps=30.0)
 
-    # 键名与形状必须对上 CAP4D 的读取逻辑
-    assert data["shape"].shape == (300,)
+    # 键名与形状必须对上 CAP4D 的读取逻辑。
+    # ⚠️ shape 必须是 **150** 维：它的 skinner 有
+    #    `assert shape_params.shape[1] == self.n_shape_params`（n_shape_params=150），
+    #    而 RDF 的 identity 是 300 维 —— 曾经因此直接崩在 DataLoader worker 里。
+    assert data["shape"].shape == (150,)
+    assert data["shape_full"].shape == (300,)
+    assert np.allclose(data["shape"], data["shape_full"][:150])
     assert data["expr"].shape == (n, bench.CAP4D_EXPR_DIM)
     for key in ("rot", "tra", "eye_rot"):
         assert data[key].shape == (n, 3), key
@@ -215,3 +220,38 @@ def test_reference_json_matches_written_frames(tmp_path) -> None:
     loaded = json.loads((out / "reference_images.json").read_text())
     for cam, t in loaded:
         assert (out / "images" / cam / f"{t:05d}.png").is_file()
+
+
+def test_expression_last_slot_is_blink_and_must_be_zero() -> None:
+    """CAP4D 的第 65 维表情是**眨眼**，不是 FLAME 的第 65 个分量。
+
+    `flowface/flame/flame.py` 在加载基时做
+    `expr_eigenvecs[:, :, -1] = blink_blendshape`，所以把 RDF 的第 65 个
+    表情系数写进去，语义就错成了"眨眼"。
+    """
+    bench = _load()
+    xs = np.ones((2, 118), np.float32)
+    xs[:, :100] = np.arange(100, dtype=np.float32)      # 每维给不同值
+    expr = bench._cap4d_expr(xs)
+
+    assert expr.shape == (2, 65)
+    assert np.allclose(expr[:, :64], xs[:, :64]), "前 64 维应原样来自 RDF"
+    assert np.all(expr[:, 64] == 0.0), "第 65 维（眨眼）必须是 0"
+
+
+def test_build_fit_npz_shape_is_truncated_to_cap4d_dim() -> None:
+    """`shape` 必须是 150 维、`expr` 末位眨眼为 0（CAP4D 的硬性口径）。"""
+    bench = _load()
+    n = 3
+    data = bench.build_fit_npz(
+        identity=np.linspace(0, 1, 300).astype(np.float32),
+        xs=np.ones((n, 118), np.float32),
+        idx=np.arange(n),
+        rots=[np.zeros(3)] * n, tras=[np.zeros(3)] * n,
+        eye_rot=np.zeros((n, 3), np.float32), jaw=np.zeros((n, 3), np.float32),
+        verts=np.zeros((n, 5, 3), np.float32), residuals=np.zeros(n, np.float32),
+        reproj=np.zeros(n, np.float32), names=[f"{i:05d}.png" for i in range(n)],
+        fx=1.0, fy=1.0, cx=1.0, cy=1.0, width=8, height=8, fps=30.0)
+    assert data["shape"].shape == (150,)
+    assert data["expr"].shape == (n, 65)
+    assert np.all(data["expr"][:, 64] == 0.0)

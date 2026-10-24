@@ -92,6 +92,18 @@ DEFAULT_RDF_ROOT = Path.home() / "Projects" / "RealDenseFace"
 #: CAP4D 用到的表情维数（`CAP4DInferenceDataset(n_expr_params=65)`）
 CAP4D_EXPR_DIM = 65
 
+#: 其中**真正的 FLAME 表情**只有前 64 维。flowface 在加载时会把最后一个
+#: 槽位**替换成眨眼方向**（`flowface/flame/flame.py`:
+#: `expr_eigenvecs[:, :, -1] = blink_blendshape`）。所以第 65 维不是
+#: FLAME 的第 65 个表情分量，而是"眨眼"，语义完全不同 —— RDF 不估眼睑，
+#: 这一维必须填 0，不能把 RDF 的第 65 个系数塞进去。
+CAP4D_FLAME_EXPR_DIM = 64
+
+#: CAP4D 用到的身份维数（同一个数据集类是 `n_shape_params=150`）。
+#: 它的 skinner 会 `assert shape_params.shape[1] == 150`，多一维都不行 ——
+#: 而 RDF 的 identity 是 300 维，所以必须截断，见 `main` 里的说明。
+CAP4D_SHAPE_DIM = 150
+
 #: RDF 的表情维数
 RDF_EXPR_DIM = 100
 
@@ -412,17 +424,36 @@ def main(argv: list[str] | None = None) -> int:
     eye_rot = 0.5 * (eye + eye2)              # CAP4D 两眼共用一组
     jaw = xs[:, POSE_START + 6: POSE_START + 9]
 
+    # CAP4D 的 skinner 只吃 150 维 identity、65 维 expr。所以"CAP4D 实际会用的
+    # 规范网格"必须用**截断后**的参数算 —— 否则我们拟合出的 rot/tra 对应的是
+    # 一个比 CAP4D 更精细的网格，缝进去会系统性偏一点。
+    identity_cap = identity.copy()
+    identity_cap[CAP4D_SHAPE_DIM:] = 0.0
+    identity_cap_t = torch.from_numpy(identity_cap).to(optimizer.device)
+
     rots, tras, residuals, residual_p95 = [], [], [], []
     reproj, reproj_p95, offsets = [], [], []
+    trunc_mm: list[float] = []
     with torch.no_grad():
         identity_t = torch.from_numpy(identity).to(optimizer.device)
         for i in range(len(xs)):
-            # CAP4D 用的"规范网格"：同样的 identity 与 expr，姿态与平移归零
+            # 规范网格：identity + expr，姿态与平移归零；维度按 CAP4D 的口径截断
             flat = xs[i].copy()
+            flat[CAP4D_FLAME_EXPR_DIM:RDF_EXPR_DIM] = 0.0   # CAP4D 只看到前 64 维
             flat[POSE_START:] = 0.0
             canon, _ = optimizer.decode_with_identity(
-                identity_t, torch.from_numpy(flat).to(optimizer.device))
+                identity_cap_t, torch.from_numpy(flat).to(optimizer.device))
             canon = canon.detach().cpu().float().numpy().reshape(-1, 3)
+
+            # 诊断：截断本身让网格动了多少（前几帧量一下就够）
+            if len(trunc_mm) < 5:
+                full_flat = xs[i].copy()
+                full_flat[POSE_START:] = 0.0
+                full, _ = optimizer.decode_with_identity(
+                    identity_t, torch.from_numpy(full_flat).to(optimizer.device))
+                full = full.detach().cpu().float().numpy().reshape(-1, 3)
+                trunc_mm.append(float(np.linalg.norm(full - canon, axis=1).mean()
+                                      * 1000.0))
 
             target = verts[i].astype(np.float64).copy()
             target[:, 2] -= float(args.camera_distance)   # 见 docstring 的推导
@@ -470,6 +501,9 @@ def main(argv: list[str] | None = None) -> int:
           f"p95 {np.median(reproj_p95):.3f} px  （每帧内先取中位/p95）")
     print(f"  系统偏移 (du, dv) = ({mean_offset[0]:+.3f}, {mean_offset[1]:+.3f}) px"
           f"  —— 常数偏差只说明约定差了常量，不是几何错误")
+    if trunc_mm:
+        print(f"  截断影响（300→150 维 identity、100→64 维 expr）："
+              f"平均 {np.mean(trunc_mm):.2f} mm —— 这是 CAP4D 表达能力的上限")
     print(f"  Kabsch 残差（逐帧均值）：中位 {np.median(residuals):.2f} mm  "
           f"p95 {np.percentile(residuals, 95):.2f} mm")
     print(f"  Kabsch 残差（逐顶点 p95）：中位 {np.median(residual_p95):.2f} mm"
@@ -555,6 +589,15 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
+def _cap4d_expr(xs_rows):
+    """把 RDF 的 100 维 expr 转成 CAP4D 的 65 维（末位是眨眼，置 0）。"""
+    import numpy as np
+
+    out = np.zeros((xs_rows.shape[0], CAP4D_EXPR_DIM), np.float32)
+    out[:, :CAP4D_FLAME_EXPR_DIM] = xs_rows[:, :CAP4D_FLAME_EXPR_DIM]
+    return out
+
+
 def build_fit_npz(*, identity, xs, idx, rots, tras, eye_rot, jaw, verts,
                   residuals, reproj, names, fx, fy, cx, cy, width, height,
                   fps) -> dict:
@@ -564,8 +607,10 @@ def build_fit_npz(*, identity, xs, idx, rots, tras, eye_rot, jaw, verts,
     arrays = idx if isinstance(idx, np.ndarray) else np.asarray(idx)
     return {
         # ---- CAP4D 会读的键 ----
-        "shape": identity.astype(np.float32),
-        "expr": xs[arrays, :CAP4D_EXPR_DIM].astype(np.float32),
+        # 只取前 150 维：CAP4D 的 skinner 对维数有 `assert`，300 维会直接崩
+        "shape": identity[:CAP4D_SHAPE_DIM].astype(np.float32),
+        # 前 64 维来自 RDF；最后一维是眨眼，RDF 不估眼睑 → 填 0
+        "expr": _cap4d_expr(xs[arrays]),
         "rot": np.stack([rots[i] for i in arrays]).astype(np.float32),
         "tra": np.stack([tras[i] for i in arrays]).astype(np.float32),
         "eye_rot": eye_rot[arrays].astype(np.float32),
@@ -577,6 +622,7 @@ def build_fit_npz(*, identity, xs, idx, rots, tras, eye_rot, jaw, verts,
         "resolutions": np.array([[width, height]], np.int64),
         "camera_order": np.array(["cam0"]),
         # ---- CAP4D 忽略、留给我们自己的键 ----
+        "shape_full": identity.astype(np.float32),   # 完整的 300 维
         "jaw_rot": jaw[arrays].astype(np.float32),
         "fps": np.array(fps, np.float32),
         "n_timesteps": np.array(len(arrays), np.int64),

@@ -46,7 +46,7 @@ python scripts/export_cap4d.py \
 
 ```
 output/cap4d/<数据集>/
-├── fit.npz                  shape(300) / expr(T,65) / rot / tra / eye_rot
+├── fit.npz                  shape(150) / expr(T,65) / rot / tra / eye_rot
 │                            / fx,fy,cx,cy / extr / resolutions / camera_order
 │                            + jaw_rot / x(118) / verts / 残差（CAP4D 忽略这些）
 ├── reference_images.json    [[ "cam0", t ], ...] 最多 4 张
@@ -131,8 +131,19 @@ reduced-blendshape 参数化不同），跳过即可。
 | 许可证 | CAP4D 是 **CC BY-NC 4.0**（非商业），其头像部分另叠 Inria/MPII 的 research-only 许可。**研究可用，产品化不行** |
 | 画质上限 | SD2.1 + 512²，身份细节会软化。用合成图训练的风险是**把模型往合成域拽** |
 | 闭颌 | 条件几何不含下颌，张嘴幅度基本补不了 |
-| 表达截断 | 用前 65 维表情（CAP4D 的训练口径），后 35 维被丢弃 |
+| **维度截断** | 身份 300→**150**、表情 100→**64**。⚠️ CAP4D 的 65 维 expr 里**最后一维是眨眼**（`flowface` 把基的最后一列换成 `blink_blendshape`），RDF 不估眼睑，末位填 0 |
 | 大角度 | ±55° 是生成分布边缘，也正是幻觉最重的地方 —— 而它恰是我们最缺的角度 |
 
 所以：**先用真实数据量一下收益上界，再决定要不要用它**。
 如果"同一人、第二段采集"带来的提升本身很小，合成数据不可能更好。
+
+## 7. 常见报错
+
+| 报错 | 原因 | 处理 |
+|---|---|---|
+| `AssertionError`（`flowface/flame/flame.py:142`，`shape_params.shape[1] == self.n_shape_params`） | 传了 300 维 shape，CAP4D 只要 **150** | 用本脚本导出的 `fit.npz`（已截断），或手工 `shape = shape[:150]` |
+| 同一个 `assert` 但来自 `expr` | 传了 100 维，CAP4D 只要 **65** | `expr = expr[:, :65]` |
+| `WARNING: ... 210 incompatible with R=4, adjusting ... 212` | 4 张参考图时 `V-R=4`，210 不是 4 的倍数 | **无害**，会自动调成 212 |
+| `FileNotFoundError: .../cap4d_mmdm_100k.ckpt` | 没下权重（3.6 GB）| `bash scripts/download_mmdm_weights.sh` |
+| `FileNotFoundError: .../flame2023_no_jaw.pkl` | 没下 FLAME 资产 | `bash scripts/download_flame.sh`（需 FLAME 账号）|
+
