@@ -255,3 +255,38 @@ def test_build_fit_npz_shape_is_truncated_to_cap4d_dim() -> None:
     assert data["shape"].shape == (150,)
     assert data["expr"].shape == (n, 65)
     assert np.all(data["expr"][:, 64] == 0.0)
+
+
+def test_build_gen_data_matches_cap4d_format() -> None:
+    """我们自己的表情池必须与 CAP4D 的 `gen_data.npz` 同构（末位眨眼=0）。"""
+    bench = _load()
+    xs = np.ones((4, 118), np.float32)
+    xs[:, :64] = 0.5
+    xs[:, 100 + 9:100 + 12] = 0.2        # 左眼
+    xs[:, 100 + 12:100 + 15] = 0.4       # 右眼
+
+    g = bench.build_gen_data(xs, expr_factor=0.8)
+    assert set(g) == {"expr", "eye_rot"}
+    assert g["expr"].shape == (4, 65)
+    assert g["eye_rot"].shape == (4, 3)
+    assert np.allclose(g["expr"][:, :64], 0.4), "应乘上 expr_factor"
+    assert np.all(g["expr"][:, 64] == 0.0), "眨眼列必须为 0"
+    assert np.allclose(g["eye_rot"], 0.3), "两眼取平均"
+
+
+def test_select_references_prefers_low_expression_in_each_yaw_bin() -> None:
+    """同样覆盖 4 个 yaw 区间时，优先选表情更小的帧（参考图决定身份先验）。"""
+    bench = _load()
+    ys = [-40, -38, -10, -8, 10, 12, 38, 40]
+    expr = [5.0, 1.0, 4.0, 0.5, 3.0, 0.6, 6.0, 1.2]
+
+    picks = bench.select_references(ys, 4, expr)
+    assert len(picks) == 4
+    # 每个区间内都应该是表情更小的那个
+    for i in picks:
+        assert expr[i] < 3.0, (i, expr[i])
+
+    # 不传 expr 时退化为纯 yaw 分位：只要求覆盖两端
+    plain = bench.select_references(ys, 4)
+    assert len(plain) == 4
+    assert plain[0] == 0 and plain[-1] == len(ys) - 1, plain

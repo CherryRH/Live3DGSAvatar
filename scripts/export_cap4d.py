@@ -130,6 +130,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--stride", type=int, default=1, help="抽帧步长")
     p.add_argument("--refs", type=int, default=4,
                    help="选几张参考图（CAP4D 上限 4）；按 yaw 分位挑选")
+    p.add_argument("--gen-expr-factor", type=float, default=1.0,
+                   help="写进 gen_data.npz 的表情缩放；CAP4D 生成的目标表情会乘它")
     p.add_argument("--max-reproj-px", type=float, default=10.0,
                    help="逐顶点重投影误差中位数上限（px）；超过即认为坐标约定错了")
     p.add_argument("--max-residual-mm", type=float, default=3.0,
@@ -280,19 +282,35 @@ def find_images(data_dir: Path, subdir: str) -> tuple[Path, list[Path]]:
         f"在 {data_dir} 下找不到图像（试过 {subdir}/ 与 input/）")
 
 
-def select_references(ysw: list[float], n_refs: int) -> list[int]:
+def select_references(ysw: list[float], n_refs: int,
+                      expr_mag: list[float] | None = None) -> list[int]:
     """按 yaw 分位挑参考帧：让 4 张参考覆盖尽量宽的转角。
 
     只挑一帧（正面）会让 MMDM 缺少侧脸依据；挑连续的几帧则几乎没有增益。
+
+    若给了 `expr_mag`（每帧表情向量的范数），则在每个 yaw 分位**区间内**
+    挑表情最小的一帧：参考图越接近中性，MMDM 越容易把它当"这个人长什么样"，
+    而不是把参考帧的夸张表情也当成身份的一部分。
     """
     if not ysw:
         return []
     n = min(max(1, n_refs), len(ysw))
     order = sorted(range(len(ysw)), key=lambda i: ysw[i])
-    if n == 1:
-        return [order[len(order) // 2]]
-    # 在排序后的 yaw 上等间隔取点（含两端）
-    picks = [order[int(round(k * (len(order) - 1) / (n - 1)))] for k in range(n)]
+
+    # 把排好序的帧切成 n 段，每段取一帧
+    segments = [order[int(round(k * (len(order) - 1) / max(1, n - 1)))]
+                for k in range(n)] if n > 1 else [order[len(order) // 2]]
+    picks = []
+    for k, centre in enumerate(segments):
+        if expr_mag is None:
+            picks.append(centre)
+            continue
+        # 该中心点附近的窗口（按序号），在窗口里挑表情最小的
+        span = max(1, len(order) // (2 * n))
+        lo = max(0, order.index(centre) - span)
+        hi = min(len(order), order.index(centre) + span + 1)
+        window = order[lo:hi]
+        picks.append(min(window, key=lambda i: expr_mag[i]))
     return sorted(set(picks))
 
 
@@ -546,7 +564,14 @@ def main(argv: list[str] | None = None) -> int:
 
     # yaw 只用于"挑参考帧"和报告，不参与几何
     keep_ys = [yaw_deg(_rotvec_to_mat(rots[int(i)])) for i in idx]
-    refs = select_references(keep_ys, args.refs)
+    # 参考帧优先挑"表情小"的：参考图决定 MMDM 学到的身份
+    expr_mag = [float(np.linalg.norm(xs[int(i), :CAP4D_FLAME_EXPR_DIM]))
+                for i in idx]
+    refs = select_references(keep_ys, args.refs, expr_mag)
+
+    # 顺带产出目标表情池：换成我们自己的分布，避免 MEAD 式的夸张表情
+    gen_data = build_gen_data(xs[idx], args.gen_expr_factor)
+    np.savez_compressed(out / "gen_data.npz", **gen_data)
 
     np.savez_compressed(out / "fit.npz", **build_fit_npz(
         identity=identity, xs=xs, idx=idx, rots=rots, tras=tras,
@@ -633,6 +658,26 @@ def build_fit_npz(*, identity, xs, idx, rots, tras, eye_rot, jaw, verts,
         "reproj_px": reproj[arrays].astype(np.float32),
         "names": np.array([names[i] for i in arrays]),
     }
+
+
+def build_gen_data(xs_rows, expr_factor: float = 1.0) -> dict:
+    """用**我们自己的**表情分布生成 MMDM 的目标表情池（`gen_data.npz`）。
+
+    为什么需要：CAP4D 自带的池子来自 MEAD/VFHQ/AVA/Nersemble，
+    实测逐帧 `||expr||` 中位 9.8，而我们的数据是 7.4 —— MEAD 是**表演性**
+    情感数据，表情幅度偏夸张。用它当目标，生成出来的表情会"不像正常人"。
+
+    格式与官方一致：`expr (N,65)`（末位眨眼=0）、`eye_rot (N,3)`。
+    """
+    import numpy as np
+
+    expr = np.zeros((xs_rows.shape[0], CAP4D_EXPR_DIM), np.float32)
+    expr[:, :CAP4D_FLAME_EXPR_DIM] = xs_rows[:, :CAP4D_FLAME_EXPR_DIM]
+    expr *= float(expr_factor)
+
+    eye = 0.5 * (xs_rows[:, POSE_START + 9: POSE_START + 12]
+                 + xs_rows[:, POSE_START + 12: POSE_START + 15])
+    return {"expr": expr, "eye_rot": eye.astype(np.float32)}
 
 
 def write_images(img_dir: Path, names: list[str], idx, out: Path) -> int:

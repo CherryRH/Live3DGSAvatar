@@ -52,10 +52,13 @@ output/cap4d/<数据集>/
 ├── reference_images.json    [[ "cam0", t ], ...] 最多 4 张
 ├── images/cam0/00000.png    参考图（RGB）
 ├── bg/cam0/00000.png        前景权重（alpha），CAP4D 据此合成白底
+├── gen_data.npz             目标表情池（**我们自己的分布**，见 §5b）
 └── summary.json             残差分布、内参、参考帧的 yaw
 ```
 
-参考帧按 **yaw 分位**挑选，让 4 张图覆盖尽量宽的转角（挑连续的几帧几乎没有增益）。
+参考帧按 **yaw 分位**挑选，让 4 张图覆盖尽量宽的转角（挑连续的几帧几乎没有增益）；
+在每个 yaw 区间里**优先挑表情最小的帧** —— 参考图决定 MMDM 学到的"这个人长什么样"，
+参考帧自己表情夸张的话，身份先验会被污染。
 
 ## 3. 约定：为什么 `extr` 是单位阵
 
@@ -146,4 +149,57 @@ reduced-blendshape 参数化不同），跳过即可。
 | `WARNING: ... 210 incompatible with R=4, adjusting ... 212` | 4 张参考图时 `V-R=4`，210 不是 4 的倍数 | **无害**，会自动调成 212 |
 | `FileNotFoundError: .../cap4d_mmdm_100k.ckpt` | 没下权重（3.6 GB）| `bash scripts/download_mmdm_weights.sh` |
 | `FileNotFoundError: .../flame2023_no_jaw.pkl` | 没下 FLAME 资产 | `bash scripts/download_flame.sh`（需 FLAME 账号）|
+
+## 8. 生成结果表情夸张怎么办
+
+**原因**：CAP4D 自带的 `gen_data.npz`（目标表情池）来自
+**MEAD / VFHQ / AVA / Nersemble**，其中 MEAD 是**表演性**情感数据。
+实测逐帧 `||expr||`：
+
+| 来源 | 中位 | p95 | 最大 |
+|---|---|---|---|
+| CAP4D 自带（MEAD 等）| **9.80** | 14.11 | 19.64 |
+| 我们 crh_1（真实说话）| **7.38** | 9.95 | 12.60 |
+
+比值约 **1.3×**，尾部差距更大。用它当驱动，生成出来的人自然"做不出这种表情"。
+
+**解法**：换掉目标表情池。导出脚本现在会在输出目录里写 `gen_data.npz`
+（用我们自己的表情分布，格式与官方一致：`expr (N,65)` 末位眨眼=0、`eye_rot (N,3)`）。
+
+复制一份生成配置，改两行：
+
+```bash
+cd ~/Projects/cap4d
+cp configs/generation/low_quality.yaml configs/generation/ours.yaml
+```
+
+```yaml
+generation_data:
+  data_path: /home/test/Projects/Live3DGSAvatar/output/cap4d/crh_1/gen_data.npz   # ← 改这里
+  yaw_range: 55
+  pitch_range: 20
+  expr_factor: 0.8        # ← 再压一档，保险
+  n_samples: 210
+```
+
+然后用 `--config_path configs/generation/ours.yaml` 重新生成。
+
+`--gen-expr-factor 0.9` 也可以直接在导出时把整池压小，省得改配置。
+
+## 9. 少数图像扭曲/弥散
+
+这是扩散模型在分布边缘的典型失败，按影响从大到小：
+
+| 措施 | 做法 |
+|---|---|
+| 避开极端角度 | `yaw_range` 从 55 降到 40–45；我们缺的主要是 30–45°，不需要 55 |
+| 更多采样步数 | `n_ddim_steps` 50 → 100（`medium/default` 档就是 100）|
+| 降低引导强度 | `cfg_scale` 2.0 → 1.5，过强的 CFG 会放大伪影 |
+| 换种子 | `seed` 固定为 124，换几个种子看稳定性 |
+| 参考图更中性 | 导出脚本已改为"每区间挑表情最小" |
+
+另外：**参考图上限确实是 4**。这不是配置随意，而是模型的训练口径 ——
+`data/weights/mmdm/config_dump.yaml` 里 `n_ref: 4`（`max_n_references: ${n_ref}`），
+sampler 里 `R = min(n_ref, R_max)`，且 `e_t = model_output[:, R:]` 按 R 切分批次。
+想用更多参考就得重训 MMDM。
 
