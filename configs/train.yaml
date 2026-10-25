@@ -20,6 +20,9 @@ train:
     blend_start: 3000
     # 末尾多少帧作验证集
     test_frames: 350
+    # 背景在损失里的权重：1 = 与前景同权（推荐）。
+    # 设 0 会让落在人像之外的高斯拿不到梯度，推理时表现为"头周围发散"。
+    mask_weight: 1.0
     # 训练产物写到 <output_dir>/train/<subject>/<work_name>/
     max_frames: null
 

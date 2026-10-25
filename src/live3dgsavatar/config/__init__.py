@@ -100,6 +100,11 @@ _FALLBACK: dict[str, Any] = {
     "test.dump_diff": False,
     # ---- 训练 / 在线更新（configs/train.yaml）----
     "train.pipeline.enabled": False,
+    "train.pipeline.iterations": 50_000,
+    "train.pipeline.batch_size": 10,
+    "train.pipeline.blend_start": 3_000,
+    "train.pipeline.test_frames": 350,
+    "train.pipeline.mask_weight": 1.0,
     "train.pipeline.max_frames": None,
     "train.online_update.enabled": True,
     "train.online_update.update_opacity": True,

@@ -114,8 +114,10 @@ def _finalize(args: argparse.Namespace, cfg: Config) -> argparse.Namespace:
     args.model_config = resolve_model_config(cfg)
     args.gt_dir = args.data / str(cfg.get("paths.image_subdir", "images"))
 
+    # 默认按 "<对象>/<版本>" 分目录：否则不同模型的对比图会互相覆盖。
     out_root = Path(args.output_dir) if args.output_dir else (
-        Path(str(cfg.get("paths.output_dir", "output"))) / "render_test")
+        Path(str(cfg.get("paths.output_dir", "output"))) / "render_test"
+        / str(cfg.get("subject")) / str(cfg.get("work_name") or "default"))
     args.output_dir = out_root
 
     args.frames = int(cfg.get("render.frames", 20) if args.frames is None else args.frames)
@@ -279,8 +281,13 @@ def render_core(args, scene, frames: list[int], out_dir: Path,
     }
 
 
-def load_gt(args, frames: list[int]):
-    """读取数据集原图（RGBA）。返回 `{i: (rgb HxWx3, mask HxW bool)}`。"""
+def load_gt(args, frames: list[int], offset: int = 0):
+    """读取数据集原图（RGBA）。返回 `{i: (rgb HxWx3, mask HxW bool)}`。
+
+    `frames` 是**场景内的下标**（0..n-1），`offset` 是它们在数据集里的起始
+    帧号。GT 文件必须按 `offset + i` 取 —— 之前漏了这一步，`--frame-offset`
+    时会把"渲染第 2513 帧"和"原图第 0 帧"相比，PSNR 直接掉到 13 dB 以下。
+    """
     from PIL import Image
 
     if not args.gt_dir.is_dir():
@@ -288,9 +295,10 @@ def load_gt(args, frames: list[int]):
     files = sorted(args.gt_dir.iterdir())
     out = {}
     for i in frames:
-        if i >= len(files):
+        gid = int(offset) + int(i)
+        if gid < 0 or gid >= len(files):
             continue
-        arr = np.array(Image.open(files[i]))
+        arr = np.array(Image.open(files[gid]))
         if arr.ndim == 2:
             arr = np.stack([arr] * 3, axis=-1)
         if arr.shape[2] == 4:
@@ -315,8 +323,10 @@ def main() -> int:
     print(f"渲染测试 —— {args.subject}/{args.work_name}")
     print(f"  model = {args.ply}")
     print(f"  data  = {args.data}")
-    print(f"  配置  : {args.frames} 帧, batch={args.batch_size}, "
-          f"{args.tex_size} tex, D={args.num_basis_in}, K={args.num_basis_blend}")
+    print(f"  配置  : {args.frames} 帧（起始 {args.frame_offset}）, "
+          f"batch={args.batch_size}, {args.tex_size} tex, "
+          f"D={args.num_basis_in}, K={args.num_basis_blend}")
+    print(f"  产物  : {args.output_dir}")
 
     if args.dry_run:
         return _dry_run(args)
@@ -370,7 +380,7 @@ def main() -> int:
                     "num_frames": n, "dataset_frames": total,
                     "width": scene.width, "height": scene.height, "perf": perf}
 
-    gt = load_gt(args, list(range(n)))
+    gt = load_gt(args, list(range(n)), offset=args.frame_offset)
     if gt is None:
         print("      [warn] 找不到数据集原图，跳过质量对比")
     else:

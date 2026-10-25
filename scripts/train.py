@@ -109,6 +109,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--batch-size", type=int, default=None)
     p.add_argument("--blend-start", type=int, default=None,
                    help="第几步开始启用形变基（默认 3000）")
+    p.add_argument("--mask-weight", type=float, default=None,
+                   help="背景在损失里的权重；1 表示与前景同权（默认）")
     p.add_argument("--test-frames", type=int, default=None,
                    help="末尾多少帧作验证集（默认 350）")
     p.add_argument("--eval-every", type=int, default=2000)
@@ -229,7 +231,11 @@ def main(argv: list[str] | None = None) -> int:
 
     plan = ParameterPlan.rgba_avatar_defaults(
         scene_extent=float(cfg.get("render.scene_extent", 1.0)))
+    mask_weight = float(args.mask_weight if args.mask_weight is not None
+                        else cfg.get("train.pipeline.mask_weight", 1.0))
     objective = Objective.rgba_avatar_defaults()
+    objective.mask_weight = mask_weight
+    print(f"  损失   : L1（背景权重 {mask_weight:.2f}）")
 
     def render_fn(mesh_verts, weight, batch, iteration):
         mesh = Mesh(verts=mesh_verts.to(device), faces=scene.faces.to(device),

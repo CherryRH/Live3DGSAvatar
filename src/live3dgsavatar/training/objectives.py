@@ -178,8 +178,17 @@ class Objective:
 
     @classmethod
     def rgba_avatar_defaults(cls) -> "Objective":
-        """crh_1 的 `config.yaml`：只有 L1 与随机背景。"""
-        return cls(l1=1.0, ssim=0.0, lpips=0.0, alpha=0.0, mask_weight=0.0)
+        """完整训练默认：只有 L1，但**背景也参与**（`mask_weight=1`）。
+
+        为什么背景必须参与：只在前景 mask 内算损失时，落在人像之外的
+        高斯完全拿不到梯度 —— 它们的位置/颜色会在训练中漂移，推理时表现
+        为"头周围出现大片发散的高斯球"。把背景一起监督（渲染背景色已知），
+        这些高斯会被压成透明或被拉回目标颜色。
+
+        代价是背景预测不完全准时会带来一点噪声；用 `mask_weight < 1`
+        可以折中（例如 0.2）。
+        """
+        return cls(l1=1.0, ssim=0.0, lpips=0.0, alpha=0.0, mask_weight=1.0)
 
     @classmethod
     def appearance_only(cls, *, l1: bool = True, mask_weight: float = 0.0
