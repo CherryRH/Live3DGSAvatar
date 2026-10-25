@@ -1,0 +1,164 @@
+"""参数计划：**哪些参数参与优化、各自用什么学习率曲线**。
+
+设计目标：让"完整训练"和"在线微调"共用同一条训练循环，只换 `ParameterPlan`。
+
+- 完整训练：打开全部组，位置组用指数衰减，迭代几万步
+- 在线微调：只开 `f_dc`(+`opacity`)，常数学习率，几百步内结束
+
+## 与 RGBAvatar 的对应关系
+
+RGBAvatar 把这些散在 `config/offline.yaml` 与 `Reconstruction.update_learning_rate`
+的 if/elif 链里（按组名逐条判断）。这里改成**数据**：组 → 计划，循环里查表。
+好处是加一组参数不用改循环，也让"微调只用一部分组"变成自然表达。
+
+默认值取自 crh_1 的 `config.yaml`（即 RGBAvatar 实际训练用的那套）：
+
+| 组 | lr | 说明 |
+|---|---|---|
+| `xyz` | 8e-4 → 8e-6，30000 步，delay 0.01 | 位置（乘 `scene_extent`）|
+| `f_dc` | 0.0125 | 颜色 DC |
+| `opacity` | 0.25 | logit |
+| `scaling` | 0.025 | |
+| `rotation` | 0.005 | |
+| `xyz_b` | 8e-4 × 0.05 | 位置基 |
+| `rotation_b` | 0.005 × 0.5 | 旋转基 |
+| `f_dc_b` | 0.0125 × 0.5 | 颜色基 |
+| `weight_module` | 1e-3 | 权重投影 MLP |
+
+⚠️ 一处刻意的偏差：RGBAvatar 的位置学习率把 `scene_extent` 乘了**两次**
+（构造调度器时一次、`update_learning_rate` 里又一次）。它的配置里
+`scene_extent = 1.0`，所以两者等价；这里只乘一次，避免换数据时出现隐式平方。
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+
+from .schedule import expon_lr
+
+#: 模型里可优化的参数组（与 `GaussianAvatar.parameter_groups()` 一致）
+ALL_GROUPS = ("xyz", "opacity", "scaling", "rotation", "f_dc",
+              "xyz_b", "rotation_b", "f_dc_b", "weight_module")
+
+
+@dataclass(frozen=True)
+class GroupPlan:
+    """单个参数组的学习率计划。
+
+    Attributes:
+        lr: 初始学习率
+        final_lr: 终止学习率；``None`` 表示常数
+        max_steps: 指数衰减的步数上限
+        delay_steps: 起步延迟步数；**0 表示不延迟**（此时 delay_mult 无效）
+        delay_mult: 延迟窗口内的起始倍率
+    """
+
+    lr: float
+    final_lr: float | None = None
+    max_steps: int = 30_000
+    delay_steps: int = 0
+    delay_mult: float = 1.0
+
+    def __post_init__(self) -> None:
+        if self.lr < 0:
+            raise ValueError(f"lr 不能为负，实际 {self.lr}")
+        if self.final_lr is not None and self.final_lr < 0:
+            raise ValueError(f"final_lr 不能为负，实际 {self.final_lr}")
+        if self.delay_steps < 0:
+            raise ValueError(f"delay_steps 不能为负，实际 {self.delay_steps}")
+
+    def at(self, iteration: int) -> float:
+        """第 `iteration` 步的学习率。"""
+        if self.final_lr is None:
+            return self.lr
+        return expon_lr(iteration, self.lr, self.final_lr, self.max_steps,
+                        self.delay_steps, self.delay_mult)
+
+
+@dataclass
+class ParameterPlan:
+    """整模型的计划：启用哪些组 + 每组的曲线。
+
+    Attributes:
+        groups: 组名 → 计划。**只包含启用的组** —— 不在表里的组不参与优化。
+        scene_extent: 位置类学习率的缩放（RGBAvatar 的 `scene_extent`）
+    """
+
+    groups: dict[str, GroupPlan] = field(default_factory=dict)
+    scene_extent: float = 1.0
+
+    # ------------------------------------------------------------ 构造 --
+
+    @classmethod
+    def rgba_avatar_defaults(cls, *, scene_extent: float = 1.0) -> "ParameterPlan":
+        """复现 crh_1 的 `config.yaml` 里那套学习率。"""
+        return cls(scene_extent=float(scene_extent), groups={
+            "xyz": GroupPlan(lr=8e-4 * scene_extent,
+                             final_lr=8e-6 * scene_extent,
+                             max_steps=30_000),
+            "f_dc": GroupPlan(lr=0.0125),
+            "opacity": GroupPlan(lr=0.25),
+            "scaling": GroupPlan(lr=0.025),
+            "rotation": GroupPlan(lr=0.005),
+            "xyz_b": GroupPlan(lr=8e-4 * scene_extent * 0.05,
+                               final_lr=8e-6 * scene_extent * 0.05,
+                               max_steps=30_000),
+            "rotation_b": GroupPlan(lr=0.005 * 0.5),
+            "f_dc_b": GroupPlan(lr=0.0125 * 0.5),
+            "weight_module": GroupPlan(lr=1e-3),
+        })
+
+    @classmethod
+    def appearance_only(cls, *, lr_color: float = 2e-3,
+                        lr_opacity: float = 2e-2,
+                        with_opacity: bool = True) -> "ParameterPlan":
+        """只调外观：在线微调用。常数学习率，不碰几何与驱动。"""
+        groups = {"f_dc": GroupPlan(lr=float(lr_color))}
+        if with_opacity:
+            groups["opacity"] = GroupPlan(lr=float(lr_opacity))
+        return cls(groups=groups)
+
+    @classmethod
+    def from_groups(cls, names, *, lr: float) -> "ParameterPlan":
+        """给定组名，统一用同一个常数学习率（调试用）。"""
+        unknown = [n for n in names if n not in ALL_GROUPS]
+        if unknown:
+            raise ValueError(f"未知参数组：{unknown}；可用 {list(ALL_GROUPS)}")
+        return cls(groups={n: GroupPlan(lr=float(lr)) for n in names})
+
+    # ------------------------------------------------------------ 查询 --
+
+    @property
+    def enabled(self) -> tuple[str, ...]:
+        return tuple(self.groups)
+
+    def lr_at(self, group: str, iteration: int) -> float:
+        plan = self.groups.get(group)
+        return 0.0 if plan is None else plan.at(iteration)
+
+    def opt_groups(self, params: dict) -> list[dict]:
+        """按 `parameter_groups()` 生成优化器参数组（只含启用的）。
+
+        Args:
+            params: `GaussianAvatar.parameter_groups()` 的返回
+
+        Raises:
+            KeyError: 计划里启用的组在模型里不存在 —— 那说明配置与模型对不上，
+                必须报错而不是静默少优化一组
+        """
+        out = []
+        for name, plan in self.groups.items():
+            if name not in params:
+                raise KeyError(
+                    f"参数计划里启用了 {name!r}，但模型没有这一组；"
+                    f"模型有 {sorted(params)}")
+            out.append({"params": [params[name]], "name": name,
+                        "lr": plan.at(0)})
+        return out
+
+    def apply_lr(self, optimizer, iteration: int) -> None:
+        """把第 `iteration` 步的学习率写回优化器。"""
+        for group in optimizer.param_groups:
+            name = group.get("name")
+            if name in self.groups:
+                group["lr"] = self.lr_at(name, iteration)

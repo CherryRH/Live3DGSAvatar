@@ -16,6 +16,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path as Path_type
+
 import math
 from dataclasses import dataclass, field
 from typing import Sequence
@@ -60,6 +62,48 @@ class AvatarConfig:
             raise ValueError(f"num_basis_blend 必须为正，实际 {self.num_basis_blend}")
         if self.use_weight_proj and self.num_basis_in <= 0:
             raise ValueError("启用 use_weight_proj 时 num_basis_in 必须为正")
+
+    @classmethod
+    def from_yaml(cls, path, *, section: str = "model") -> "AvatarConfig":
+        """从（RGBAvatar 格式的）模型 `config.yaml` 读结构。
+
+        兼容点：
+        - 键名直接沿用 RGBAvatar（`tex_size` / `num_basis_in` / `num_basis_blend`
+          / `init_opacity` / `init_scaling` / `use_weight_proj`）
+        - `use_blend` / `use_mlp_proj` 这两个旧开关：`use_blend=False` 等价于
+          不做权重投影（直接用前 K 维），`use_mlp_proj=False` 等价于单层线性映射
+        - 缺的键用本类默认值，不报错 —— 老 config 可能没有 `mlp_hidden`
+
+        Args:
+            path: yaml 路径
+            section: 取哪一节（默认 `model`）
+        """
+        import yaml
+
+        raw = yaml.safe_load(Path_type(path).read_text(encoding="utf-8")) or {}
+        sec = raw.get(section) or {}
+        if not isinstance(sec, dict):
+            raise ValueError(f"{path} 的 {section!r} 节不是映射")
+
+        tex_size = int(sec.get("tex_size", cls.tex_size))
+        num_basis_in = int(sec.get("num_basis_in", cls.num_basis_in))
+        num_basis_blend = int(sec.get("num_basis_blend", cls.num_basis_blend))
+        use_weight_proj = bool(sec.get(
+            "use_weight_proj", sec.get("use_blend", cls.use_weight_proj)))
+        use_mlp_proj = bool(sec.get("use_mlp_proj", True))
+        hidden = sec.get("mlp_hidden")
+        mlp_hidden = tuple(int(v) for v in hidden) if hidden is not None else (
+            cls.mlp_hidden if use_mlp_proj else ())
+        return cls(
+            tex_size=tex_size,
+            num_basis_in=num_basis_in,
+            num_basis_blend=num_basis_blend,
+            mlp_hidden=mlp_hidden,
+            use_weight_proj=use_weight_proj,
+            init_opacity=float(sec.get("init_opacity", cls.init_opacity)),
+            init_scaling=float(sec.get("init_scaling", cls.init_scaling)),
+            sh_degree=int(sec.get("sh_degree", cls.sh_degree)),
+        )
 
     @property
     def num_basis(self) -> int:
@@ -140,6 +184,10 @@ class GaussianAvatar(nn.Module):
             "xyz_b": self.xyz_b,
             "rotation_b": self.rotation_b,
             "f_dc_b": self.color_b,
+            # 权重投影 MLP：训练时要单独给学习率（RGBAvatar 的 weight_module_lr），
+            # 而它不在上面那些"基"里 —— 之前漏了这一组，训练脚本只能自己再拼。
+            **({"weight_module": self.weight_module} if
+               self.config.use_weight_proj else {}),
         }
 
     def to_binding(self) -> Binding:

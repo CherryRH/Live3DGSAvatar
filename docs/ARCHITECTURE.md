@@ -199,6 +199,7 @@ Live3DGSAvatar/
 │   ├── env_check.py             # 环境自检（无 GPU 可跑）
 │   ├── bench.py                 # 性能测试：渲染 / 跟踪 / 全链路（无前后端）
 │   ├── render_test.py           # 渲染测试：core vs 数据集原图（质量 + 性能）
+│   ├── train.py                 # 训练入口（参数计划 + 损失 + 钩子）
 │   ├── online_update.py         # 在线更新（闭式颜色校正 + 梯度微调）
 │   ├── rdf_bridge.py            # 追踪服务（realdenseface 环境，画面进参数出）
 │   ├── rdf_dump.py              # 离线导出 RDF 结果（标定/回归对照）

@@ -147,13 +147,46 @@ def _install_pytest_stub() -> None:
             return lambda f: f
         return func
 
+    def _approx(expected, rel=1e-6, abs_tol=1e-12):
+        """`pytest.approx` 的最小实现（标量/序列，支持 `==`）。
+
+        之前这里是**恒等**（`lambda v, **k: v`），任何有浮点误差的比较都会
+        失败，让人误以为是代码错了。注意参数名不能用 `abs` —— 那会遮住
+        内置函数，`abs(a - b)` 就变成"调用一个浮点数"。
+        """
+        import math
+
+        class _Approx:
+            def __init__(self, value):
+                self.value = value
+
+            def _close(self, got, want) -> bool:
+                try:
+                    return math.isclose(float(got), float(want),
+                                        rel_tol=float(rel),
+                                        abs_tol=float(abs_tol))
+                except (TypeError, ValueError):
+                    return got == want
+
+            def __eq__(self, other):
+                if isinstance(self.value, (list, tuple)):
+                    return (len(self.value) == len(other)
+                            and all(self._close(a, b)
+                                    for a, b in zip(self.value, other)))
+                return self._close(other, self.value)
+
+            def __repr__(self) -> str:
+                return f"approx({self.value!r}, rel={rel}, abs={abs_tol})"
+
+        return _Approx(expected)
+
     def raises(exc_type, match=None):
         """`pytest.raises` 的最小实现（支持 `as e` 与可选的 `match` 正则）。"""
         return _Raises(exc_type, match)
 
+    stub.approx = _approx
     stub.fixture = fixture
     stub.mark = _Mark()
-    stub.approx = lambda v, **k: v
     stub.skip = skip
     stub.raises = raises
     sys.modules["pytest"] = stub

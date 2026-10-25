@@ -11,9 +11,16 @@ train:
   # 关闭时，任何训练入口都应直接报错退出，而不是静默跳过 ——
   # 静默跳过会让人以为"训练过了"。
   pipeline:
-    enabled: false
+    # 训练入口已接入（scripts/train.py）。默认超参沿用 RGBAvatar 的
+    # crh_1 config.yaml：batch 10、50000 步、blend_start 3000、末尾 350 帧作验证。
+    enabled: true
+    iterations: 50000
+    batch_size: 10
+    # 前 N 步不启用形变基（先用模板网格拟合静态外观）
+    blend_start: 3000
+    # 末尾多少帧作验证集（RGBAvatar 的切分方式）
+    test_frames: 350
     # 训练产物写到 <output_dir>/train/<subject>/<work_name>/
-    # 采样与容量上限（与 render.yaml 的 render.max_* 对应，二者取小）
     max_frames: null
 
   # 在线更新（热更新）：通话开始时用一小段观测微调外观。

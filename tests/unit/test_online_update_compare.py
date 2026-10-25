@@ -21,7 +21,8 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "online_update.py"
-_DATA_ROOT = Path.home() / "Datasets" / "INSTA"
+# 数据集现在在仓库里（不再依赖 ~/Datasets/INSTA）
+_DATA_ROOT = Path(__file__).resolve().parents[2] / "datasets"
 
 
 def _load_script():

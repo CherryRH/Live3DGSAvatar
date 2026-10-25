@@ -37,3 +37,7 @@ submodules/*/samples/data/
 
 # ---- 组会周报（内部汇报，不入库）----
 docs/周报/
+
+# 数据集
+datasets/*
+!datasets/.gitkeep
