@@ -205,37 +205,44 @@ sampler 里 `R = min(n_ref, R_max)`，且 `e_t = model_output[:, R:]` 按 R 切�
 
 ## 10. 在 CAP4D 的图上渲染（诊断）
 
-用途：不训练，先看**现有 crh_1 模型**在这些生成视角上能到多少 PSNR。
-它的输出直接决定要不要投入微调。
+用途：不训练，先看**现有 crh_1 模型**能不能重现这些生成视角。
+它直接决定要不要投入微调。
 
-两步（**跨环境**，因为网格必须由 FLAME2023 算）：
+### 做法：让 RDF 拟合生成图
 
 ```bash
-# ① realdenseface 环境：CAP4D 参数 → 5023 顶点网格
+# ① realdenseface 环境：RDF 拟合每张生成图 → x + 5023 顶点
 conda activate realdenseface
-python scripts/export_cap4d_frames.py \
-    --cap4d ~/output/crh_1_200 \
-    --identity output/cap4d/crh_1/fit.npz \
-    --out ~/output/crh_1_200/cap4d_frames.npz
+python scripts/rdf_dump.py \
+    --images ~/output/crh_1_200/generated_images/images \
+    --out ~/output/crh_1_200/cap4d_rdf.npz
 
-# ② live3dgs 环境：补牙齿 + 映射 129 维 + 渲染对比
+# ② live3dgs 环境：补牙 + 映射 129 维 + 用数据集相机渲染对比
 conda activate live3dgs
 python scripts/render_test.py --subject <对象> --work-name <版本> \
     --cap4d ~/output/crh_1_200 --dump-diff
 ```
 
-### 为什么网格不能我们自己算
+### 为什么不是"读 CAP4D 的参数自己算网格"
 
-我实测过：用我们仓库的 `FlameModel`（FLAME2020 资产）重建 crh_1 数据集的网格，
-**即使 shape 用最小二乘解出来，残差仍有 4.4–5.4 mm**，而且误差随表情幅度增长
-（相关系数 +0.59）。换成 RDF 的 `flame2023.pkl` 也只降到 4.4 mm —— 说明光换基不够，
-必须用 **RDF 自己的前向**（它的 LBS 与 pose correctives 与我们的实现不同）。
+试过，PSNR 只有 **2.4 dB** —— 头和身子都不在同一区域。那条路要同时对四件事：
 
-这也解释了实时链路为什么是"RDF 出 5023 顶点 + 我们补 60 颗牙"，
-而不是"我们从头算网格"。
+| 要对齐 | 出错后果 |
+|---|---|
+| CAP4D 的 `crop_box` → 裁剪后内参 | 整体缩放/平移错 |
+| 它那套 FLAME2023 的 150 维 identity | 脸型比例不符 |
+| 姿态约定（我们放 neck，它放 root） | 位置整体偏 |
+| 我们模型的世界空间 | 无法定位 |
 
-### 产物
+而 **RDF 的虚拟相机与本数据集相机完全一致**（`f=955.4` 正好是
+`0.5×512/tan(15°)`，`w2v=diag(1,-1,-1)`、z 平移 1），所以让 RDF 去拟合图之后，
+网格与相机天然自洽，不需要任何换算。这也是实时链路本来的形态。
 
-`cap4d_frames.npz`：`mesh (T,5023,3)`、`x (T,118)`、`K (T,3,3)`、`names`、`images_dir`。
-后两步（补牙齿、118→129）在渲染侧用已经验证过的 `mesh_build` / `param_map` 完成。
+### 怎么读结果
 
+| 现象 | 含义 |
+|---|---|
+| 并排图里头的位置/大小对上了，但细节差 | 有意义的对比，PSNR 可用来判断"要不要微调" |
+| 位置/大小明显不同 | RDF 没拟合好（边缘角度、白底干扰），先看 RDF 自己的诊断 |
+| PSNR 高（>30）| 模型本来就能覆盖这些视角，微调没必要 |
+| PSNR 低但并排图看着合理 | 模型确实没覆盖到 → 值得微调 |

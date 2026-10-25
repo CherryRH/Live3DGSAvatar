@@ -304,31 +304,28 @@ def main() -> int:
     n = scene.num_frames
 
     if args.cap4d is not None:
-        # 网格由 RDF 的 FLAME2023 算好（`scripts/export_cap4d_frames.py`）：
-        # 我们自己的 FLAME2020 重建本数据集网格有 4–5 mm 误差，不能用。
-        from live3dgsavatar.data.cap4d import load_converted, to_frames
+        # 用 **RDF 拟合生成图** 的结果：网格与相机天然自洽，不需要任何换算。
+        # RDF 的虚拟相机（fov 30°、(0,0,1)、diag(1,-1,-1)）与本数据集相机一致，
+        # 所以这里直接沿用 scene 的 K/R/T。
+        from live3dgsavatar.data.cap4d import images_dir, load_rdf_dump, to_frames
 
-        conv_path = Path(args.cap4d) / "cap4d_frames.npz"
-        if not conv_path.is_file():
+        assets = Path(args.cap4d)
+        dump_path = assets / "cap4d_rdf.npz"
+        if not dump_path.is_file():
             raise SystemExit(
-                f"[error] 找不到 {conv_path}\n"
-                "        先在 realdenseface 环境里跑：\n"
-                "        python scripts/export_cap4d_frames.py \\\n"
-                "            --cap4d <CAP4D 输出目录> --identity <fit.npz> "
-                "--out <CAP4D 输出目录>/cap4d_frames.npz")
-        converted = load_converted(conv_path)
-        frames, ks = to_frames(converted,
-                               Path(str(cfg.get("paths.flame_dir"))))
-        scene.frames = frames
-        scene.K_list = ks
-        scene.dataset_frames = len(frames)
-        n = len(frames)
+                f"[error] 找不到 {dump_path}\n"
+                "        先在 realdenseface 环境里让 RDF 拟合这些图：\n"
+                f"        python scripts/rdf_dump.py --images {images_dir(assets)} "
+                f"--out {dump_path}")
+        dump = load_rdf_dump(dump_path)
+        scene.frames = to_frames(dump, Path(str(cfg.get("paths.flame_dir"))))
+        scene.dataset_frames = len(scene.frames)
+        n = len(scene.frames)
         # 生成图是白底，对比时背景也用白（否则 PSNR 全被背景吃掉）
         if args.background is None:
             args.background = [1.0, 1.0, 1.0]
-        args.gt_dir = (converted.get("images_dir")
-                       or Path(args.cap4d) / "generated_images" / "images")
-        print(f"  CAP4D: {n} 帧（{conv_path}）")
+        args.gt_dir = images_dir(assets)
+        print(f"  CAP4D: {n} 帧（{dump_path}）")
     print(f"  数据集: 载入 {n} / 共 {total} 帧")
 
     out_dir = args.output_dir
