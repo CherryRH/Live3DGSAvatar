@@ -30,6 +30,46 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 import live3dgsavatar  # noqa: F401
 
 
+def resolve_structure_config(models_dir: Path, subject: str, work: str,
+                             *, explicit: Path | None = None,
+                             repo_default: Path | None = None) -> Path:
+    """决定训练用哪个"模型结构"配置。
+
+    训练**新模型**时 `<models_dir>/<subject>/<work>/config.yaml` 通常还不存在，
+    所以这里按优先级回退，而不是直接报"没有选择模型"：
+
+    1. `--model-config` 显式给出
+    2. `<models_dir>/<subject>/<work>/config.yaml`（续训/复现已有模型）
+    3. `<models_dir>/<subject>/*/config.yaml`（同对象下任一版本的结构）
+    4. 仓库模板 `configs/model.yaml`
+
+    Raises:
+        FileNotFoundError: 以上都没有 —— 此时应当明确告诉用户给一个配置，
+            而不是让人以为"数据或模型没选对"
+    """
+    if explicit is not None:
+        path = Path(explicit).expanduser()
+        if not path.is_file():
+            raise FileNotFoundError(f"--model-config 不存在：{path}")
+        return path
+
+    direct = Path(models_dir) / subject / work / "config.yaml"
+    if direct.is_file():
+        return direct
+
+    for candidate in sorted((Path(models_dir) / subject).glob("*/config.yaml")):
+        return candidate
+
+    if repo_default is not None and Path(repo_default).is_file():
+        return Path(repo_default)
+
+    raise FileNotFoundError(
+        f"找不到可用的模型结构配置：试过 {direct}、"
+        f"{(Path(models_dir) / subject)}/*/config.yaml"
+        f"{(', ' + str(repo_default)) if repo_default else ''}。\n"
+        "训练新模型时请给一个结构配置（可用 --model-config 指定）。")
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="训练一个约简高斯 blendshape 头像")
     p.add_argument("--subject", default=None, help="对象名（默认取配置）")
@@ -43,6 +83,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--eval-every", type=int, default=2000)
     p.add_argument("--save-every", type=int, default=5000)
     p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--model-config", type=Path, default=None,
+                   help="模型结构配置（默认：模型目录里的 config.yaml，"
+                        "没有就用仓库模板 configs/model.yaml）")
     p.add_argument("--output-dir", type=Path, default=None)
     p.add_argument("--dry-run", action="store_true",
                    help="不需要 GPU：检查数据与配置，打印将要做的事")
@@ -51,8 +94,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
-    from live3dgsavatar.config import (load_config, resolve_data_dir,
-                                       resolve_model_config)
+    from live3dgsavatar.config import load_config, resolve_data_dir
 
     cfg = load_config()
     subject = args.subject or str(cfg.get("subject") or "").strip()
@@ -60,7 +102,11 @@ def main(argv: list[str] | None = None) -> int:
     if not subject or not work:
         raise SystemExit("[error] 需要 --subject 与 --work-name")
 
+    # `model_dir()` 需要 subject+work_name 都在配置里；训练新模型时
+    # `work` 只是产物目录名，不一定有对应模型 —— 所以下面**不走**
+    # `resolve_model_config`，改用带回退的解析器。
     cfg.set("subject", subject)
+    cfg.set("work_name", work)
     data_dir = resolve_data_dir(cfg)
     out_dir = Path(args.output_dir) if args.output_dir else (
         Path(str(cfg.get("paths.output_dir", "output"))) / "train" / subject / work)
@@ -84,8 +130,22 @@ def main(argv: list[str] | None = None) -> int:
     print(f"训练 {subject}/{work}")
     print(f"  数据   : {data_dir}")
     print(f"  训练集 : {len(train_src)} 帧    验证集 : {len(val_src)} 帧")
+    models_dir = Path(str(cfg.get("paths.models_dir")))
+    model_cfg = resolve_structure_config(
+        models_dir, subject, work, explicit=args.model_config,
+        repo_default=REPO_ROOT / "configs" / "model.yaml")
+    from live3dgsavatar.core.avatar import AvatarConfig
+
+    avatar_cfg = AvatarConfig.from_yaml(model_cfg)
+
+    print(f"  结构   : {model_cfg}")
+    print(f"           tex {avatar_cfg.tex_size}  D {avatar_cfg.num_basis_in}  "
+          f"K {avatar_cfg.num_basis_blend}")
     print(f"  步数   : {iterations}   batch {batch_size}   "
           f"blend_start {blend_start}")
+    if blend_start >= iterations:
+        print(f"  [hint] blend_start({blend_start}) ≥ 步数({iterations})："
+              "整段都不会启用形变基，只在拟合静态外观")
 
     if args.dry_run:
         b = train_src.random_batch(min(batch_size, 2))
@@ -102,7 +162,7 @@ def main(argv: list[str] | None = None) -> int:
 
     import nvdiffrast.torch as dr
 
-    from live3dgsavatar.core.avatar import AvatarConfig, GaussianAvatar
+    from live3dgsavatar.core.avatar import GaussianAvatar
     from live3dgsavatar.core.deform.binding import build_binding
     from live3dgsavatar.core.render import SimpleRasterizer
     from live3dgsavatar.core.types import Camera, Mesh
@@ -115,9 +175,6 @@ def main(argv: list[str] | None = None) -> int:
 
     torch.manual_seed(args.seed)
     device = torch.device(str(cfg.get("runtime.device", "cuda")))
-    model_cfg = resolve_model_config(cfg)
-    avatar_cfg = AvatarConfig.from_yaml(model_cfg)
-
     # ---- 几何与相机 ----
     scene = load_scene(cfg, frames=1, device=str(device))
     glctx = dr.RasterizeCudaContext()

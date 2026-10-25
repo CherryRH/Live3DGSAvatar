@@ -94,6 +94,17 @@ model:
 `AvatarConfig.from_yaml` 负责读取，缺的键用默认值（老配置可能没有
 `mlp_hidden`），并接受 `use_blend` / `use_mlp_proj` 这两个旧开关。
 
+**训练新模型时** `<模型目录>/config.yaml` 还不存在，所以 `scripts/train.py`
+按优先级回退（`resolve_structure_config`）：
+
+1. `--model-config` 显式给出
+2. `<models_dir>/<subject>/<work>/config.yaml`（续训/复现）
+3. `<models_dir>/<subject>/*/config.yaml`（同对象任一版本）
+4. 仓库模板 `configs/model.yaml`（新建模型的默认结构）
+
+第 4 条是有意存在的：否则"还没训过"会被报成"还没有选择模型"，
+让人以为数据没配好。
+
 ## 6. 用法
 
 ```bash

@@ -1,0 +1,25 @@
+# Live3DGSAvatar —— 新建模型时的**默认结构**
+#
+# 训练一个全新的模型（还没有 model.ply）时，结构从这里读。
+# 已有模型的目录里通常也有一份同样格式的 config.yaml（RGBAvatar 的约定），
+# 那时优先用它 —— 这样"复现/续训"与"新建"用的是同一套读取逻辑
+# （见 scripts/train.py 的 resolve_structure_config）。
+#
+# 字段含义见 docs/CONFIG.md；默认值与 crh_1 的模型配置一致。
+
+model:
+  # UV 图边长：决定高斯数量（有效 texel 数，256² → 约 6 万）
+  tex_size: 256
+  # 驱动参数维度 D（离线 FLAME 为 129）
+  num_basis_in: 129
+  # 约简后的基数量 K（MLP 输出维度）
+  num_basis_blend: 20
+  # 权重投影 MLP 的隐藏层
+  mlp_hidden: [128, 128]
+  # 是否启用权重投影（False 等价于旧配置里的 use_blend: false）
+  use_weight_proj: true
+  # 初始化
+  init_opacity: 0.5
+  init_scaling: 0.0008
+  # 球谐阶数：0 = 只用 DC（当前模型格式只存 DC）
+  sh_degree: 0
