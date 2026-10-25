@@ -203,3 +203,39 @@ generation_data:
 sampler 里 `R = min(n_ref, R_max)`，且 `e_t = model_output[:, R:]` 按 R 切分批次。
 想用更多参考就得重训 MMDM。
 
+## 10. 在 CAP4D 的图上渲染（诊断）
+
+用途：不训练，先看**现有 crh_1 模型**在这些生成视角上能到多少 PSNR。
+它的输出直接决定要不要投入微调。
+
+两步（**跨环境**，因为网格必须由 FLAME2023 算）：
+
+```bash
+# ① realdenseface 环境：CAP4D 参数 → 5023 顶点网格
+conda activate realdenseface
+python scripts/export_cap4d_frames.py \
+    --cap4d ~/output/crh_1_200 \
+    --identity output/cap4d/crh_1/fit.npz \
+    --out ~/output/crh_1_200/cap4d_frames.npz
+
+# ② live3dgs 环境：补牙齿 + 映射 129 维 + 渲染对比
+conda activate live3dgs
+python scripts/render_test.py --subject <对象> --work-name <版本> \
+    --cap4d ~/output/crh_1_200 --dump-diff
+```
+
+### 为什么网格不能我们自己算
+
+我实测过：用我们仓库的 `FlameModel`（FLAME2020 资产）重建 crh_1 数据集的网格，
+**即使 shape 用最小二乘解出来，残差仍有 4.4–5.4 mm**，而且误差随表情幅度增长
+（相关系数 +0.59）。换成 RDF 的 `flame2023.pkl` 也只降到 4.4 mm —— 说明光换基不够，
+必须用 **RDF 自己的前向**（它的 LBS 与 pose correctives 与我们的实现不同）。
+
+这也解释了实时链路为什么是"RDF 出 5023 顶点 + 我们补 60 颗牙"，
+而不是"我们从头算网格"。
+
+### 产物
+
+`cap4d_frames.npz`：`mesh (T,5023,3)`、`x (T,118)`、`K (T,3,3)`、`names`、`images_dir`。
+后两步（补牙齿、118→129）在渲染侧用已经验证过的 `mesh_build` / `param_map` 完成。
+

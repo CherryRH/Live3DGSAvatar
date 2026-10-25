@@ -47,6 +47,9 @@ class Scene:
     height: int
     #: 数据集**总共**多少帧（可能大于已载入的 `len(frames)`）
     dataset_frames: int = 0
+    #: 逐帧内参（可选）。CAP4D 这类"每帧裁剪框不同"的数据源需要它；
+    #: 数据集是固定相机，保持 ``None`` 即可。
+    K_list: list | None = None
 
     @property
     def num_frames(self) -> int:
@@ -65,6 +68,14 @@ class Scene:
         显式传 `device` 仍支持，用于 `render_test` 这类需要强制指定的场景。
         """
         out = torch.stack([self.frames[i]["mesh"] for i in idx])
+        return out if device is None else out.to(device)
+
+    def intrinsics(self, idx: list[int], device: str | None = None):
+        """按索引取内参，堆成 `[B,3,3]`（无逐帧内参时广播同一份）。"""
+        if self.K_list is None:
+            out = self.K.unsqueeze(0).expand(len(idx), 3, 3).clone()
+        else:
+            out = torch.stack([self.K_list[i] for i in idx])
         return out if device is None else out.to(device)
 
     def weights_tensor(self, idx: list[int], device: str | None = None):

@@ -52,6 +52,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--batch-size", type=int, default=None, help="批大小")
     p.add_argument("--ply", type=Path, default=None, help="模型 .ply（默认按配置推导）")
     p.add_argument("--data", type=Path, default=None, help="数据集目录（覆盖配置）")
+    p.add_argument("--cap4d", type=Path, default=None,
+                   help="CAP4D 的输出目录（含 generated_images/）；"
+                        "给了它就渲染这些生成图并与它们对比")
     p.add_argument("--output-dir", type=Path, default=None, help="产物目录")
     p.add_argument("--no-save", action="store_true",
                    help="不落盘、不拷贝到主机（干净测量渲染耗时）")
@@ -84,7 +87,8 @@ def _finalize(args: argparse.Namespace, cfg: Config) -> argparse.Namespace:
     if args.work_name is not None:
         cfg.set("work_name", args.work_name)
     if args.data is not None:
-        cfg.set("paths.data_dir", args.data)
+        cfg.set("paths.data_root", args.data.parent)
+        cfg.set("subject", args.data.name)
     if args.ply is not None:
         cfg.set("paths.model_ply", args.ply)
 
@@ -189,15 +193,20 @@ def render_core(args, scene, frames: list[int], out_dir: Path,
                        mlp_hidden=tuple(args.mlp_hidden),
                        use_weight_proj=args.use_weight_proj)
     avatar = load_ply(args.ply, config=cfg, device="cuda")
-    camera = Camera.from_intrinsics_extrinsics(
-        K=scene.K, R=scene.R, T=scene.T,
-        width=scene.width, height=scene.height).to("cuda")
+    w2c = torch.eye(4, dtype=torch.float32)
+    w2c[:3, :3] = scene.R
+    w2c[:3, 3] = scene.T
+    w2c = w2c.unsqueeze(0)
     bg = torch.tensor(args.background, dtype=torch.float32, device="cuda")
     rasterizer = SimpleRasterizer()
 
     def run_batch(idx: list[int]):
         mesh = Mesh(verts=scene.frames_tensor(idx, device="cuda"),
                     faces=scene.faces, uvs=scene.uvs, uv_faces=scene.uv_faces)
+        # 逐帧内参（CAP4D 每帧裁剪框不同）；数据集走广播
+        K = scene.intrinsics(idx, device="cuda")
+        camera = Camera(K=K, w2c=w2c.expand(len(idx), 4, 4).contiguous(),
+                        width=scene.width, height=scene.height).to("cuda")
         with torch.no_grad():
             gs = avatar.deform(mesh, scene.weights_tensor(idx, device="cuda"))
             return rasterizer.render(gs, camera, bg)
@@ -257,7 +266,10 @@ def load_gt(args, frames: list[int]):
         if arr.shape[2] == 4:
             out[i] = (arr[..., :3], arr[..., 3] > 250)   # alpha 即 mask
         else:
-            out[i] = (arr[..., :3], np.ones(arr.shape[:2], dtype=bool))
+            # 白底图（CAP4D）没有 alpha：把"接近纯白"的像素当背景。
+            # 这不是完美的抠图，但足以把 PSNR 限制在前景区域。
+            fg = arr[..., :3].min(axis=-1) < 250
+            out[i] = (arr[..., :3], fg)
     return out or None
 
 
@@ -290,6 +302,33 @@ def main() -> int:
     scene = load_scene(cfg, frames=args.frames)
     total = scene.total_frames
     n = scene.num_frames
+
+    if args.cap4d is not None:
+        # 网格由 RDF 的 FLAME2023 算好（`scripts/export_cap4d_frames.py`）：
+        # 我们自己的 FLAME2020 重建本数据集网格有 4–5 mm 误差，不能用。
+        from live3dgsavatar.data.cap4d import load_converted, to_frames
+
+        conv_path = Path(args.cap4d) / "cap4d_frames.npz"
+        if not conv_path.is_file():
+            raise SystemExit(
+                f"[error] 找不到 {conv_path}\n"
+                "        先在 realdenseface 环境里跑：\n"
+                "        python scripts/export_cap4d_frames.py \\\n"
+                "            --cap4d <CAP4D 输出目录> --identity <fit.npz> "
+                "--out <CAP4D 输出目录>/cap4d_frames.npz")
+        converted = load_converted(conv_path)
+        frames, ks = to_frames(converted,
+                               Path(str(cfg.get("paths.flame_dir"))))
+        scene.frames = frames
+        scene.K_list = ks
+        scene.dataset_frames = len(frames)
+        n = len(frames)
+        # 生成图是白底，对比时背景也用白（否则 PSNR 全被背景吃掉）
+        if args.background is None:
+            args.background = [1.0, 1.0, 1.0]
+        args.gt_dir = (converted.get("images_dir")
+                       or Path(args.cap4d) / "generated_images" / "images")
+        print(f"  CAP4D: {n} 帧（{conv_path}）")
     print(f"  数据集: 载入 {n} / 共 {total} 帧")
 
     out_dir = args.output_dir

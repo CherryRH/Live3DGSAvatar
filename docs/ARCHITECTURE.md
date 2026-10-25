@@ -204,6 +204,7 @@ Live3DGSAvatar/
 │   ├── rdf_dump.py              # 离线导出 RDF 结果（标定/回归对照）
 │   ├── calibrate_rdf.py         # 标定：RDF 结果 vs 数据集真值
 │   ├── export_cap4d.py          # 数据集 → CAP4D 输入（RDF 跟踪 + 位姿）
+│   ├── export_cap4d_frames.py   # CAP4D 参数 → 5023 网格（realdenseface 环境）
 │   ├── show_config.py           # 查看生效配置
 │   └── _compat_shim.py          # 独立脚本用的精简兼容补丁
 ├── pyproject.toml               # 打包配置（src 布局 + console script）
