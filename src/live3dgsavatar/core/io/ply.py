@@ -144,6 +144,25 @@ def _read_config_comment(plydata: PlyData) -> dict | None:
     return None
 
 
+def read_embedded_config(path: str | Path) -> "AvatarConfig | None":
+    """读 PLY 头里内嵌的 `gaussian_config`；没有则返回 ``None``。
+
+    参照实现写出的 PLY 没有这条注释，调用方需要自己回退到配置默认值 ——
+    先用这个函数**探测**，比"调 `load_ply(config=None)` 再捕异常"清楚得多。
+    """
+    plydata = PlyData.read(str(path))
+    meta = _read_config_comment(plydata)
+    if meta is None:
+        return None
+    return AvatarConfig(
+        tex_size=int(meta["tex_size"]),
+        num_basis_in=int(meta["num_basis_in"]),
+        num_basis_blend=int(meta["num_basis_blend"]),
+        mlp_hidden=tuple(meta.get("mlp_hidden", ())),
+        use_weight_proj=bool(meta.get("use_weight_proj", True)),
+    )
+
+
 def read_ply_metadata(path: str | Path) -> dict:
     """只读 PLY 头，返回配置与各基的列数。用于加载前的交叉校验。"""
     plydata = PlyData.read(str(path))

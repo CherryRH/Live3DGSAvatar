@@ -6,8 +6,13 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
+import pytest
 import torch
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 ATOL = 0.0  # PLY 是 float32 原样存取，应逐位一致
@@ -145,3 +150,42 @@ def test_load_rejects_tex_size_too_small_for_gaussians(tmp_path) -> None:
         assert "tex_size" in str(e), f"报错信息应提到 tex_size，实际：{e}"
     else:
         raise AssertionError("tex_size=4 装不下 64 个高斯，应报错")
+
+
+def test_read_embedded_config_roundtrip(tmp_path) -> None:
+    """我们自己写出的 PLY 带 `gaussian_config`，读回来要能还原结构。"""
+    import torch
+
+    from live3dgsavatar.core.avatar import AvatarConfig, GaussianAvatar
+    from live3dgsavatar.core.deform import Binding
+    from live3dgsavatar.core.io.ply import read_embedded_config, save_ply
+
+    # 高斯数要够放 MLP 参数（PLY 约定：weight_module 压进单列，行数 ≥ 参数量）
+    n = 64
+    cfg = AvatarConfig(tex_size=8, num_basis_in=4, num_basis_blend=3,
+                       mlp_hidden=(4,), use_weight_proj=True)
+    binding = Binding(face_id=torch.zeros(n, dtype=torch.long),
+                      face_bary=torch.tensor([[0.5, 0.5, 0.0]]).repeat(n, 1),
+                      valid_mask=torch.ones(n, dtype=torch.bool))
+    avatar = GaussianAvatar(cfg, binding)
+    path = tmp_path / "m.ply"
+    save_ply(avatar, path)
+
+    back = read_embedded_config(path)
+    assert back is not None
+    assert back.tex_size == cfg.tex_size
+    assert back.num_basis_in == cfg.num_basis_in
+    assert back.num_basis_blend == cfg.num_basis_blend
+    assert tuple(back.mlp_hidden) == tuple(cfg.mlp_hidden)
+    assert back.use_weight_proj is True
+
+
+def test_read_embedded_config_returns_none_without_comment(tmp_path) -> None:
+    """参照实现写出的文件没有这条注释，必须返回 None 让调用方回退。"""
+    from live3dgsavatar.core.io.ply import read_embedded_config
+
+    real = REPO_ROOT / "models" / "crh_1" / "test" / "model.ply"
+    if real.is_file():
+        assert read_embedded_config(real) is None
+    else:
+        pytest.skip("仓库里没有参照实现写出的模型")

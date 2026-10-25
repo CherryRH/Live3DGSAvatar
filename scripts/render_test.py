@@ -198,20 +198,27 @@ def render_core(args, scene, frames: list[int], out_dir: Path,
     from live3dgsavatar.core.render import SimpleRasterizer
     from live3dgsavatar.core.types import Camera, Mesh
 
-    # 结构优先级：命令行显式 > PLY 内嵌的自描述 > 配置文件默认值。
-    # 训练产出的 PLY 自带 `gaussian_config`，所以拷进 models/ 后直接能渲染，
-    # 不必再手抄结构参数。
+    # 结构优先级：命令行显式 > PLY 内嵌的自描述 > 配置/默认值。
+    # 训练产出的 PLY 自带 `gaussian_config`；参照实现写出的文件没有，
+    # 这时回退到 `--tex-size` 等参数（默认取 configs/）。
+    from live3dgsavatar.core.io.ply import read_embedded_config
+
     explicit = (args._explicit_tex_size or args._explicit_basis_in
                 or args._explicit_basis_blend or args._explicit_mlp_hidden
                 or args.no_weight_proj)
-    if explicit:
+    embedded = None if explicit else read_embedded_config(args.ply)
+    if embedded is not None:
+        print(f"  结构  : 来自 PLY 内嵌（tex {embedded.tex_size}, "
+              f"D {embedded.num_basis_in}, K {embedded.num_basis_blend}）")
+        avatar = load_ply(args.ply, config=embedded, device="cuda")
+    else:
+        if not explicit:
+            print("  结构  : 该 PLY 未内嵌结构，回退到配置/默认值")
         cfg = AvatarConfig(tex_size=args.tex_size, num_basis_in=args.num_basis_in,
                            num_basis_blend=args.num_basis_blend,
                            mlp_hidden=tuple(args.mlp_hidden),
                            use_weight_proj=args.use_weight_proj)
         avatar = load_ply(args.ply, config=cfg, device="cuda")
-    else:
-        avatar = load_ply(args.ply, config=None, device="cuda")
     print(f"  结构  : tex {avatar.config.tex_size}  D {avatar.config.num_basis_in}  "
           f"K {avatar.config.num_basis_blend}  "
           f"hidden {avatar.config.mlp_hidden}  "
