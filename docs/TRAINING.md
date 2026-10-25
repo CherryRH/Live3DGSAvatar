@@ -143,7 +143,33 @@ python scripts/train.py ... --promote --promote-from output/train/crh_1/run2/mod
 `promote_model` 会拷 `model.ply` + `config.yaml` + `report.json`，目标已存在时
 默认**拒绝覆盖**。
 
-### 在留出集上评估
+### 在留出集上评估（一次渲染全部模型）
+
+`render_test.py` 会自动扫描模型目录下的所有 `.ply`，逐个渲染：
+
+```bash
+python scripts/render_test.py --subject crh_1 --work-name run4 \
+    --frame-offset 2577 --frames 286
+```
+
+产物（每个模型互不覆盖）：
+
+```
+output/render_test/crh_1/run4/
+├── model/                 ← 常规模型
+│   ├── images/
+│   └── report.json
+├── model_aug/             ← 增强模型
+│   ├── images/
+│   └── report.json
+└── compare/               ← 统一对比：原图 | model | model_aug …
+    ├── 02577.png …
+    └── report.json        （各模型中位 PSNR）
+```
+
+只看一个模型时用 `--ply` 指定路径即可；`--no-diff` 可关掉对比图。
+
+
 
 训练用末尾 350 帧作验证集，评估时也要落在同一段上：
 

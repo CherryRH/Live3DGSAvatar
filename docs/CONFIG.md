@@ -209,7 +209,7 @@ output_dir: output                     # output 特殊：相对**当前工作目
 |---|---|
 | `dataset.use_shape_weight` / `use_pose_weight` | 驱动参数的分段开关（与训练侧一致） |
 | `dataset.pin_memory` | 是否锁页内存 |
-| `test.dump_diff` | 渲染测试是否输出并排对比图 |
+| `test.dump_diff` | 渲染测试是否输出对比图（原图 \| 各模型 横排，带 PSNR） |
 
 ## 5.5 `train.yaml` 字段
 
