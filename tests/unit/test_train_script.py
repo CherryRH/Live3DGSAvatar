@@ -98,3 +98,65 @@ def test_repo_template_is_valid() -> None:
         pytest.skip("没有仓库模板")
     cfg = AvatarConfig.from_yaml(path)
     assert cfg.tex_size > 0 and cfg.num_basis_in > 0 and cfg.num_basis_blend > 0
+
+
+# --------------------------------------------------------------- 模型落地 --
+
+
+def test_promote_copies_model_structure_and_report(tmp_path) -> None:
+    """把训练产物装进 `models/<对象>/<版本>/`，渲染侧才认得出来。"""
+    m = _load()
+    src = tmp_path / "out"
+    src.mkdir()
+    (src / "model.ply").write_bytes(b"ply-data")
+    (src / "config.yaml").write_text("model:\n  tex_size: 256\n", encoding="utf-8")
+    (src / "report.json").write_text("{\"best_psnr\": 29.0}", encoding="utf-8")
+
+    target = tmp_path / "models" / "s" / "w"
+    out = m.promote_model(source_ply=src / "model.ply",
+                          structure_config=src / "config.yaml",
+                          report=src / "report.json", target=target)
+
+    assert out == target
+    assert (target / "model.ply").read_bytes() == b"ply-data"
+    assert (target / "config.yaml").is_file()
+    assert (target / "report.json").is_file()
+
+
+def test_promote_refuses_to_overwrite_without_force(tmp_path) -> None:
+    """覆盖已有模型是破坏性操作，必须显式 --force。"""
+    m = _load()
+    src = tmp_path / "model.ply"
+    src.write_bytes(b"x")
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text("model: {}\n", encoding="utf-8")
+    target = tmp_path / "models" / "s" / "w"
+    m.promote_model(source_ply=src, structure_config=cfg, report=None, target=target)
+
+    with pytest.raises(FileExistsError, match="force"):
+        m.promote_model(source_ply=src, structure_config=cfg, report=None,
+                        target=target)
+    # 加了 force 就可以
+    m.promote_model(source_ply=src, structure_config=cfg, report=None,
+                    target=target, force=True)
+
+
+def test_promote_reports_missing_source(tmp_path) -> None:
+    m = _load()
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text("model: {}\n", encoding="utf-8")
+    with pytest.raises(FileNotFoundError, match="找不到"):
+        m.promote_model(source_ply=tmp_path / "nope.ply",
+                        structure_config=cfg, report=None,
+                        target=tmp_path / "models" / "s" / "w")
+
+
+def test_promote_without_report_is_allowed(tmp_path) -> None:
+    m = _load()
+    src = tmp_path / "model.ply"
+    src.write_bytes(b"x")
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text("model: {}\n", encoding="utf-8")
+    target = tmp_path / "models" / "s" / "w"
+    m.promote_model(source_ply=src, structure_config=cfg, report=None, target=target)
+    assert not (target / "report.json").exists()

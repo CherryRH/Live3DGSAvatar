@@ -1,33 +1,31 @@
 """参数计划：**哪些参数参与优化、各自用什么学习率曲线**。
 
-设计目标：让"完整训练"和"在线微调"共用同一条训练循环，只换 `ParameterPlan`。
+一次训练由"优化什么"和"怎么优化"两部分描述。本模块负责前者：
+把模型的可训练参数按语义分组，每组给一条学习率曲线。这样：
 
 - 完整训练：打开全部组，位置组用指数衰减，迭代几万步
-- 在线微调：只开 `f_dc`(+`opacity`)，常数学习率，几百步内结束
+- 在线微调：只开外观组（颜色/不透明度），常数学习率，几百步内结束
 
-## 与 RGBAvatar 的对应关系
+两者共用同一个训练循环（见 `trainer.py`），区别只是这里的计划不同。
 
-RGBAvatar 把这些散在 `config/offline.yaml` 与 `Reconstruction.update_learning_rate`
-的 if/elif 链里（按组名逐条判断）。这里改成**数据**：组 → 计划，循环里查表。
-好处是加一组参数不用改循环，也让"微调只用一部分组"变成自然表达。
+## 默认值
 
-默认值取自 crh_1 的 `config.yaml`（即 RGBAvatar 实际训练用的那套）：
+与 `models/crh_1/test/config.yaml` 里的训练配置一致：
 
 | 组 | lr | 说明 |
 |---|---|---|
-| `xyz` | 8e-4 → 8e-6，30000 步，delay 0.01 | 位置（乘 `scene_extent`）|
+| `xyz` | 8e-4 → 8e-6，30000 步 | 位置（乘 `scene_extent`）|
 | `f_dc` | 0.0125 | 颜色 DC |
 | `opacity` | 0.25 | logit |
 | `scaling` | 0.025 | |
 | `rotation` | 0.005 | |
-| `xyz_b` | 8e-4 × 0.05 | 位置基 |
+| `xyz_b` | 8e-4 × 0.05 → 8e-6 × 0.05 | 位置基 |
 | `rotation_b` | 0.005 × 0.5 | 旋转基 |
 | `f_dc_b` | 0.0125 × 0.5 | 颜色基 |
 | `weight_module` | 1e-3 | 权重投影 MLP |
 
-⚠️ 一处刻意的偏差：RGBAvatar 的位置学习率把 `scene_extent` 乘了**两次**
-（构造调度器时一次、`update_learning_rate` 里又一次）。它的配置里
-`scene_extent = 1.0`，所以两者等价；这里只乘一次，避免换数据时出现隐式平方。
+位置类学习率只乘**一次** `scene_extent`：它在 `GroupPlan` 构造时就并入了
+起点/终点值，循环里不再重复缩放。
 """
 
 from __future__ import annotations
@@ -106,7 +104,7 @@ class ParameterPlan:
 
     Attributes:
         groups: 组名 → 计划。**只包含启用的组** —— 不在表里的组不参与优化。
-        scene_extent: 位置类学习率的缩放（RGBAvatar 的 `scene_extent`）
+        scene_extent: 位置类学习率的缩放系数（场景尺度归一化用）
     """
 
     groups: dict[str, GroupPlan] = field(default_factory=dict)

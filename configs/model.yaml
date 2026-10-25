@@ -1,7 +1,7 @@
 # Live3DGSAvatar —— 新建模型时的**默认结构**
 #
 # 训练一个全新的模型（还没有 model.ply）时，结构从这里读。
-# 已有模型的目录里通常也有一份同样格式的 config.yaml（RGBAvatar 的约定），
+# 已有模型的目录里通常也有一份同样格式的 config.yaml，
 # 那时优先用它 —— 这样"复现/续训"与"新建"用的是同一套读取逻辑
 # （见 scripts/train.py 的 resolve_structure_config）。
 #

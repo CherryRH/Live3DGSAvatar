@@ -395,3 +395,41 @@ def test_objective_reports_device_mismatch_clearly() -> None:
     fake = target.to("meta")
     with pytest.raises(RuntimeError, match="数据源与训练设备"):
         Objective(l1=1.0)(pred=pred, target=fake)
+
+
+def test_log_hook_labels_total_and_terms() -> None:
+    """日志要能一眼看懂："总损失" + 括号里的分项。
+
+    之前只打印 `l1 0.0456  total 0.0456`，看不出哪个是总损失、单位是什么。
+    """
+    import contextlib
+    import io
+
+    from live3dgsavatar.training.trainer import LogHook
+
+    hook = LogHook(every=1)
+    trainer = SimpleNamespace(iterations=10)
+    hook.on_start(trainer)
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        hook.on_step(trainer, 0, {"l1": 0.0456, "total": 0.0456})
+    line = buf.getvalue().strip()
+
+    assert "损失 0.0456" in line, line
+    assert "l1 0.0456" in line, line
+    assert "1/10" in line, line
+
+
+def test_log_hook_handles_missing_total() -> None:
+    import contextlib
+    import io
+
+    from live3dgsavatar.training.trainer import LogHook
+
+    hook = LogHook(every=1)
+    trainer = SimpleNamespace(iterations=3)
+    hook.on_start(trainer)
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        hook.on_step(trainer, 0, {"l1": 0.5})
+    assert "损失 —" in buf.getvalue()

@@ -15,18 +15,15 @@ Trainer(source, plan, objective, render_fn, hooks)
 
 `render_fn` 是**依赖注入**：真实训练传 `GaussianAvatar + SimpleRasterizer`，
 测试传一个纯 torch 的假函数。这样训练逻辑（顺序、调度、钩子）能脱离
-CUDA 扩展单独验证 —— RGBAvatar 的 `Reconstruction.step` 做不到这一点。
+CUDA 扩展单独验证 —— 训练顺序、调度、早停这些逻辑不必起 GPU 就能测。
 
-## 与 RGBAvatar 的差异
+## 为什么这样切
 
-| RGBAvatar | 这里 | 原因 |
-|---|---|---|
-| `Reconstruction.step` 里 if/elif 改 lr | `ParameterPlan.apply_lr` | 加一组参数不用改循环 |
-| 损失写成一串加法 | `Objective` | 权重进配置，返回值带分项 |
-| 自带 `tqdm`/tensorboard 直连 | `hooks` | 训练、微调、测试共用 |
-| `fast_forward` 死写在 step 里 | 可选的 `on_step` 钩子位（默认关）| 它改写颜色参数，调参时很坑 |
-| 只有最后 `save_ply` | `CheckpointHook` | 中断不丢、可选最佳 |
-| 无验证集 | `ValidationHook` | 早停/选模型 |
+- 学习率按组查表（`ParameterPlan.apply_lr`），加一组参数不用改循环
+- 损失是对象（`Objective`），权重进配置，返回值带分项
+- 验证/存档/日志都是钩子，训练、微调、冒烟测试共用一套
+- 定期存档（`CheckpointHook`），中断不丢，也能按验证指标挑最佳
+- 验证集驱动早停（`ValidationHook`）
 """
 
 from __future__ import annotations
@@ -100,10 +97,11 @@ class Trainer:
         params: `GaussianAvatar.parameter_groups()` 的结果
         iterations: 总步数
         batch_size: 每步样本数
-        blend_start: 第几步开始启用 `blend_weight`（RGBAvatar 的 `blend_start_iter`）
+        blend_start: 第几步开始启用 `blend_weight`（暖启动，见 `schedule.blend_active`）
         hooks: 钩子列表
         device: 渲染/损失所在设备
-        optimizer_factory: 便于替换（默认 Adam，eps 与 RGBAvatar 一致用 1e-15）
+        optimizer_factory: 便于替换（默认 Adam，`eps=1e-15` —— 参数里 logit/对数尺度差很大，
+            默认 1e-8 会在小梯度上过早停止更新）
     """
 
     def __init__(self, *, source, plan: ParameterPlan, objective: Objective,
@@ -310,9 +308,15 @@ class LogHook:
             return
         dt = time.perf_counter() - self._t0
         rate = (iteration + 1) / dt if dt > 0 else 0.0
-        detail = "  ".join(f"{k} {v:.4f}" for k, v in parts.items())
+        # 总损失单独标出来，其余项放括号里 —— 一眼能看出"现在在优化什么"。
+        # 这些是**当前 batch 的训练损失**（像素空间、0~1），不是 PSNR；
+        # 每步的 batch 是随机采的，所以数值会随样本难度上下跳。
+        total = parts.get("total")
+        terms = " ".join(f"{k} {v:.4f}" for k, v in parts.items()
+                         if k != "total")
+        head = f"损失 {total:.4f}" if total is not None else "损失 —"
         print(f"{self.prefix} {iteration + 1}/{trainer.iterations}  "
-              f"{detail}  {rate:.1f} it/s", flush=True)
+              f"{head}（{terms}）  {rate:.1f} it/s", flush=True)
 
 
 class TimeBudgetHook:

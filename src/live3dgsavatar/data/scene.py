@@ -90,6 +90,7 @@ def load_scene(
     subject: str | None = None,
     device: str | None = None,
     data_dir: Path | None = None,
+    frame_offset: int = 0,
 ) -> Scene:
     """加载模板几何、相机与若干帧的网格顶点。
 
@@ -118,9 +119,11 @@ def load_scene(
 
     manifest = data_dir / MANIFEST_NAME
     if manifest.exists():
-        scene = _load_from_manifest(cfg, data_dir, manifest, frames, device)
+        scene = _load_from_manifest(cfg, data_dir, manifest, frames, device,
+                                    frame_offset)
     elif (data_dir / "checkpoint").is_dir():
-        scene = _load_from_checkpoint(cfg, data_dir, frames, device)
+        scene = _load_from_checkpoint(cfg, data_dir, frames, device,
+                                      frame_offset)
     else:
         raise FileNotFoundError(
             f"数据集格式无法识别：{data_dir}\n"
@@ -138,6 +141,7 @@ def _load_from_checkpoint(
     data_dir: Path,
     frames: int | None,
     device: str,
+    frame_offset: int = 0,
 ) -> Scene:
     """参照格式：`<subject>/{images,checkpoint}/`，每帧一个 `.frame`。
 
@@ -149,11 +153,15 @@ def _load_from_checkpoint(
     topo = _flame_topology(cfg, device)
     ds = CheckpointDataset(data_dir)
     total = len(ds)
-    n = total if frames is None or frames < 0 else min(int(frames), total)
+    start = max(0, int(frame_offset))
+    n = total - start if frames is None or frames < 0 else min(int(frames),
+                                                              total - start)
+    if n <= 0:
+        raise ValueError(f"frame_offset={frame_offset} 越界（总帧数 {total}）")
 
     flame = _flame_model(cfg)
     out = []
-    for i in range(n):
+    for i in range(start, start + n):
         mesh, weight = ds.mesh_and_weight(i, flame)
         out.append({"mesh": mesh.to(device), "blend_weight": weight.to(device)})
 
@@ -228,6 +236,7 @@ def _load_from_manifest(
     manifest: Path,
     frames: int | None,
     device: str,
+    frame_offset: int = 0,
 ) -> Scene:
     """manifest 格式：`render_inputs.npz` 已算好逐帧 `mesh` / `blend_weight`。
 
@@ -260,11 +269,16 @@ def _load_from_manifest(
             raise ValueError(
                 f"mesh 帧数 {total} 与 blend_weight 帧数 {weights.shape[0]} 不一致")
 
-        n = total if frames is None or frames < 0 else min(int(frames), total)
+        start = max(0, int(frame_offset))
+        n = total - start if frames is None or frames < 0 else min(int(frames),
+                                                                  total - start)
+        if n <= 0:
+            raise ValueError(
+                f"frame_offset={frame_offset} 越界（总帧数 {total}）")
         out = [
             {"mesh": torch.from_numpy(meshes[i].astype(np.float32, copy=True)).to(device),
              "blend_weight": torch.from_numpy(weights[i].astype(np.float32, copy=True)).to(device)}
-            for i in range(n)
+            for i in range(start, start + n)
         ]
 
         K = torch.from_numpy(np.asarray(d["K"], dtype=np.float32).copy()).to(device)

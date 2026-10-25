@@ -2,12 +2,12 @@
 
 ## 为什么单独一层
 
-RGBAvatar 把取数逻辑写在 `dataset/flame_dataset.py` + 自制的
-`DataLoader.get_batch()` 里：没有 epoch、没有 shuffle、没有验证集，
-训练与评测各写一套。这里把"训练/验证怎么取"和"数据长什么样"分开：
+"数据长什么样"（网格 / 驱动参数 / 图像 / 掩码）与"训练怎么取"
+（切分、shuffle、batch、验证遍历）是两件事。分开之后：
 
-- `ManifestSource`：读我们的 `render_inputs.npz` + `images/`（沿用 RGBAvatar 的切分：**最后 N 帧为测试**）
-- 图像按需读取（小 LRU），避免把 3000 帧全塞进内存
+
+- `ManifestSource`：读 `render_inputs.npz` + `images/`，**末尾 N 帧作验证集**
+- 图像按需读取（小 LRU），不必把几千帧全塞进内存
 
 样本契约：
 
@@ -18,8 +18,8 @@ image         [3,H,W] float32 前景已叠到背景上的 RGB，值域 [0,1]
 mask          [1,H,W] bool    前景
 ```
 
-背景合成在这里做：RGBAvatar 在 `step()` 里用 `gt_rgb * mask + bg * (1-mask)`，
-我们提前合成，`Objective` 就只关心像素。
+背景合成也在这里做：读取时就把掩码外填成背景色，
+`Objective` 只处理像素，不必关心"这张图有没有透明通道"。
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-#: 默认测试集帧数（RGBAvatar 的切分：`images[:-350]` 训练 / `[-350:]` 测试）
+#: 默认验证集帧数：末尾 N 帧（`images[:-350]` 训练 / `images[-350:]` 验证）
 DEFAULT_TEST_FRAMES = 350
 
 

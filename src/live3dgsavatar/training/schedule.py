@@ -1,12 +1,10 @@
-"""训练调度：学习率曲线、blend 暖启动、早停判据。
+"""训练调度：学习率曲线、形变基暖启动、早停判据。
 
-这些量在 RGBAvatar 里散落在两处：`utils.get_expon_lr_func` 与
-`Reconstruction.update_learning_rate` 的 if/elif 链，以及 `blend_start_iter`
-这个隐式的"前 N 步不启用形变基"的约定。集中到这里后：
+三件事集中在这里，都是纯函数或纯状态，便于单测（不需要 GPU）：
 
-- 曲线是纯函数，可以单测（不需要 GPU）
-- "第几步开始用 blend_weight" 变成显式的 `blend_active()`
-- 早停有了统一判据（按验证 PSNR，带耐心值）
+- `expon_lr`：对数空间线性插值的学习率曲线，可选起步延迟
+- `blend_active`：前 N 步只用模板网格拟合静态外观，之后才启用形变基
+- `EarlyStopping`：按验证指标早停
 """
 
 from __future__ import annotations
@@ -24,10 +22,9 @@ def expon_lr(iteration: int, lr_init: float, lr_final: float,
         delay_rate = delay_mult + (1 - delay_mult) * sin(π/2 · clip(step / delay_steps))
         lr         = delay_rate * log_lerp
 
-    ⚠️ `delay_mult` **只有配 `delay_steps > 0` 才起作用**：上游默认
-    `lr_delay_steps = 0`，此时 `delay_rate ≡ 1`。RGBAvatar 的配置里写了
-    `position_lr_delay_mult: 0.01` 却没设 `lr_delay_steps`，所以那一项
-    **实际是空转的**。这里把 `delay_steps` 显式暴露出来，避免同样的误解。
+    ⚠️ `delay_mult` **只有配 `delay_steps > 0` 才起作用**；`delay_steps = 0`
+    时 `delay_rate ≡ 1`，设了 `delay_mult` 也没有效果。本项目的默认计划
+    不启用起步延迟（两个值分别是 0 与 1.0），需要时再显式打开。
 
     Args:
         iteration: 当前步（从 0 开始）
@@ -58,15 +55,15 @@ def expon_lr(iteration: int, lr_init: float, lr_final: float,
 def blend_active(iteration: int, start: int) -> bool:
     """第 `iteration` 步是否启用 `blend_weight`（形变基）。
 
-    RGBAvatar 用 `blend_start_iter` 做暖启动：先只用模板网格拟合静态外观，
-    再打开形变基。这样形变基不会在颜色还很差时被拉偏。
+    暖启动：先只用模板网格拟合静态外观，再打开形变基。这样形变基不会在
+    颜色还很差时被拉偏（形状与颜色同时从零开始学，容易互相带偏）。
     """
     return int(iteration) >= int(start)
 
 
 def sub_batch_size(iteration: int, batch_size: int, *, full_from: int = 0,
                    warmup: int = 0) -> int:
-    """初期用更小的 batch（RGBAvatar 没有这个，是我们加的省算力选项）。
+    """初期用更小的 batch（前几步样本少一些，省算力也减少初期抖动）。
 
     `warmup <= 0` 时恒为 `batch_size`。
     """

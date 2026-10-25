@@ -49,6 +49,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--subject", default=None, help="覆盖配置里的 subject")
     p.add_argument("--work-name", default=None, help="覆盖配置里的 work_name")
     p.add_argument("--frames", type=int, default=None, help="帧数；-1 表示全部")
+    # `default=None`：脚本不硬编码业务默认量，未给时在 `_finalize` 里取 0
+    p.add_argument("--frame-offset", type=int, default=None,
+                   help="从第几帧开始取（配合 --frames 可只评估留出的尾段）")
     p.add_argument("--batch-size", type=int, default=None, help="批大小")
     p.add_argument("--ply", type=Path, default=None, help="模型 .ply（默认按配置推导）")
     p.add_argument("--data", type=Path, default=None, help="数据集目录（覆盖配置）")
@@ -82,6 +85,13 @@ def _validate(args: argparse.Namespace) -> None:
 
 def _finalize(args: argparse.Namespace, cfg: Config) -> argparse.Namespace:
     """把配置与 CLI 合并成最终参数。"""
+    # 先记下哪些结构参数是**用户显式给的**：只有那时才用它覆盖 PLY 的自描述，
+    # 否则会让"模型结构与配置默认值不一致"的文件被错误加载。
+    args.frame_offset = 0 if args.frame_offset is None else int(args.frame_offset)
+    args._explicit_tex_size = args.tex_size is not None
+    args._explicit_basis_in = args.num_basis_in is not None
+    args._explicit_basis_blend = args.num_basis_blend is not None
+    args._explicit_mlp_hidden = args.mlp_hidden is not None
     if args.subject is not None:
         cfg.set("subject", args.subject)
     if args.work_name is not None:
@@ -188,11 +198,24 @@ def render_core(args, scene, frames: list[int], out_dir: Path,
     from live3dgsavatar.core.render import SimpleRasterizer
     from live3dgsavatar.core.types import Camera, Mesh
 
-    cfg = AvatarConfig(tex_size=args.tex_size, num_basis_in=args.num_basis_in,
-                       num_basis_blend=args.num_basis_blend,
-                       mlp_hidden=tuple(args.mlp_hidden),
-                       use_weight_proj=args.use_weight_proj)
-    avatar = load_ply(args.ply, config=cfg, device="cuda")
+    # 结构优先级：命令行显式 > PLY 内嵌的自描述 > 配置文件默认值。
+    # 训练产出的 PLY 自带 `gaussian_config`，所以拷进 models/ 后直接能渲染，
+    # 不必再手抄结构参数。
+    explicit = (args._explicit_tex_size or args._explicit_basis_in
+                or args._explicit_basis_blend or args._explicit_mlp_hidden
+                or args.no_weight_proj)
+    if explicit:
+        cfg = AvatarConfig(tex_size=args.tex_size, num_basis_in=args.num_basis_in,
+                           num_basis_blend=args.num_basis_blend,
+                           mlp_hidden=tuple(args.mlp_hidden),
+                           use_weight_proj=args.use_weight_proj)
+        avatar = load_ply(args.ply, config=cfg, device="cuda")
+    else:
+        avatar = load_ply(args.ply, config=None, device="cuda")
+    print(f"  结构  : tex {avatar.config.tex_size}  D {avatar.config.num_basis_in}  "
+          f"K {avatar.config.num_basis_blend}  "
+          f"hidden {avatar.config.mlp_hidden}  "
+          f"proj {avatar.config.use_weight_proj}")
     w2c = torch.eye(4, dtype=torch.float32)
     w2c[:3, :3] = scene.R
     w2c[:3, 3] = scene.T
@@ -299,7 +322,7 @@ def main() -> int:
 
     from live3dgsavatar.data.scene import load_scene
 
-    scene = load_scene(cfg, frames=args.frames)
+    scene = load_scene(cfg, frames=args.frames, frame_offset=args.frame_offset)
     total = scene.total_frames
     n = scene.num_frames
 

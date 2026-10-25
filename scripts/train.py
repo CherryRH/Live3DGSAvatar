@@ -1,19 +1,20 @@
 #!/usr/bin/env python
-"""训练入口：在**我们自己的管线**上训一个头像模型（P0 骨架）。
+"""训练入口：在**我们自己的管线**上训一个约简高斯 blendshape 头像。
 
-与 RGBAvatar 的 `train_offline.py` 对应，但：
+流程：
 
-- 数据走 `data/sources.ManifestSource`（训练/验证按末尾 N 帧切分）
-- 参数计划、损失、调度、钩子都是可配置对象（见 `training/`）
-- 产出：`model.ply` + `report.json`（含验证集指标与耗时）
+1. 从 `datasets/<subject>/` 读 `render_inputs.npz` + 图像，末尾 N 帧作验证
+2. 从模型目录的 `config.yaml`（没有就用 `configs/model.yaml`）读网络结构
+3. 用 UV 绑定初始化高斯，按参数计划优化，期间定期验证/存档
+4. 产出：`model_XXXXXX.ply` + `report.json`（含验证指标与耗时）
 
 用法::
 
     conda activate live3dgs
     python scripts/train.py --subject crh_1 --work-name test
 
-默认超参与 crh_1 的 `model.yaml` 一致（batch 10、50000 步、只剩 L1）。
-「验证集」默认取末尾 350 帧（与 RGBAvatar 相同）。
+默认超参与 `models/crh_1/test/config.yaml` 一致：batch 10、50000 步、
+只用 L1；验证集取末尾 350 帧。
 """
 
 from __future__ import annotations
@@ -28,6 +29,36 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
 import live3dgsavatar  # noqa: F401
+
+
+def promote_model(*, source_ply: Path, structure_config: Path, report: Path | None,
+                  target: Path, force: bool = False) -> Path:
+    """把一个训练好的模型装进 `models/<对象>/<版本>/`，供渲染直接使用。
+
+    拷贝三样东西：
+
+    - `model.ply`：高斯参数（PLY 头里已内嵌 `gaussian_config`，可自描述结构）
+    - `config.yaml`：结构配置的可读副本（换机器/人工查看用）
+    - `report.json`：训练指标（可选，便于回溯训练来源）
+
+    Raises:
+        FileExistsError: 目标已存在且没给 `force` —— 覆盖已有模型是破坏性的，
+            必须显式确认
+    """
+    import shutil
+
+    if not Path(source_ply).is_file():
+        raise FileNotFoundError(f"找不到要装的模型：{source_ply}")
+    target = Path(target)
+    if target.exists() and not force:
+        raise FileExistsError(
+            f"{target} 已存在；确认覆盖请加 --force")
+    target.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(source_ply, target / "model.ply")
+    shutil.copyfile(structure_config, target / "config.yaml")
+    if report is not None and Path(report).is_file():
+        shutil.copyfile(report, target / "report.json")
+    return target
 
 
 def resolve_structure_config(models_dir: Path, subject: str, work: str,
@@ -77,7 +108,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--iterations", type=int, default=None, help="覆盖训练步数")
     p.add_argument("--batch-size", type=int, default=None)
     p.add_argument("--blend-start", type=int, default=None,
-                   help="第几步开始启用形变基（RGBAvatar 默认 3000）")
+                   help="第几步开始启用形变基（默认 3000）")
     p.add_argument("--test-frames", type=int, default=None,
                    help="末尾多少帧作验证集（默认 350）")
     p.add_argument("--eval-every", type=int, default=2000)
@@ -87,6 +118,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="模型结构配置（默认：模型目录里的 config.yaml，"
                         "没有就用仓库模板 configs/model.yaml）")
     p.add_argument("--output-dir", type=Path, default=None)
+    p.add_argument("--promote", action="store_true",
+                   help="训练结束后把模型装进 models/<对象>/<名字>/，可直接用于渲染")
+    p.add_argument("--promote-name", default=None,
+                   help="装进 models/ 时用的名字（默认与 --work-name 相同）")
+    p.add_argument("--promote-from", type=Path, default=None,
+                   help="装哪个文件（默认列表末尾的 model.ply）")
+    p.add_argument("--force", action="store_true",
+                   help="目标目录已存在时覆盖")
     p.add_argument("--dry-run", action="store_true",
                    help="不需要 GPU：检查数据与配置，打印将要做的事")
     return p.parse_args(argv)
@@ -201,11 +240,27 @@ def main(argv: list[str] | None = None) -> int:
 
     @torch.no_grad()
     def evaluate(source) -> dict[str, float]:
-        """验证集 PSNR（mask 内）。训练与评测用同一个 objective 口径。"""
+        """验证集 PSNR（前景掩码内）。
+
+        这里**不走** `render_fn`：训练态会把 `target_image` 传给光栅化器，
+        由它额外算 `est_color`/`est_weight`（供颜色回写用）。评测只需要
+        颜色与 alpha，带上 `target_image` 会走一条在 `no_grad` 下容易出错的
+        内核路径（实测在第 2000 步验证时触发过 CUDA illegal memory access）。
+        所以评测单独走一条纯推理路径。
+        """
         total, n = 0.0, 0
-        for batch in source.iter_batches(max(1, batch_size)):
-            out = render_fn(batch.mesh.to(device), batch.blend_weight.to(device),
-                            batch, 0)
+        try:
+            batches = list(source.iter_batches(max(1, batch_size)))
+        except Exception as e:                                  # noqa: BLE001
+            print(f"[warn] 验证集遍历失败：{type(e).__name__}: {e}", flush=True)
+            raise
+        for batch in batches:
+            mesh = Mesh(verts=batch.mesh.to(device), faces=scene.faces.to(device),
+                        uvs=scene.uvs.to(device), uv_faces=scene.uv_faces.to(device))
+            with torch.no_grad():
+                gs = avatar.deform(mesh, batch.blend_weight.to(device))
+                bg = torch.zeros(batch.image.shape[0], 3, 1, 1, device=device)
+                out = rasterizer.render(gs, camera, bg)
             pred, tgt, mask = out.color, batch.image.to(device), batch.mask.to(device)
             mse = (((pred - tgt) ** 2) * mask).sum() / (mask.sum() * 3).clamp(min=1)
             total += float(10.0 * torch.log10(1.0 / mse.clamp(min=1e-10))) * len(batch)
@@ -232,17 +287,42 @@ def main(argv: list[str] | None = None) -> int:
                       blend_start=blend_start, hooks=hooks, device=device)
     report = trainer.run()
 
+    # 最终模型（训练结束时的那一份）—— 定期存档已在 CheckpointHook 里做过
+    from live3dgsavatar.core.io.ply import save_ply
+
+    final_ply = out_dir / "model.ply"
+    save_ply(avatar, final_ply)
+    import shutil as _shutil
+
+    _shutil.copyfile(model_cfg, out_dir / "config.yaml")
+    print(f"\n最终模型：{final_ply}")
+
     print(f"\n训练结束：{report.iterations} 步，{report.seconds:.1f} s，"
           f"{report.iters_per_s:.2f} it/s")
     if report.best_metric is not None:
         print(f"  最佳验证 PSNR {report.best_metric:.2f} dB"
               f"（第 {report.best_iteration} 步）")
-    (out_dir / "report.json").write_text(json.dumps({
+    report_path = out_dir / "report.json"
+    report_path.write_text(json.dumps({
         "subject": subject, "work_name": work,
         "iterations": report.iterations, "seconds": report.seconds,
         "best_psnr": report.best_metric, "best_iteration": report.best_iteration,
         "stopped_early": report.stopped_early,
     }, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    if args.promote:
+        src = args.promote_from or final_ply
+        name = args.promote_name or work
+        target = models_dir / subject / name
+        try:
+            promote_model(source_ply=src, structure_config=model_cfg,
+                          report=report_path, target=target, force=args.force)
+        except (FileExistsError, FileNotFoundError) as e:
+            print(f"[error] {e}", file=sys.stderr)
+            return 1
+        print(f"已装入：{target}")
+        print(f"  渲染：python scripts/render_test.py --subject {subject} "
+              f"--work-name {name}")
     return 0
 
 

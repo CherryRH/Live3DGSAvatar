@@ -1,7 +1,7 @@
 # 训练管线
 
-> 对应 RGBAvatar 的 `train_offline.py`，但把"参数计划 / 损失 / 调度 / 钩子"
-> 拆成可配置对象，并让**在线微调与全量训练共用同一条循环**。
+> 把"参数计划 / 损失 / 调度 / 钩子"拆成可配置对象，
+> 让**在线微调与全量训练共用同一条循环**。
 
 ---
 
@@ -23,8 +23,8 @@ data/sources ┘  （只提供样本，不依赖 training）
 | `training/densify.py` | 自适应加密/剪枝（**P1，待实现**）| — |
 
 `trainer` 通过注入 `render_fn` 与渲染解耦。因此训练逻辑（学习率怎么写回、
-钩子何时触发、早停是否生效）可以在**没有 GPU** 的情况下单测 ——
-RGBAvatar 把这一切写在 `Reconstruction.step` 里，做不到。
+钩子何时触发、早停是否生效）可以在**没有 GPU** 的情况下单测，
+不必等真跑起来才发现调度写错。
 
 ## 2. 一次训练由四样东西组成
 
@@ -48,39 +48,34 @@ Trainer(source=LiveSource(...),
         hooks=[TimeBudgetHook(10.0)], ...)
 ```
 
-## 3. 与 RGBAvatar 的对应与差异
+## 3. 设计要点
 
-| RGBAvatar | 本项目 | 原因 |
-|---|---|---|
-| `config/offline.yaml` 里的学习率 | `ParameterPlan.rgba_avatar_defaults()` | 组 → 计划，加一组不用改循环 |
-| `Reconstruction.update_learning_rate` 的 if/elif | `ParameterPlan.apply_lr` | 同上 |
-| 损失写成一串加法 | `Objective` | 权重进配置，返回分项 |
-| `if iteration > 20000` 才开 LPIPS | `Objective.lpips_from` | 变成参数 |
-| `blend_start_iter` 隐式约定 | `Trainer(blend_start=...)` | 显式 |
-| `fast_forward` 死写在 `step` 里 | 默认关（可作钩子） | 它改写颜色参数，调参时干扰判断 |
-| 数据加载器无 epoch/验证集 | `ManifestSource` 支持 train/test | 早停/选模型需要 |
-| 只有最终 `save_ply` | `CheckpointHook` | 中断不丢、可选最佳 |
+| 关注点 | 我们怎么做 |
+|---|---|
+| 学习率 | 组 → 计划的查表（`ParameterPlan`），加一组参数不用改循环 |
+| 损失 | `Objective` 对象，权重进配置，返回值带分项 |
+| 暖启动 | `blend_start` 之前只用模板网格，之后才启用形变基 |
+| 验证/存档/日志 | 都是钩子，训练、微调、冒烟测试共用 |
+| 中断 | 定期存 `model_XXXXXX.ply`，不必一次跑完 |
+| 选模型 | 验证集 PSNR 驱动早停（`EarlyStopping`） |
+| 训练态专有逻辑（如颜色回写）| 默认关闭，需要时做成钩子 |
 
-### 一处刻意的偏差
+两处与直觉不同的地方，刻意写在这里：
 
-RGBAvatar 的位置学习率把 `scene_extent` 乘了**两次**（构造调度器时一次、
-`update_learning_rate` 里又乘一次）。它的配置里 `scene_extent = 1.0`，所以
-数值上无差别；这里只乘一次，避免换数据时出现隐式平方。
-
-### 一处上游"空转"的参数
-
-`position_lr_delay_mult: 0.01` 只有配 `lr_delay_steps > 0` 才生效，
-而 RGBAvatar 没有设后者 → 该项实际不起作用。我们把 `delay_steps` 显式暴露在
-`GroupPlan` 里，默认 0（与上游行为一致），并在测试里锁住了这个语义。
+- **位置学习率的 `scene_extent` 只乘一次**。它在 `GroupPlan` 构造时并入
+  起点/终点值，循环里不再重复缩放 —— 否则换数据时会隐式平方。
+- **起步延迟默认关闭**。`delay_mult` 只有配 `delay_steps > 0` 才生效；
+  默认计划是 `delay_steps=0, delay_mult=1.0`，需要时显式打开。
 
 ## 4. 数据切分
 
-沿用 RGBAvatar：**末尾 350 帧为验证集**（`train.pipeline.test_frames`）。
-它在 `dataset/flame_dataset.py` 里写成 `images[:-350]` / `images[-350:]`。
+**末尾 350 帧为验证集**（`train.pipeline.test_frames`），其余为训练集。
+按文件名排序后取最后 N 帧 —— 视频是连续的，末尾一段与开头最不相似，
+用它当验证集比随机采样更能暴露过拟合。
 
 ## 5. 模型结构从哪来
 
-训练新建模型时，结构取自 `<模型目录>/config.yaml`（RGBAvatar 的格式）：
+训练新建模型时，结构取自模型目录里的 `config.yaml`：
 
 ```yaml
 model:
@@ -111,7 +106,7 @@ model:
 # 只检查数据与配置（不需要 GPU）
 python scripts/train.py --subject crh_1 --work-name test --dry-run
 
-# 正式训练（默认 batch 10、50000 步、blend_start 3000，与 RGBAvatar 一致）
+# 正式训练（默认 batch 10、50000 步、blend_start 3000）
 python scripts/train.py --subject crh_1 --work-name test
 
 # 覆盖步数/批大小
@@ -121,9 +116,38 @@ python scripts/train.py --subject crh_1 --work-name test --iterations 5000 --bat
 产物：`output/train/<subject>/<work_name>/`
 
 ```
+model.ply                 训练结束时的模型（PLY 头内嵌结构自描述）
 model_000000.ply …        定期存档（CheckpointHook）
+config.yaml               结构配置副本（可读，便于换机器）
 report.json               步数、耗时、最佳验证 PSNR
 ```
+
+### 让渲染用上新模型
+
+```bash
+# 训练结束后直接装进 models/<对象>/<版本>/
+python scripts/train.py --subject crh_1 --work-name run2 --promote
+
+# 覆盖同名模型要显式确认
+python scripts/train.py ... --promote --force
+
+# 也可以只装某个存档点
+python scripts/train.py ... --promote --promote-from output/train/crh_1/run2/model_030000.ply
+```
+
+`promote_model` 会拷 `model.ply` + `config.yaml` + `report.json`，目标已存在时
+默认**拒绝覆盖**。
+
+### 在留出集上评估
+
+训练用末尾 350 帧作验证集，评估时也要落在同一段上：
+
+```bash
+python scripts/render_test.py --subject crh_1 --work-name run2 \
+    --frame-offset 2513 --frames 350 --dump-diff
+```
+
+`--frame-offset` 指定从第几帧开始取（crh_1 总 2863 帧、验证集从 2513 起）。
 
 ## 7. 阶段与验收
 
