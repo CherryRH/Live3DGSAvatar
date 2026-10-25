@@ -75,6 +75,31 @@ class GroupPlan:
                         self.delay_steps, self.delay_mult)
 
 
+def _as_param_list(name: str, value) -> list:
+    """把"一组参数"规整成 `Parameter` 列表。"""
+    import torch.nn as nn
+
+    if isinstance(value, nn.Parameter):
+        return [value]
+    if isinstance(value, nn.Module):
+        found = [p for p in value.parameters() if p.requires_grad]
+        if not found:
+            raise ValueError(f"参数组 {name!r} 是 Module，但里面没有可训练参数")
+        return found
+    try:
+        items = list(value)
+    except TypeError:
+        raise TypeError(
+            f"参数组 {name!r} 应为 Parameter / Module / Parameter 序列，"
+            f"实际 {type(value).__name__}") from None
+    bad = [type(v).__name__ for v in items if not isinstance(v, nn.Parameter)]
+    if bad:
+        raise TypeError(f"参数组 {name!r} 的序列里混入了非 Parameter：{bad}")
+    if not items:
+        raise ValueError(f"参数组 {name!r} 是空序列")
+    return items
+
+
 @dataclass
 class ParameterPlan:
     """整模型的计划：启用哪些组 + 每组的曲线。
@@ -139,21 +164,32 @@ class ParameterPlan:
     def opt_groups(self, params: dict) -> list[dict]:
         """按 `parameter_groups()` 生成优化器参数组（只含启用的）。
 
+        一组的值可以是三种东西，这里统一展开成 `Parameter` 列表：
+
+        - 单个 `nn.Parameter`（大多数高斯属性）
+        - 一个 `nn.Module`（`weight_module` 是 `nn.Sequential`，
+          之前的实现把它整个塞给 Adam，报
+          "optimizer can only optimize Tensors"）
+        - 可迭代的 `Parameter`
+
         Args:
             params: `GaussianAvatar.parameter_groups()` 的返回
 
         Raises:
-            KeyError: 计划里启用的组在模型里不存在 —— 那说明配置与模型对不上，
-                必须报错而不是静默少优化一组
+            KeyError: 计划里启用了模型没有的组 —— 配置与模型对不上时必须报错，
+                而不是静默少优化一组
+            TypeError: 组的值不是上面三种之一
         """
+        import torch.nn as nn
+
         out = []
         for name, plan in self.groups.items():
             if name not in params:
                 raise KeyError(
                     f"参数计划里启用了 {name!r}，但模型没有这一组；"
                     f"模型有 {sorted(params)}")
-            out.append({"params": [params[name]], "name": name,
-                        "lr": plan.at(0)})
+            out.append({"params": _as_param_list(name, params[name]),
+                        "name": name, "lr": plan.at(0)})
         return out
 
     def apply_lr(self, optimizer, iteration: int) -> None:

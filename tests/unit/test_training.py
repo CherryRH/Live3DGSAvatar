@@ -305,3 +305,93 @@ def test_trainer_rejects_bad_args() -> None:
             with_opacity=False), objective=Objective(l1=1.0),
             render_fn=lambda *a: None, params={"f_dc": torch.nn.Parameter(
                 torch.zeros(1))}, iterations=1, batch_size=0, device="cpu")
+
+
+# --------------------------------------------------- 参数组展开（Module） --
+
+
+def test_opt_groups_expands_module_into_parameters() -> None:
+    """`weight_module` 是 `nn.Sequential`，必须展开成参数列表。
+
+    之前直接把它整个塞给 Adam，报
+    "optimizer can only optimize Tensors, but one of the params is Sequential"。
+    """
+    from live3dgsavatar.training.plans import GroupPlan
+
+    module = torch.nn.Sequential(torch.nn.Linear(3, 3), torch.nn.ReLU(),
+                                 torch.nn.Linear(3, 1))
+    plan = ParameterPlan(groups={"weight_module": GroupPlan(lr=1e-3)})
+    groups = plan.opt_groups({"weight_module": module})
+
+    assert len(groups) == 1
+    tensors = groups[0]["params"]
+    assert len(tensors) == 4, [type(p).__name__ for p in tensors]
+    assert all(isinstance(p, torch.nn.Parameter) for p in tensors)
+    # 真的能建优化器
+    torch.optim.Adam(groups, lr=0.0, eps=1e-15)
+
+
+def test_opt_groups_accepts_parameter_list() -> None:
+    from live3dgsavatar.training.plans import GroupPlan
+
+    a = torch.nn.Parameter(torch.zeros(2))
+    b = torch.nn.Parameter(torch.zeros(3))
+    groups = ParameterPlan(groups={"f_dc": GroupPlan(lr=1.0)}).opt_groups(
+        {"f_dc": [a, b]})
+    assert groups[0]["params"] == [a, b]
+
+
+def test_opt_groups_rejects_empty_module_and_bad_types() -> None:
+    from live3dgsavatar.training.plans import GroupPlan
+
+    plan = ParameterPlan(groups={"weight_module": GroupPlan(lr=1.0)})
+    empty = torch.nn.Sequential()
+    with pytest.raises(ValueError, match="没有可训练参数"):
+        plan.opt_groups({"weight_module": empty})
+    with pytest.raises(TypeError, match="Parameter"):
+        plan.opt_groups({"weight_module": [torch.zeros(2)]})
+    with pytest.raises(TypeError, match="Parameter"):
+        plan.opt_groups({"weight_module": 42})
+
+
+def test_opt_groups_skips_frozen_module_parameters() -> None:
+    from live3dgsavatar.training.plans import GroupPlan
+
+    module = torch.nn.Sequential(torch.nn.Linear(3, 3))
+    module[0].weight.requires_grad_(False)
+    groups = ParameterPlan(groups={"weight_module": GroupPlan(lr=1.0)}).opt_groups(
+        {"weight_module": module})
+    assert len(groups[0]["params"]) == 1, "只应保留仍可训练的 bias"
+
+
+# ------------------------------------------------------- batch 设备搬运 --
+
+
+def test_to_device_preserves_batch_type_and_moves_tensors() -> None:
+    """数据源在 CPU、训练在 GPU：搬运必须由 trainer 统一做。
+
+    之前 `step()` 直接把数据源的 batch 交给 objective，渲染输出在 cuda 而
+    image/mask 在 cpu，报 "Expected all tensors to be on the same device"。
+    """
+    from live3dgsavatar.data.sources import Batch
+    from live3dgsavatar.training.trainer import _to_device
+
+    b = Batch(mesh=torch.zeros(1, 4, 3), blend_weight=torch.zeros(1, 129),
+              image=torch.zeros(1, 3, 8, 8),
+              mask=torch.zeros(1, 1, 8, 8, dtype=torch.bool))
+    out = _to_device(b, "cpu")
+    assert isinstance(out, Batch)
+    assert out.image.device.type == "cpu"
+    assert out.mask.device.type == "cpu"
+    # 非张量字段（比如 name）原样保留
+    assert out.mask.dtype == torch.bool
+
+
+def test_objective_reports_device_mismatch_clearly() -> None:
+    """设备不一致时要指向"数据源与训练设备不一致"，而不是裸的 RuntimeError。"""
+    pred = torch.zeros(1, 3, 4, 4)
+    target = torch.zeros(1, 3, 4, 4)
+    # 用一个假设备名模拟不一致（不依赖 CUDA）
+    fake = target.to("meta")
+    with pytest.raises(RuntimeError, match="数据源与训练设备"):
+        Objective(l1=1.0)(pred=pred, target=fake)

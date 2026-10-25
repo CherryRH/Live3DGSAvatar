@@ -53,6 +53,25 @@ class Hook(Protocol):
     def on_end(self, trainer: "Trainer") -> None: ...
 
 
+def _to_device(batch, device):
+    """把 batch 里的张量搬到 `device`。
+
+    数据源通常是 CPU 建的（图像很大，没必要常驻显存），而渲染在 GPU 上。
+    这个搬运必须**统一在 trainer 里做**：否则每个 `render_fn` 都要自己记得
+    搬 image/mask，漏一个就是 "Expected all tensors to be on the same device"。
+    """
+    import torch as _torch
+
+    if not isinstance(batch, (list, tuple)) and hasattr(batch, "__dict__"):
+        fields = vars(batch)
+        moved = {
+            k: (v.to(device) if isinstance(v, _torch.Tensor) else v)
+            for k, v in fields.items()
+        }
+        return type(batch)(**moved)
+    return batch
+
+
 @dataclass
 class TrainReport:
     """一次训练的摘要（写 JSON 用）。"""
@@ -150,7 +169,7 @@ class Trainer:
         """走一步：取数 → 渲染 → 损失 → 反传。返回损失分项。"""
         self.plan.apply_lr(self.optimizer, iteration)
 
-        batch = self.source.random_batch(self.batch_size)
+        batch = _to_device(self.source.random_batch(self.batch_size), self.device)
         weight = batch.blend_weight if blend_active(iteration, self.blend_start) \
             else None
 

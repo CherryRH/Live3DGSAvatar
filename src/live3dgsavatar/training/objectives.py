@@ -121,6 +121,10 @@ class Objective:
         Returns:
             `(total, parts)`，`parts` 是各项的**标量值**（用于日志）
         """
+        if target.device != pred.device:
+            raise RuntimeError(
+                f"pred 在 {pred.device}，target 在 {target.device}；"
+                "数据源与训练设备不一致 —— 应由 Trainer 统一搬到训练设备")
         m = _as_mask(mask, pred)
         parts: dict[str, float] = {}
         total = pred.new_zeros(())
