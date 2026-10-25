@@ -493,3 +493,111 @@ def test_trainer_closes_prefetch_source_on_exit() -> None:
     t = _trainer(iterations=2, source=src)
     t.run()
     assert not src._threads
+
+
+# --------------------------------------------------------- 比例切分/混训 --
+
+
+def test_split_by_ratio_matches_expected_counts(tmp_path) -> None:
+    """`test_ratio=0.1` 表示末尾 10% 作验证（不再用固定帧数）。"""
+    import numpy as np
+
+    from live3dgsavatar.data.sources import ManifestSource
+
+    n, v = 100, 8
+    root = tmp_path / "ds"
+    (root / "images").mkdir(parents=True)
+    (root / "render_inputs.npz").parent.mkdir(parents=True, exist_ok=True)
+    np.savez(root / "render_inputs.npz",
+             mesh=np.zeros((n, v, 3), np.float32),
+             blend_weight=np.zeros((n, 129), np.float32),
+             K=np.eye(3, dtype=np.float64),
+             w2v=np.eye(4, dtype=np.float64),
+             width=np.int64(512), height=np.int64(512),
+             names=np.array([f"{i:05d}" for i in range(n)]))
+    from PIL import Image
+
+    for i in range(n):
+        Image.fromarray(np.zeros((512, 512, 4), np.uint8)).save(
+            root / "images" / f"{i:05d}.png")
+
+    tr = ManifestSource(root, split="train", test_ratio=0.1)
+    te = ManifestSource(root, split="test", test_ratio=0.1)
+    assert len(tr) == 90 and len(te) == 10
+    assert te.names[0] == "00090"
+
+
+def test_split_ratio_rejects_out_of_range() -> None:
+    import numpy as np
+
+    from live3dgsavatar.data.sources import ManifestSource
+
+    src = ManifestSource.__new__(ManifestSource)
+    src._n_all = 10
+    with pytest.raises(ValueError, match="test_ratio"):
+        ManifestSource._select_split(src, "train", 0, 1.5)
+
+
+def test_mixed_source_weights_and_excludes_zero() -> None:
+    """增强样本带权重；权重为 0 的源被直接排除（不占名额）。"""
+    import numpy as np
+
+    from live3dgsavatar.data.sources import Batch, MixedSource
+
+    class Src:
+        def __init__(self, value: float, n: int = 5):
+            self.value = value
+            self._index = list(range(n))
+            self.n = n
+
+        def __len__(self) -> int:
+            return self.n
+
+        def sample(self, i: int) -> Batch:
+            return SimpleNamespace(
+                mesh=torch.full((4, 3), self.value),
+                blend_weight=torch.zeros(129),
+                image=torch.full((3, 4, 4), self.value),
+                mask=torch.ones(1, 4, 4, dtype=torch.bool))
+
+    real, aug, ignored = Src(0.0), Src(1.0), Src(2.0)
+    mix = MixedSource([(real, 1.0), (aug, 0.5), (ignored, 0.0)], seed=0)
+    assert len(mix) == 10, "权重 0 的源不应计入总长度"
+
+    b = mix.random_batch(64)
+    assert b.weight.shape == (64,)
+    assert set(b.weight.tolist()) <= {1.0, 0.5}
+    assert float(b.weight.sum()) > 0
+
+
+def test_mixed_source_validates_parts() -> None:
+    from live3dgsavatar.data.sources import MixedSource
+
+    class Src:
+        _index = [0]
+        def __len__(self): return 1
+
+    with pytest.raises(ValueError, match="权重 > 0"):
+        MixedSource([(Src(), 0.0)])
+
+
+def test_objective_applies_sample_weight() -> None:
+    """逐样本权重：被忽略的样本不影响损失。"""
+    pred = torch.zeros(2, 3, 4, 4)
+    target = torch.zeros(2, 3, 4, 4)
+    target[1] = 1.0                       # 第二个样本误差为 1
+    mask = torch.ones(2, 1, 4, 4, dtype=torch.bool)
+
+    _, p_all = Objective(l1=1.0)(pred=pred, target=target, mask=mask)
+    _, p_ign = Objective(l1=1.0)(pred=pred, target=target, mask=mask,
+                                 sample_weight=torch.tensor([1.0, 0.0]))
+    assert p_all["l1"] == pytest.approx(0.5, abs_tol=1e-6)
+    assert p_ign["l1"] == pytest.approx(0.0, abs_tol=1e-6)
+
+
+def test_objective_rejects_bad_sample_weight_length() -> None:
+    pred = torch.zeros(2, 3, 4, 4)
+    with pytest.raises(ValueError, match="sample_weight"):
+        Objective(l1=1.0)(pred=pred, target=pred.clone(),
+                          mask=torch.ones(2, 1, 4, 4, dtype=torch.bool),
+                          sample_weight=torch.tensor([1.0]))

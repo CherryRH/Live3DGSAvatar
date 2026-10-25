@@ -50,12 +50,18 @@ class Sample:
 
 @dataclass
 class Batch:
-    """一批样本（已堆叠）。"""
+    """一批样本（已堆叠）。
+
+    `weight` 是**逐样本**的损失权重（`[B]`，`None` 表示全 1）。
+    真实数据与增强数据混训时，用它给增强样本打折 —— 打折比"直接丢弃"平滑，
+    也不会让某个 batch 里全是合成图。
+    """
 
     mesh: torch.Tensor
     blend_weight: torch.Tensor
     image: torch.Tensor
     mask: torch.Tensor
+    weight: torch.Tensor | None = None
 
     def __len__(self) -> int:
         return self.image.shape[0]
@@ -84,6 +90,7 @@ class ManifestSource:
 
     def __init__(self, data_dir: Path, *, split: str = "train",
                  test_frames: int = DEFAULT_TEST_FRAMES,
+                 test_ratio: float | None = None,
                  device: str | torch.device = "cpu",
                  image_cache: int = 64,
                  background=(0.0, 0.0, 0.0),
@@ -127,15 +134,26 @@ class ManifestSource:
                 torch.from_numpy(self._mesh).to(self.device),
                 torch.from_numpy(self._weight).to(self.device),
             )
-        self._index = self._select_split(split, test_frames)
+        self._index = self._select_split(split, test_frames, test_ratio)
         if not self._index:
             raise ValueError(f"{self.root} 的 {split} 切分为空")
 
     # ------------------------------------------------------------ 基本信息 --
 
-    def _select_split(self, split: str, test_frames: int) -> list[int]:
+    def _select_split(self, split: str, test_frames: int,
+                      test_ratio: float | None = None) -> list[int]:
+        """切分。给了 `test_ratio`（0~1）就按比例，否则按帧数。"""
         n = self._n_all
-        k = min(int(test_frames), n - 1) if n > 1 else 0
+        if test_ratio is not None:
+            ratio = float(test_ratio)
+            if not 0.0 <= ratio < 1.0:
+                raise ValueError(f"test_ratio 应在 [0,1)，实际 {ratio}")
+            k = int(round(n * ratio))
+            if ratio > 0 and k == 0 and n > 1:
+                k = 1
+            k = min(k, n - 1) if n > 1 else 0
+        else:
+            k = min(int(test_frames), n - 1) if n > 1 else 0
         if split == "all":
             return list(range(n))
         if split == "train":
@@ -331,3 +349,71 @@ class PrefetchSource:
     def iter_batches(self, batch_size: int, shuffle: bool = False):
         """验证遍历直接透传（预取对顺序遍历没意义，反而占内存）。"""
         return self.inner.iter_batches(batch_size, shuffle=shuffle)
+
+
+class MixedSource:
+    """把真实数据与增强数据混在一起采样，并给增强样本一个**逐样本权重**。
+
+    用法：
+
+        MixedSource([(real_src, 1.0), (aug_src, 0.5)], seed=0)
+
+    每步在"拼接后的索引空间"里均匀抽 —— 也就是增强数据按它的**帧数占比**
+    自然进入 batch；`weight` 再按组打折。两者分开是有意的：
+
+    - 占比决定"每步看到多少合成图"
+    - 权重决定"合成图的误差算多少分"
+
+    权重为 0 的组会被**直接排除**（不该占 batch 名额，也不该浪费算力）。
+    """
+
+    def __init__(self, parts, *, seed: int = 0) -> None:
+        import random as _random
+
+        usable = [(src, float(w)) for src, w in parts if float(w) > 0]
+        if not usable:
+            raise ValueError("MixedSource 至少需要一个权重 > 0 的数据源")
+        self.parts = usable
+        self._sizes = [len(src) for src, _ in usable]
+        self._offsets = [0]
+        for s in self._sizes[:-1]:
+            self._offsets.append(self._offsets[-1] + s)
+        self._total = sum(self._sizes)
+        self._rng = _random.Random(seed)
+
+    def __len__(self) -> int:
+        return self._total
+
+    def _locate(self, flat: int) -> tuple[int, int]:
+        """拼接索引 → `(第几个源, 源内索引)`。"""
+        for k in range(len(self._sizes) - 1, -1, -1):
+            if flat >= self._offsets[k]:
+                return k, flat - self._offsets[k]
+        return 0, flat
+
+    def random_batch(self, batch_size: int) -> Batch:
+        picks = [self._rng.randrange(self._total) for _ in range(int(batch_size))]
+        samples = []
+        weights = []
+        for flat in picks:
+            k, local = self._locate(flat)
+            src, w = self.parts[k]
+            samples.append(src.sample(src._index[local]))
+            weights.append(w)
+        return Batch(
+            mesh=torch.stack([s.mesh for s in samples]),
+            blend_weight=torch.stack([s.blend_weight for s in samples]),
+            image=torch.stack([s.image for s in samples]),
+            mask=torch.stack([s.mask for s in samples]),
+            weight=torch.tensor(weights, dtype=torch.float32),
+        )
+
+    def iter_batches(self, batch_size: int, shuffle: bool = False):
+        """验证只走**第一个**源（真实数据）—— 合成图不该进验证集。"""
+        return self.parts[0][0].iter_batches(batch_size, shuffle=shuffle)
+
+    def close(self) -> None:
+        for src, _ in self.parts:
+            close = getattr(src, "close", None)
+            if callable(close):
+                close()

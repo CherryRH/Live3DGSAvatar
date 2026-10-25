@@ -45,14 +45,30 @@ def _as_mask(mask: torch.Tensor | None, ref: torch.Tensor) -> torch.Tensor | Non
 
 
 def _weighted_l1(pred: torch.Tensor, target: torch.Tensor,
-                 mask: torch.Tensor | None, mask_weight: float) -> torch.Tensor:
-    """带背景权重的 L1：mask 内权重 1，mask 外权重 `mask_weight`。"""
+                 mask: torch.Tensor | None, mask_weight: float,
+                 sample_weight: torch.Tensor | None = None) -> torch.Tensor:
+    """带背景权重与**逐样本权重**的 L1。
+
+    - 空间权重：mask 内 1、mask 外 `mask_weight`
+    - 样本权重：`sample_weight [B]`，用于给增强数据的误差打折
+    """
     diff = (pred - target).abs()
     if mask is None:
-        return diff.mean()
-    w = mask.to(diff.dtype) + float(mask_weight) * (~mask).to(diff.dtype)
-    denom = (w.sum() * diff.shape[1]).clamp(min=1.0)
-    return (diff * w).sum() / denom
+        per_sample = diff.flatten(1).mean(dim=1)          # [B]
+    else:
+        w = mask.to(diff.dtype) + float(mask_weight) * (~mask).to(diff.dtype)
+        num = (diff * w).flatten(1).sum(dim=1)             # [B]
+        den = (w.flatten(1).sum(dim=1) * diff.shape[1]).clamp(min=1.0)
+        per_sample = num / den
+    if sample_weight is None:
+        return per_sample.mean()
+    sw = sample_weight.to(per_sample.dtype).reshape(-1)
+    if sw.numel() != per_sample.numel():
+        raise ValueError(
+            f"sample_weight 长度 {sw.numel()} 与 batch {per_sample.numel()} 不一致")
+    if float(sw.sum()) <= 0:
+        return per_sample.new_zeros(())
+    return (per_sample * sw).sum() / sw.sum()
 
 
 def _ssim(pred: torch.Tensor, target: torch.Tensor,
@@ -102,7 +118,9 @@ class Objective:
     # ------------------------------------------------------------ 主入口 --
 
     def __call__(self, *, pred: torch.Tensor, target: torch.Tensor,
-                 mask: torch.Tensor | None = None, alpha: torch.Tensor | None = None,
+                 mask: torch.Tensor | None = None,
+                 sample_weight: torch.Tensor | None = None,
+                 alpha: torch.Tensor | None = None,
                  target_alpha: torch.Tensor | None = None,
                  iteration: int = 0,
                  extras: dict[str, torch.Tensor] | None = None
@@ -130,7 +148,7 @@ class Objective:
         total = pred.new_zeros(())
 
         if self.l1 > 0:
-            v = _weighted_l1(pred, target, m, self.mask_weight)
+            v = _weighted_l1(pred, target, m, self.mask_weight, sample_weight)
             total = total + self.l1 * v
             parts["l1"] = float(v.detach())
 
@@ -146,7 +164,7 @@ class Objective:
 
         if self.alpha > 0 and alpha is not None and target_alpha is not None:
             ta = target_alpha.to(alpha.dtype)
-            v = _weighted_l1(alpha, ta, m, self.mask_weight)
+            v = _weighted_l1(alpha, ta, m, self.mask_weight, sample_weight)
             total = total + self.alpha * v
             parts["alpha"] = float(v.detach())
 

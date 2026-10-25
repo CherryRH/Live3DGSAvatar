@@ -70,9 +70,13 @@ Trainer(source=LiveSource(...),
 
 ## 4. 数据切分
 
-**末尾 350 帧为验证集**（`train.pipeline.test_frames`），其余为训练集。
-按文件名排序后取最后 N 帧 —— 视频是连续的，末尾一段与开头最不相似，
-用它当验证集比随机采样更能暴露过拟合。
+按**比例**切分：`train.pipeline.test_ratio`（默认 `0.1`）表示末尾 10% 作验证集，
+其余训练。例如 crh_1 有 2863 帧 → 训练 2577 / 验证 286。
+
+用比例而不是固定帧数，是为了换数据集时不用重新算参数；也便于让
+**增强集按同一比例**切分。
+
+想按固定帧数也可以：`--test-frames 350`（此时忽略比例）。
 
 ## 5. 模型结构从哪来
 
@@ -211,4 +215,66 @@ train.pipeline:
 2. `patience × eval_every` 才是"容忍多少步没有进步"；想让总时长更短，
    先减 `patience`，再考虑减 `eval_every`
 3. 验证集和训练集同分布时早停很容易触发；跨采集（crh_2）才是真考验
+
+## 10. 增强数据（可选）
+
+把外部生成的图（例如 CAP4D 合成的人像）当作**补充训练样本**，看能否提升。
+
+### ① 准备数据
+
+增强数据放在 `<数据集>/augmented/`，格式与主数据集一致：
+
+```
+datasets/crh_1/augmented/
+├── images/00000.png …        增强图
+└── render_inputs.npz         mesh(5083) / blend_weight(129) / 相机 / names
+```
+
+生成这个目录（两步，跨环境）：
+
+```bash
+# 让 RDF 追踪增强图（realdenseface 环境）
+python scripts/rdf_dump.py --images <增强图目录> --out <增强图目录>/rdf.npz
+
+# 打包成训练格式（live3dgs 环境）
+python scripts/build_augmented.py --subject crh_1 \
+    --rdf <增强图目录>/rdf.npz --images <增强图目录>
+```
+
+### ② 训练时启用
+
+```bash
+python scripts/train.py --subject crh_1 --work-name run4 --augment --promote
+```
+
+- `--augment` 才启用；不加就完全走真实数据
+- `train.pipeline.augment_weight`（默认 1.0）：增强样本的**损失权重**，
+  0 表示完全不考虑（此时等于没开）
+- 采样按"帧数占比"自然混入：crh_1 2577 帧 + 增强 200 帧 ≈ 7% 的 batch 来自增强
+
+### ③ 产物命名（便于对比）
+
+增强训练的模型文件名带 `_aug` 后缀：
+
+```
+output/train/crh_1/run4/model_aug.ply       最终
+output/train/crh_1/run4/model_best_aug.ply  验证最好的
+models/crh_1/run4/model_aug.ply             装进 models/ 后
+```
+
+同一目录下可以和常规 `model.ply` **并存**，直接用 `--ply` 指定对比：
+
+```bash
+python scripts/render_test.py --subject crh_1 --work-name run4 \
+    --ply models/crh_1/run4/model_aug.ply --frame-offset 2513 --frames 350
+```
+
+### ④ 判断有没有用
+
+两条都要看：
+
+1. **留出集（真实数据）不下降** —— 这是底线，增强不能污染真实分布
+2. **留出集上升** —— 才是真的增益
+
+只满足 1 说明"没坏但也没用"，此时应把 `augment_weight` 调小或直接放弃。
 

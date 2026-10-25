@@ -32,12 +32,13 @@ import live3dgsavatar  # noqa: F401
 
 
 def promote_model(*, source_ply: Path, structure_config: Path, report: Path | None,
-                  target: Path, force: bool = False) -> Path:
+                  target: Path, force: bool = False,
+                  filename: str = "model.ply") -> Path:
     """把一个训练好的模型装进 `models/<对象>/<版本>/`，供渲染直接使用。
 
     拷贝三样东西：
 
-    - `model.ply`：高斯参数（PLY 头里已内嵌 `gaussian_config`，可自描述结构）
+    - `model.ply`（或 `filename`）：高斯参数（PLY 头内嵌 `gaussian_config`）
     - `config.yaml`：结构配置的可读副本（换机器/人工查看用）
     - `report.json`：训练指标（可选，便于回溯训练来源）
 
@@ -50,11 +51,14 @@ def promote_model(*, source_ply: Path, structure_config: Path, report: Path | No
     if not Path(source_ply).is_file():
         raise FileNotFoundError(f"找不到要装的模型：{source_ply}")
     target = Path(target)
-    if target.exists() and not force:
+    dest = target / filename
+    # 只拦"要装的这个文件已存在"：同一目录下 `model.ply` 与 `model_aug.ply`
+    # 应该能并存（这正是对比增强训练效果所需要的）
+    if dest.exists() and not force:
         raise FileExistsError(
-            f"{target} 已存在；确认覆盖请加 --force")
+            f"{dest} 已存在；确认覆盖请加 --force")
     target.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(source_ply, target / "model.ply")
+    shutil.copyfile(source_ply, target / filename)
     shutil.copyfile(structure_config, target / "config.yaml")
     if report is not None and Path(report).is_file():
         shutil.copyfile(report, target / "report.json")
@@ -111,8 +115,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="第几步开始启用形变基（默认 3000）")
     p.add_argument("--mask-weight", type=float, default=None,
                    help="背景在损失里的权重；1 表示与前景同权（默认）")
+    p.add_argument("--augment", action="store_true",
+                   help="把 <数据集>/augmented/ 混进训练集（验证集仍只用真实数据）")
+    p.add_argument("--augment-weight", type=float, default=None,
+                   help="增强样本的损失权重（0 = 完全不考虑）")
+    p.add_argument("--test-ratio", type=float, default=None,
+                   help="验证集比例（0.1 表示末尾 10%%）；默认 0.1")
     p.add_argument("--test-frames", type=int, default=None,
-                   help="末尾多少帧作验证集（默认 350）")
+                   help="按帧数指定验证集（与 --test-ratio 二选一）")
     p.add_argument("--eval-every", type=int, default=None)
     p.add_argument("--save-every", type=int, default=None)
     p.add_argument("--patience", type=int, default=None,
@@ -164,8 +174,12 @@ def main(argv: list[str] | None = None) -> int:
                      else cfg.get("train.pipeline.batch_size", 10))
     blend_start = int(args.blend_start if args.blend_start is not None
                       else cfg.get("train.pipeline.blend_start", 3_000))
-    test_frames = int(args.test_frames if args.test_frames is not None
-                      else cfg.get("train.pipeline.test_frames", 350))
+    test_ratio = (None if args.test_frames is not None else
+                  float(args.test_ratio if args.test_ratio is not None
+                        else cfg.get("train.pipeline.test_ratio", 0.1)))
+    test_frames = int(args.test_frames if args.test_frames is not None else 0)
+    augment_weight = float(args.augment_weight if args.augment_weight is not None
+                           else cfg.get("train.pipeline.augment_weight", 1.0))
     eval_every = int(args.eval_every if args.eval_every is not None
                      else cfg.get("train.pipeline.eval_every", 1000))
     save_every = int(args.save_every if args.save_every is not None
@@ -180,13 +194,16 @@ def main(argv: list[str] | None = None) -> int:
     from live3dgsavatar.data.sources import ManifestSource
 
     train_src = ManifestSource(data_dir, split="train", test_frames=test_frames,
-                               device="cpu", seed=args.seed)
+                               test_ratio=test_ratio, device="cpu", seed=args.seed)
     val_src = ManifestSource(data_dir, split="test", test_frames=test_frames,
-                             device="cpu")
+                             test_ratio=test_ratio, device="cpu")
 
     print(f"训练 {subject}/{work}")
     print(f"  数据   : {data_dir}")
-    print(f"  训练集 : {len(train_src)} 帧    验证集 : {len(val_src)} 帧")
+    split_text = (f"比例 {test_ratio:.0%}" if test_ratio is not None
+                  else f"{test_frames} 帧")
+    print(f"  训练集 : {len(train_src)} 帧    验证集 : {len(val_src)} 帧"
+          f"（{split_text}）")
     models_dir = Path(str(cfg.get("paths.models_dir")))
     model_cfg = resolve_structure_config(
         models_dir, subject, work, explicit=args.model_config,
@@ -293,12 +310,14 @@ def main(argv: list[str] | None = None) -> int:
 
     from live3dgsavatar.core.io.ply import save_ply
 
+    tag = "_aug" if (args.augment and augment_weight > 0) else ""
+
     def save(iteration: int) -> None:
-        save_ply(avatar, out_dir / f"model_{iteration:06d}.ply")
+        save_ply(avatar, out_dir / f"model{tag}_{iteration:06d}.ply")
 
     def save_best(iteration: int, psnr: float) -> None:
         """验证指标刷新最好成绩时存一份 —— 后训变差也能拿回好的那份。"""
-        save_ply(avatar, out_dir / "model_best.ply")
+        save_ply(avatar, out_dir / f"model_best{tag}.ply")
         print(f"  [best] 第 {iteration} 步 验证 {psnr:.2f} dB → model_best.ply",
               flush=True)
 
@@ -311,11 +330,27 @@ def main(argv: list[str] | None = None) -> int:
         CheckpointHook(save=save, every=save_every),
     )
 
-    from live3dgsavatar.data.sources import PrefetchSource
+    from live3dgsavatar.data.sources import MixedSource, PrefetchSource
 
     train_source = train_src
+    aug_dir = data_dir / str(cfg.get("train.pipeline.augment_dir", "augmented"))
+    if args.augment:
+        if not (aug_dir / "render_inputs.npz").is_file():
+            raise SystemExit(
+                f"[error] 找不到增强集 {aug_dir}/render_inputs.npz\n"
+                "        先用 scripts/build_augmented.py 打包")
+        if augment_weight <= 0:
+            print("  [warn] --augment-weight=0：增强集不参与（等于没开 --augment）")
+        else:
+            aug_src = ManifestSource(aug_dir, split="train",
+                                     test_ratio=test_ratio, device="cpu",
+                                     seed=args.seed + 1)
+            train_source = MixedSource([(train_src, 1.0),
+                                        (aug_src, augment_weight)], seed=args.seed)
+            print(f"  增强集 : {len(aug_src)} 帧（权重 {augment_weight:g}，"
+                  f"占混合采样 {len(aug_src)/(len(aug_src)+len(train_src)):.0%}）")
     if workers > 0:
-        train_source = PrefetchSource(train_src, batch_size, workers=workers,
+        train_source = PrefetchSource(train_source, batch_size, workers=workers,
                                       depth=max(2, workers * 2))
         print(f"  取数   : 预取 {workers} 线程（批 {batch_size}）")
     if train_src.has_image_cache:
@@ -332,7 +367,7 @@ def main(argv: list[str] | None = None) -> int:
     # 最终模型（训练结束时的那一份）—— 定期存档已在 CheckpointHook 里做过
     from live3dgsavatar.core.io.ply import save_ply
 
-    final_ply = out_dir / "model.ply"
+    final_ply = out_dir / f"model{tag}.ply"
     save_ply(avatar, final_ply)
     import shutil as _shutil
 
@@ -353,14 +388,15 @@ def main(argv: list[str] | None = None) -> int:
     }, indent=2, ensure_ascii=False), encoding="utf-8")
 
     if args.promote:
-        best_ply = out_dir / "model_best.ply"
+        best_ply = out_dir / f"model_best{tag}.ply"
         src = args.promote_from or (best_ply if best_ply.is_file() else final_ply)
         print(f"  装入来源：{src.name}")
         name = args.promote_name or work
         target = models_dir / subject / name
         try:
             promote_model(source_ply=src, structure_config=model_cfg,
-                          report=report_path, target=target, force=args.force)
+                          report=report_path, target=target, force=args.force,
+                          filename=f"model{tag}.ply")
         except (FileExistsError, FileNotFoundError) as e:
             print(f"[error] {e}", file=sys.stderr)
             return 1

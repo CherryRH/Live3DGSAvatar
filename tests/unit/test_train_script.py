@@ -160,3 +160,23 @@ def test_promote_without_report_is_allowed(tmp_path) -> None:
     target = tmp_path / "models" / "s" / "w"
     m.promote_model(source_ply=src, structure_config=cfg, report=None, target=target)
     assert not (target / "report.json").exists()
+
+
+def test_promote_with_custom_filename_keeps_both_models(tmp_path) -> None:
+    """增强模型用 `model_aug.ply` 落盘，与常规 `model.ply` 并存便于对比。"""
+    m = _load()
+    src = tmp_path / "model.ply"
+    src.write_bytes(b"plain")
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text("model: {}\n", encoding="utf-8")
+    target = tmp_path / "models" / "s" / "w"
+
+    m.promote_model(source_ply=src, structure_config=cfg, report=None,
+                    target=target)
+    aug = tmp_path / "model_aug.ply"
+    aug.write_bytes(b"aug")
+    m.promote_model(source_ply=aug, structure_config=cfg, report=None,
+                    target=target, filename="model_aug.ply")
+
+    assert (target / "model.ply").read_bytes() == b"plain"
+    assert (target / "model_aug.ply").read_bytes() == b"aug"

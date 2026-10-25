@@ -177,6 +177,7 @@ class Trainer:
         out = self.render_fn(batch.mesh, weight, batch, iteration)
         loss, parts = self.objective(
             pred=out.color, target=batch.image, mask=batch.mask,
+            sample_weight=getattr(batch, "weight", None),
             alpha=getattr(out, "alpha", None),
             target_alpha=batch.mask.to(out.color.dtype),
             iteration=iteration,
