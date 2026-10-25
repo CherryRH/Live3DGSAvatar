@@ -45,16 +45,39 @@ def masked_mse(
     return (diff2 * m).sum() / denom
 
 
-def masked_l1(prediction: torch.Tensor, target: torch.Tensor,
-              mask: torch.Tensor | None = None) -> torch.Tensor:
-    """掩码内的平均绝对误差（L1）。`mask` 为 None 时用全图。"""
+def weighted_l1(prediction: torch.Tensor, target: torch.Tensor,
+                mask: torch.Tensor | None = None, mask_weight: float = 0.0,
+                sample_weight: torch.Tensor | None = None) -> torch.Tensor:
+    """带**空间权重**与**逐样本权重**的 L1（唯一实现）。
+
+    - 空间：mask 内权重 1，mask 外 `mask_weight`（0 = 不看背景）
+    - 样本：`sample_weight [B]`，给增强数据打折（None = 全 1）
+
+    归一化分母同时含空间权重与样本权重，所以"权重整体缩放"不改变损失。
+    """
     diff = (prediction - target).abs()
     if mask is None:
-        return diff.mean()
-    m = mask.to(diff.dtype)
-    denom = m.sum().clamp(min=1.0)
-    # diff: [B,3,H,W]，mask: [B,1,H,W] → 广播后按像素数归一
-    return (diff * m).sum() / (denom * diff.shape[1])
+        per_sample = diff.flatten(1).mean(dim=1)
+    else:
+        w = mask.to(diff.dtype) + float(mask_weight) * (~mask).to(diff.dtype)
+        num = (diff * w).flatten(1).sum(dim=1)
+        den = (w.flatten(1).sum(dim=1) * diff.shape[1]).clamp(min=1.0)
+        per_sample = num / den
+    if sample_weight is None:
+        return per_sample.mean()
+    sw = sample_weight.to(per_sample.dtype).reshape(-1)
+    if sw.numel() != per_sample.numel():
+        raise ValueError(
+            f"sample_weight 长度 {sw.numel()} 与 batch {per_sample.numel()} 不一致")
+    if float(sw.sum()) <= 0:
+        return per_sample.new_zeros(())
+    return (per_sample * sw).sum() / sw.sum()
+
+
+def masked_l1(prediction: torch.Tensor, target: torch.Tensor,
+              mask: torch.Tensor | None = None) -> torch.Tensor:
+    """掩码内的平均绝对误差（= `weighted_l1` 的默认参数情形）。"""
+    return weighted_l1(prediction, target, mask)
 
 
 def masked_psnr(

@@ -33,8 +33,8 @@ from pathlib import Path
 import numpy as np
 import torch
 
-#: 默认验证集帧数：末尾 N 帧（`images[:-350]` 训练 / `images[-350:]` 验证）
-DEFAULT_TEST_FRAMES = 350
+#: 默认验证集比例（末尾 10%）
+DEFAULT_TEST_RATIO = 0.1
 
 
 @dataclass
@@ -78,7 +78,7 @@ class ManifestSource:
     Args:
         data_dir: 数据集目录
         split: ``"train"`` / ``"test"`` / ``"all"``
-        test_frames: 末尾多少帧归测试集
+        test_ratio: 末尾多少比例归验证集（0.1 = 末尾 10%）
         device: 样本放到哪个设备
         image_cache: 图像缓存条数（0 = 不缓存）
         background: 背景色 `[3]`；掩码外填它
@@ -89,8 +89,7 @@ class ManifestSource:
     CACHE_NAME = "images.npy"
 
     def __init__(self, data_dir: Path, *, split: str = "train",
-                 test_frames: int = DEFAULT_TEST_FRAMES,
-                 test_ratio: float | None = None,
+                 test_ratio: float = DEFAULT_TEST_RATIO,
                  device: str | torch.device = "cpu",
                  image_cache: int = 64,
                  background=(0.0, 0.0, 0.0),
@@ -134,56 +133,31 @@ class ManifestSource:
                 torch.from_numpy(self._mesh).to(self.device),
                 torch.from_numpy(self._weight).to(self.device),
             )
-        self._index = self._select_split(split, test_frames, test_ratio)
+        self._index = self._select_split(split, test_ratio)
         if not self._index:
             raise ValueError(f"{self.root} 的 {split} 切分为空")
 
     # ------------------------------------------------------------ 基本信息 --
 
-    def _select_split(self, split: str, test_frames: int,
-                      test_ratio: float | None = None) -> list[int]:
-        """切分。给了 `test_ratio`（0~1）就按比例，否则按帧数。"""
+    def _select_split(self, split: str, test_ratio: float) -> list[int]:
+        """按比例切分：末尾 `test_ratio` 归验证集。
+
+        用比例而不是帧数，换数据集时不必重算参数；增强集也按同一比例切。
+        """
         n = self._n_all
-        if test_ratio is not None:
-            ratio = float(test_ratio)
-            if not 0.0 <= ratio < 1.0:
-                raise ValueError(f"test_ratio 应在 [0,1)，实际 {ratio}")
-            k = int(round(n * ratio))
-            if ratio > 0 and k == 0 and n > 1:
-                k = 1
-            k = min(k, n - 1) if n > 1 else 0
-        else:
-            k = min(int(test_frames), n - 1) if n > 1 else 0
-        if split == "all":
-            return list(range(n))
+        ratio = float(test_ratio)
+        if not 0.0 <= ratio < 1.0:
+            raise ValueError(f"test_ratio 应在 [0,1)，实际 {ratio}")
+        k = int(round(n * ratio))
+        if ratio > 0 and k == 0 and n > 1:
+            k = 1
+        k = min(k, n - 1) if n > 1 else 0
+
         if split == "train":
-            return list(range(0, n - k)) if k > 0 else list(range(n))
-        return list(range(n - k, n))
-
-    def __len__(self) -> int:
-        return len(self._index)
-
-    @property
-    def names(self) -> list[str]:
-        return [self._names[i] for i in self._index]
-
-    # ------------------------------------------------------------ 取样本 --
-
-    @property
-    def has_image_cache(self) -> bool:
-        """是否存在 `images.npy` 缓存（有则跳过 PNG 解码）。"""
-        return self._memmap is not None
-
-    def _read_array(self, i: int) -> np.ndarray:
-        """取第 i 帧的原始像素（HWC, uint8）。有缓存走 memmap，否则解 PNG。"""
-        if self._memmap is not None:
-            return np.asarray(self._memmap[i])
-        from PIL import Image
-
-        path = self.root / "images" / f"{self._names[i]}.png"
-        if not path.is_file():
-            path = self.root / "images" / self._names[i]
-        return np.array(Image.open(path))
+            return list(range(n - k))
+        if split == "test":
+            return list(range(n - k, n))
+        return list(range(n))
 
     def _load_image(self, i: int) -> tuple[torch.Tensor, torch.Tensor]:
         """读第 i 帧并合成背景。返回 `(rgb [3,H,W], mask [1,H,W])`。"""
@@ -235,6 +209,10 @@ class ManifestSource:
         )
 
     # ------------------------------------------------------------ 迭代 --
+
+    def __len__(self) -> int:
+        """当前切分的帧数（`PrefetchSource`/`MixedSource` 也依赖它）。"""
+        return len(self._index)
 
     def random_indices(self, n: int) -> list[int]:
         """随机取 n 个帧号（有放回，训练用）。"""

@@ -8,24 +8,19 @@
 
 from __future__ import annotations
 
-import importlib.util
 import sys
 from pathlib import Path
 
 import pytest
+
+from script_loader import load_script
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "train.py"
 
 
 def _load():
-    if "_train_script" in sys.modules:
-        return sys.modules["_train_script"]
-    spec = importlib.util.spec_from_file_location("_train_script", SCRIPT)
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules["_train_script"] = mod
-    spec.loader.exec_module(mod)
-    return mod
+    return load_script(SCRIPT.name)
 
 
 def _write(path: Path, text: str = "model:\n  tex_size: 128\n") -> Path:
@@ -160,61 +155,3 @@ def test_promote_without_report_is_allowed(tmp_path) -> None:
     target = tmp_path / "models" / "s" / "w"
     m.promote_model(source_ply=src, structure_config=cfg, report=None, target=target)
     assert not (target / "report.json").exists()
-
-
-def test_promote_with_custom_filename_keeps_both_models(tmp_path) -> None:
-    """增强模型用 `model_aug.ply` 落盘，与常规 `model.ply` 并存便于对比。"""
-    m = _load()
-    src = tmp_path / "model.ply"
-    src.write_bytes(b"plain")
-    cfg = tmp_path / "config.yaml"
-    cfg.write_text("model: {}\n", encoding="utf-8")
-    target = tmp_path / "models" / "s" / "w"
-
-    m.promote_model(source_ply=src, structure_config=cfg, report=None,
-                    target=target)
-    aug = tmp_path / "model_aug.ply"
-    aug.write_bytes(b"aug")
-    m.promote_model(source_ply=aug, structure_config=cfg, report=None,
-                    target=target, filename="model_aug.ply")
-
-    assert (target / "model.ply").read_bytes() == b"plain"
-    assert (target / "model_aug.ply").read_bytes() == b"aug"
-
-
-def test_promote_is_idempotent_when_config_already_there(tmp_path) -> None:
-    """结构配置就在目标目录里时（续训场景），不能再拷一次。
-
-    真实故障：`resolve_structure_config` 回退选中了 `models/<s>/<w>/config.yaml`
-    正是 promote 的目标，`shutil.copyfile` 抛 SameFileError，训练明明跑完了
-    却在最后一步失败。
-    """
-    m = _load()
-    target = tmp_path / "models" / "s" / "w"
-    target.mkdir(parents=True)
-    cfg = target / "config.yaml"
-    cfg.write_text("model: {}\n", encoding="utf-8")
-    ply = tmp_path / "model.ply"
-    ply.write_bytes(b"x")
-
-    out = m.promote_model(source_ply=ply, structure_config=cfg, report=None,
-                          target=target)
-
-    assert out == target
-    assert (target / "model.ply").read_bytes() == b"x"
-    assert (target / "config.yaml").read_text(encoding="utf-8") == "model: {}\n"
-
-
-def test_promote_skips_when_source_and_dest_are_same(tmp_path) -> None:
-    """源 PLY 已经就在目标位置时，也不应报错。"""
-    m = _load()
-    target = tmp_path / "models" / "s" / "w"
-    target.mkdir(parents=True)
-    ply = target / "model.ply"
-    ply.write_bytes(b"x")
-    cfg = tmp_path / "config.yaml"
-    cfg.write_text("model: {}\n", encoding="utf-8")
-
-    m.promote_model(source_ply=ply, structure_config=cfg, report=None,
-                    target=target, force=True)
-    assert ply.read_bytes() == b"x"

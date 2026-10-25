@@ -19,6 +19,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from script_loader import load_script
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "online_update.py"
 # 数据集现在在仓库里（不再依赖 ~/Datasets/INSTA）
@@ -26,14 +28,7 @@ _DATA_ROOT = Path(__file__).resolve().parents[2] / "datasets"
 
 
 def _load_script():
-    """把脚本当模块加载（注册进 sys.modules 以便 dataclass 正常工作）。"""
-    if "_ou_under_test" in sys.modules:
-        return sys.modules["_ou_under_test"]
-    spec = importlib.util.spec_from_file_location("_ou_under_test", SCRIPT)
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules["_ou_under_test"] = mod
-    spec.loader.exec_module(mod)
-    return mod
+    return load_script(SCRIPT.name)
 
 
 # ------------------------------------------------------ 掩码内 PSNR --
@@ -50,7 +45,8 @@ def test_masked_psnr_ignores_outside_mask() -> None:
     mask = np.zeros((h, w), bool)
     mask[16:, :] = True                      # 只看下半部分
 
-    assert m._masked_psnr(pred, target, mask) == float("inf")
+    # 完全相同 → 上限 99 dB（全项目统一：inf 无法聚合、也无法写成 JSON）
+    assert m._masked_psnr(pred, target, mask) == 99.0
 
     pred[mask] = 128                         # 掩码内改动：差值 128/255
     val = m._masked_psnr(pred, target, mask)

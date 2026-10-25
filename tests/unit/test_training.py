@@ -524,7 +524,8 @@ def test_split_by_ratio_matches_expected_counts(tmp_path) -> None:
     tr = ManifestSource(root, split="train", test_ratio=0.1)
     te = ManifestSource(root, split="test", test_ratio=0.1)
     assert len(tr) == 90 and len(te) == 10
-    assert te.names[0] == "00090"
+    # 验证集是**末尾** 10%：从第 90 帧起
+    assert te._index[0] == 90 and tr._index[-1] == 89
 
 
 def test_split_ratio_rejects_out_of_range() -> None:
@@ -535,7 +536,7 @@ def test_split_ratio_rejects_out_of_range() -> None:
     src = ManifestSource.__new__(ManifestSource)
     src._n_all = 10
     with pytest.raises(ValueError, match="test_ratio"):
-        ManifestSource._select_split(src, "train", 0, 1.5)
+        ManifestSource._select_split(src, "train", 1.5)
 
 
 def test_mixed_source_weights_and_excludes_zero() -> None:

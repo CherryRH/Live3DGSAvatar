@@ -223,8 +223,23 @@ export class RenderClient extends EventTarget {
         const frame = this._pending;
         this._pending = null;
         this.dispatchEvent(new CustomEvent("frame", { detail: frame }));
-        // 让出一轮事件循环，渲染端的 rAF 才有机会跑
-        await new Promise((r) => requestAnimationFrame(r));
+        // 让出一轮事件循环，渲染端的 rAF 才有机会跑。
+        //
+        // ⚠️ 必须带超时兜底：`requestAnimationFrame` 在标签页被遮挡、窗口
+        // 最小化、或主线程被长时间占用时**可能长时间不触发**。之前只用 rAF，
+        // 一旦它卡住，`_pumping` 就永远是 true，后续帧只会覆盖 `_pending`，
+        // 画面停住不动 —— 而对比帧走的是另一条同步路径，看起来就是
+        // "原图在动、渲染图卡住"，且指标（PSNR/FPS）照常更新。
+        await new Promise((resolve) => {
+          let done = false;
+          const finish = () => {
+            if (done) return;
+            done = true;
+            resolve();
+          };
+          requestAnimationFrame(finish);
+          setTimeout(finish, 100);
+        });
       }
     } finally {
       this._pumping = false;

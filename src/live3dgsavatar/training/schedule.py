@@ -61,20 +61,6 @@ def blend_active(iteration: int, start: int) -> bool:
     return int(iteration) >= int(start)
 
 
-def sub_batch_size(iteration: int, batch_size: int, *, full_from: int = 0,
-                   warmup: int = 0) -> int:
-    """初期用更小的 batch（前几步样本少一些，省算力也减少初期抖动）。
-
-    `warmup <= 0` 时恒为 `batch_size`。
-    """
-    if warmup <= 0:
-        return int(batch_size)
-    if iteration >= full_from:
-        return int(batch_size)
-    frac = min(1.0, (iteration + 1) / max(1, warmup))
-    return max(1, int(round(batch_size * frac)))
-
-
 @dataclass
 class EarlyStopping:
     """按验证指标的早停（指标越大越好，例如 PSNR）。

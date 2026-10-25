@@ -194,12 +194,15 @@ Live3DGSAvatar/
 ├── tests/
 │   ├── run_tests.py             # 零依赖测试运行器（未装 pytest 也能跑）
 │   ├── support.py               # 测试共用小工具
-│   └── unit/                    # 单测（133 项，全部无需 GPU）
+│   ├── script_loader.py         # 按路径加载 scripts/*.py 的共用工具
+│   └── unit/                    # 单测（400+ 项，全部无需 GPU）
 ├── scripts/
 │   ├── env_check.py             # 环境自检（无 GPU 可跑）
 │   ├── bench.py                 # 性能测试：渲染 / 跟踪 / 全链路（无前后端）
 │   ├── render_test.py           # 渲染测试：core vs 数据集原图（质量 + 性能）
-│   ├── train.py                 # 训练入口（参数计划 + 损失 + 钩子）
+│   ├── train.py                 # 训练入口（参数计划 + 损失 + 钩子 + 落地）
+│   ├── cache_images.py          # 图像打包成 images.npy（训练直读，跳过解码）
+│   ├── build_augmented.py       # 增强图 + RDF 结果 → 训练可用的数据分片
 │   ├── online_update.py         # 在线更新（闭式颜色校正 + 梯度微调）
 │   ├── rdf_bridge.py            # 追踪服务（realdenseface 环境，画面进参数出）
 │   ├── rdf_dump.py              # 离线导出 RDF 结果（标定/回归对照）
@@ -215,7 +218,8 @@ Live3DGSAvatar/
 ├── data/                        # 输入资产（gitignore）
 │   └── FLAME2020/               # generic_model.pkl / flame_uv.npz / eyelid
 ├── output/                      # 产物（gitignore）
-│   └── render_test/             #   render_test.py 的输出 + report.json
+│   ├── render_test/             #   render_test.py：<对象>/<版本>/{images,diff,report}
+│   └── train/                   #   train.py：model*.ply + config.yaml + report.json
 ├── requirements.txt
 └── README.md
 ```
@@ -293,23 +297,22 @@ error: could not delete 'build/lib.linux-x86_64-cpython-310/nvdiffrast/__init__.
 > `submodules/` 下的 CUDA 扩展仍是 vendored 副本（保证版本可复现），
 > 它们的归属与许可见 `submodules/ATTRIBUTION.md`。
 
-## 6. 训练管线 —— **待接入**
+## 6. 训练管线
 
-> **本项目的训练部分不自研、也不复刻任何外部实现。**
-> 预训练由另一位同学的工作提供，未来以清晰接口接入。
+训练在本仓库内完成（`scripts/train.py` + `training/`），细节见
+[`TRAINING.md`](TRAINING.md)。这一层与推理共享同一套模型与渲染接口：
 
-因此本节只定义**接入点**，不描述内部实现：
+| 契约 | 位置 |
+|---|---|
+| 模型产物 | `.ply`：3DGS 属性 + `xyz_b_*` / `rot_b_*` / `f_dc_b_*` 基 + `face_id` / `face_bary_*` 绑定 |
+| 结构自描述 | PLY 头 `comment gaussian_config`（`core/io/ply.py` 读写，加载时交叉校验） |
+| 模型读取 | `core/io/ply.py::load_ply` → `GaussianAvatar` |
+| 驱动参数 | `[B, D]` 张量，`D = model.network.num_basis_in` |
+| 渲染接口 | `app/session.py::Session.render`（推理）/ `training/trainer.py`（训练，注入 `render_fn`） |
+| 在线更新 | `training/updater.py`（外观微调，与全量训练共用损失口径） |
 
-| 接入点 | 契约 | 状态 |
-|---|---|---|
-| 模型产物 | `.ply`（3DGS 属性 + `xyz_b_*` / `rot_b_*` / `f_dc_b_*` 基 + `face_id` / `face_bary_*` 绑定） | ✅ 文件另含 `comment gaussian_config` 自描述 |
-| 模型读取 | `core/io/ply.py::load_ply` → `GaussianAvatar` | ✅ 可用 |
-| 驱动参数 | `[B, D]` 张量，`D = model.network.num_basis_in` | ✅ 已定义 |
-| 渲染接口 | `app/session.py::Session.render` + `training/updater.py` | ✅ 可用 |
-| 训练产物落盘 | 同上 `.ply` 约定 | ⏳ 待对方确认 |
-
-**当前阶段**：直接使用数据集与**已有模型**即可，不需要训练。
-`training/` 目前只包含**在线更新**（外观微调），不含预训练管线 —— 那是合作方的部分。
+训练与推理的**唯一接口是 `.ply` 与驱动参数**：训练产出 PLY，推理加载 PLY。
+因此两边可以独立演进，不会互相绑死。
 
 ---
 

@@ -25,7 +25,8 @@
 """
 
 from .color_fit import ColorCorrection, fit_color_correction
-from .losses import PhotometricLoss, masked_mse, masked_psnr
+from .losses import (PhotometricLoss, masked_l1, masked_mse,
+                     masked_psnr, weighted_l1)
 from .observations import BatchObservation, FrameObservation
 from .updater import OnlineUpdater, UpdateConfig, UpdateReport, UpdateState
 
@@ -39,6 +40,8 @@ __all__ = [
     "UpdateReport",
     "UpdateState",
     "fit_color_correction",
+    "masked_l1",
     "masked_mse",
     "masked_psnr",
+    "weighted_l1",
 ]

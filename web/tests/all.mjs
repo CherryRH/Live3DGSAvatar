@@ -16,8 +16,8 @@ import { dirname, join } from "node:path";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const suites = ["syntax.mjs",  // 先查语法：坏了就没必要跑后面的
-                "ids.mjs", "run.mjs", "dom.mjs", "settings.mjs",
-                "settings_dom.mjs"];
+                "ids.mjs", "run.mjs", "dom.mjs", "pump.mjs",
+                "settings.mjs", "settings_dom.mjs"];
 
 let failed = 0;
 for (const suite of suites) {

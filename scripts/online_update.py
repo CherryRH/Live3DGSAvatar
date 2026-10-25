@@ -340,15 +340,10 @@ def _to_uint8_hwc(tensor) -> "object":
 
 
 def _masked_psnr(pred, target, mask) -> float | None:
-    """掩码内 PSNR（`[H,W,3]` uint8 + `[H,W]` bool）。"""
-    import numpy as np
+    """掩码内 PSNR（口径见 `core.metrics`）。"""
+    from live3dgsavatar.core.metrics import psnr_masked
 
-    if mask is None or not bool(mask.any()):
-        return None
-    a = pred[mask].astype(np.float64) / 255.0
-    b = target[mask].astype(np.float64) / 255.0
-    mse = float(((a - b) ** 2).mean())
-    return float("inf") if mse == 0 else float(10.0 * np.log10(1.0 / mse))
+    return psnr_masked(pred, target, mask)
 
 
 def _label_strip(width: int, text: str, height: int = 20):

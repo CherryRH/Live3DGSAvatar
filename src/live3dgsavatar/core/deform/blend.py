@@ -201,12 +201,3 @@ class GaussianBlendField:
             self.basis_xyz.contiguous(), self.basis_rotation.contiguous(),
             self.basis_color.contiguous(),
         )
-
-
-def project_weight_reference(
-    weight_module: torch.nn.Module,
-    blend_weight: torch.Tensor,
-    num_basis_in: int,
-) -> torch.Tensor:
-    """参照实现 `project_weight` 的直译，供等价测试对照使用。"""
-    return weight_module(blend_weight[:, :num_basis_in])

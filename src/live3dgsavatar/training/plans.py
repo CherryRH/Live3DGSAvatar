@@ -141,19 +141,10 @@ class ParameterPlan:
             groups["opacity"] = GroupPlan(lr=float(lr_opacity))
         return cls(groups=groups)
 
-    @classmethod
-    def from_groups(cls, names, *, lr: float) -> "ParameterPlan":
-        """给定组名，统一用同一个常数学习率（调试用）。"""
-        unknown = [n for n in names if n not in ALL_GROUPS]
-        if unknown:
-            raise ValueError(f"未知参数组：{unknown}；可用 {list(ALL_GROUPS)}")
-        return cls(groups={n: GroupPlan(lr=float(lr)) for n in names})
-
-    # ------------------------------------------------------------ 查询 --
-
     @property
-    def enabled(self) -> tuple[str, ...]:
-        return tuple(self.groups)
+    def enabled(self) -> list[str]:
+        """参与优化的组名（按定义顺序）。"""
+        return list(self.groups)
 
     def lr_at(self, group: str, iteration: int) -> float:
         plan = self.groups.get(group)

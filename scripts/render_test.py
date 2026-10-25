@@ -33,7 +33,7 @@ if str(REPO_ROOT / "src") not in sys.path:
 import numpy as np  # noqa: E402
 
 from live3dgsavatar.config import (Config, load_config, resolve_data_dir,  # noqa: E402
-                                   resolve_model_config)
+                                   resolve_model_config, resolve_model_ply)
 
 
 # ------------------------------------------------------------------ CLI --
@@ -54,7 +54,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="从第几帧开始取（配合 --frames 可只评估留出的尾段）")
     p.add_argument("--batch-size", type=int, default=None, help="批大小")
     p.add_argument("--ply", type=Path, default=None,
-                   help="只渲染这一个模型（默认扫描模型目录下所有 .ply）")
+                   help="直接指定模型文件（默认取模型目录下的 model.ply）")
     p.add_argument("--data", type=Path, default=None, help="数据集目录（覆盖配置）")
     p.add_argument("--cap4d", type=Path, default=None,
                    help="CAP4D 的输出目录（含 generated_images/）；"
@@ -120,14 +120,9 @@ def _finalize(args: argparse.Namespace, cfg: Config) -> argparse.Namespace:
     args.subject = str(cfg.get("subject"))
     args.work_name = str(cfg.get("work_name"))
     args.data = resolve_data_dir(cfg)
-    # 没给 --ply 时保持 None：具体渲染哪些模型由 `resolve_models` 扫描
-    # 模型目录决定（这样 model.ply 与 model_aug.ply 能一次全渲染）。
-    # 因此这里**不能**再调用 `resolve_model_ply` —— 它要求默认文件存在。
-    args.ply = explicit_ply.resolve() if explicit_ply is not None else None
-    try:
-        args.model_config = resolve_model_config(cfg)
-    except (FileNotFoundError, ValueError):
-        args.model_config = None
+    args.ply = (explicit_ply.resolve() if explicit_ply is not None
+                else resolve_model_ply(cfg))
+    args.model_config = resolve_model_config(cfg)
     args.gt_dir = args.data / str(cfg.get("paths.image_subdir", "images"))
     # 对比图默认输出；配置里可整体关掉，命令行 --no-diff 优先
     args.dump_diff = not args.no_diff and (
@@ -158,47 +153,10 @@ def _finalize(args: argparse.Namespace, cfg: Config) -> argparse.Namespace:
 
 
 # --------------------------------------------------------------- 指标 --
+# 口径与 GUI/在线更新一致，统一由 `core.metrics` 提供。
 
-
-def psnr(a: np.ndarray, b: np.ndarray) -> float:
-    """`[0,255]` uint8 图像的 PSNR；完全相同返回 inf。"""
-    a = a.astype(np.float64) / 255.0
-    b = b.astype(np.float64) / 255.0
-    mse = float(((a - b) ** 2).mean())
-    return float("inf") if mse == 0 else float(10.0 * np.log10(1.0 / mse))
-
-
-def psnr_masked(a: np.ndarray, b: np.ndarray, mask: np.ndarray) -> float | None:
-    """只在 `mask` 为真的像素上算 PSNR；mask 为空返回 None。"""
-    if not bool(mask.any()):
-        return None
-    a2 = a[mask].astype(np.float64) / 255.0
-    b2 = b[mask].astype(np.float64) / 255.0
-    mse = float(((a2 - b2) ** 2).mean())
-    return float("inf") if mse == 0 else float(10.0 * np.log10(1.0 / mse))
-
-
-def max_abs_diff(a: np.ndarray, b: np.ndarray) -> float:
-    return float(np.abs(a.astype(np.int16) - b.astype(np.int16)).max())
-
-
-class Accum:
-    """累积一组标量，给出中位/最小/均值。"""
-
-    def __init__(self) -> None:
-        self.values: list[float] = []
-
-    def add(self, v: float | None) -> None:
-        if v is not None:
-            self.values.append(float(v))
-
-    def summary(self) -> dict | None:
-        if not self.values:
-            return None
-        v = np.array(self.values)
-        return {"median": float(np.median(v)), "min": float(v.min()),
-                "max": float(v.max()), "mean": float(v.mean()),
-                "n": int(v.size)}
+from live3dgsavatar.core.metrics import (Accum, max_abs_diff,  # noqa: E402
+                                         psnr, psnr_masked)
 
 
 # ------------------------------------------------------------- 渲染 --
@@ -340,19 +298,14 @@ def main() -> int:
     args = _finalize(args, cfg)
 
     print(f"渲染测试 —— {args.subject}/{args.work_name}")
-    print(f"  model = {args.ply or '（自动扫描模型目录）'}")
+    print(f"  model = {args.ply}")
     print(f"  data  = {args.data}")
     print(f"  配置  : {args.frames} 帧（起始 {args.frame_offset}）, "
           f"batch={args.batch_size}, {args.tex_size} tex, "
           f"D={args.num_basis_in}, K={args.num_basis_blend}")
     print(f"  产物  : {args.output_dir}")
 
-    models = resolve_models(args, cfg)
-    print(f"  模型  : {len(models)} 个 —— "
-          + ", ".join(name for name, _ in models))
-
     if args.dry_run:
-        args.ply = models[0][1]
         return _dry_run(args)
 
     import torch
@@ -393,107 +346,65 @@ def main() -> int:
     print(f"  数据集: 载入 {n} / 共 {total} 帧")
 
     out_root = args.output_dir
+    out_root.mkdir(parents=True, exist_ok=True)
+    share_dir = None if args.no_save else out_root / "images"
+    if share_dir is not None:
+        share_dir.mkdir(parents=True, exist_ok=True)
+
+    images, perf = render_core(args, scene, list(range(n)), out_root, share_dir)
+
+    report: dict = {"subject": args.subject, "work_name": args.work_name,
+                    "model_path": str(args.ply),
+                    "num_frames": n, "dataset_frames": total,
+                    "width": scene.width, "height": scene.height, "perf": perf}
+
     gt = load_gt(args, list(range(n)), offset=args.frame_offset)
     if gt is None:
         print("      [warn] 找不到数据集原图，跳过质量对比")
+    else:
+        full, masked, mad = Accum(), Accum(), Accum()
+        for i, img in images.items():
+            if i not in gt:
+                continue
+            ref_rgb, ref_mask = gt[i]
+            full.add(psnr(img, ref_rgb))
+            masked.add(psnr_masked(img, ref_rgb, ref_mask))
+            mad.add(max_abs_diff(img, ref_rgb))
+        report["quality"] = {"psnr_full": full.summary(),
+                             "psnr_masked": masked.summary(),
+                             "max_abs_diff": mad.summary()}
 
-    rendered: list[tuple[str, dict[int, np.ndarray], dict]] = []
-    summaries: dict[str, dict] = {}
-
-    for name, ply in models:
-        print(f"\n--- {name} ---")
-        args.ply = ply
-        model_out = out_root / name
-        model_out.mkdir(parents=True, exist_ok=True)
-        share_dir = None if args.no_save else model_out / "images"
-        if share_dir is not None:
-            share_dir.mkdir(parents=True, exist_ok=True)
-
-        images, perf = render_core(args, scene, list(range(n)), model_out,
-                                   share_dir)
-        report: dict = {"subject": args.subject, "work_name": args.work_name,
-                        "model": name, "model_path": str(ply),
-                        "num_frames": n, "dataset_frames": total,
-                        "width": scene.width, "height": scene.height,
-                        "perf": perf}
-
-        if gt is not None:
-            full, masked, mad = Accum(), Accum(), Accum()
-            for i, img in images.items():
-                if i not in gt:
-                    continue
-                ref_rgb, ref_mask = gt[i]
-                full.add(psnr(img, ref_rgb))
-                masked.add(psnr_masked(img, ref_rgb, ref_mask))
-                mad.add(max_abs_diff(img, ref_rgb))
-            report["quality"] = {"psnr_full": full.summary(),
-                                 "psnr_masked": masked.summary(),
-                                 "max_abs_diff": mad.summary()}
-
-        report_path = model_out / "report.json"
-        report_path.write_text(json.dumps(report, indent=2, ensure_ascii=False),
-                               encoding="utf-8")
-        _print_summary(report)
-        print(f"  报告：{report_path}")
-        summaries[name] = report.get("quality", {})
-        rendered.append((name, images, report))
-
-    # ---- 统一对比图：原图 | 模型1 | 模型2 … ----
-    if gt is not None and rendered and not args.no_save and args.dump_diff:
-        compare_dir = out_root / "compare"
+    # 原图 | 渲染结果（每格带 PSNR 标签）—— 一眼能看出差在哪一帧
+    if args.dump_diff and not args.no_save and gt and images:
+        diff_dir = out_root / "diff"
         written = 0
         for i in sorted(gt):
             ref_rgb, ref_mask = gt[i]
-            panels = [(f"target {i:05d}", ref_rgb)]
-            for name, images, _report in rendered:
-                img = images.get(i)
-                if img is None or img.shape != ref_rgb.shape:
-                    continue
-                value = psnr_masked(img, ref_rgb, ref_mask)
-                if value is None:
-                    value = psnr(img, ref_rgb)
-                panels.append((f"{name}  {value:.2f} dB", img))
-            if len(panels) < 2:
+            img = images.get(i)
+            if img is None or img.shape != ref_rgb.shape:
                 continue
-            write_comparison(compare_dir / f"{i:05d}.png", panels)
+            value = psnr_masked(img, ref_rgb, ref_mask)
+            if value is None:
+                value = psnr(img, ref_rgb)
+            label = f"{value:.2f} dB"
+            write_comparison(diff_dir / f"{i:05d}.png",
+                             [(f"target {i:05d}", ref_rgb),
+                              (f"render  {label}", img)])
             written += 1
-        print(f"\n  统一对比图：{compare_dir}（{written} 张，"
-              f"每张 = 原图 + {len(rendered)} 个模型）")
+        print(f"\n  对比图：{diff_dir}（{written} 张，原图 | 渲染）")
 
-        combined = out_root / "compare" / "report.json"
-        combined.write_text(json.dumps(
-            {name: q for name, q in summaries.items()}, indent=2,
-            ensure_ascii=False), encoding="utf-8")
-        _print_model_table(summaries)
-
+    report_path = out_root / "report.json"
+    report_path.write_text(json.dumps(report, indent=2, ensure_ascii=False),
+                           encoding="utf-8")
+    _print_summary(report)
+    print(f"\n  报告：{report_path}")
     return 0
-
-
-def _print_model_table(summaries: dict) -> None:
-    """多模型对比表（中位 PSNR）。"""
-    rows = [(name, q.get("psnr_masked", {}).get("median"),
-             q.get("psnr_full", {}).get("median"))
-            for name, q in summaries.items()]
-    rows = [r for r in rows if r[1] is not None]
-    if not rows:
-        return
-    print("\n" + "=" * 60)
-    print(f"{'模型':24s} {'PSNR(mask)':>14s} {'PSNR(全图)':>14s}")
-    print("-" * 60)
-    best = max(rows, key=lambda r: r[1])
-    for name, masked, full in sorted(rows, key=lambda r: -r[1]):
-        mark = "  ← 最佳" if name == best[0] else ""
-        print(f"{name:24s} {masked:11.2f} dB {full:11.2f} dB{mark}")
-    print("=" * 60)
 
 
 def _print_summary(report: dict) -> None:
     sep = "=" * 78
     print(f"\n{sep}")
-    model = report.get("model")
     head = f"{report['subject']}/{report['work_name']}"
-    if model:
-        head += f" · {model}"
     print(f"渲染测试报告 —— {head}，"
           f"{report['num_frames']} 帧，{report['width']}x{report['height']}")
     print(sep)
@@ -523,30 +434,6 @@ def _print_summary(report: dict) -> None:
     print(f"  {'批大小':28s} {p['batch_size']}")
     print(f"  {'高斯数':28s} {p['num_gaussian']}")
     print()
-
-
-def resolve_models(args, cfg) -> list[tuple[str, Path]]:
-    """决定要渲染哪些模型。
-
-    给了 `--ply` 就只渲染那一个（名字取文件名 stem）；否则扫
-    `<models_dir>/<subject>/<work_name>/*.ply`，让一个模型目录里的
-    常规模型与增强模型**一次全渲染**，省得来回改参数。
-
-    Returns:
-        `[(显示名, 路径)]`，`model.ply` 排在最前，其余按名字排序。
-    """
-    if args.ply is not None:
-        return [(Path(args.ply).stem, Path(args.ply))]
-
-    model_dir = Path(str(cfg.get("paths.models_dir"))) / str(cfg.get("subject")) \
-        / str(cfg.get("work_name"))
-    files = sorted(model_dir.glob("*.ply"))
-    if not files:
-        raise SystemExit(
-            f"[error] {model_dir} 下没有 .ply\n"
-            "        先用 scripts/train.py --promote 装一个，或用 --ply 指定")
-    files.sort(key=lambda p: (p.name != "model.ply", p.name))
-    return [(p.stem, p) for p in files]
 
 
 def _label_strip(width: int, text: str, height: int = 20):

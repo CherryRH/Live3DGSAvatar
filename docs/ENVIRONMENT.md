@@ -400,5 +400,5 @@ python scripts/rdf_bridge.py --check-deps      # 缺什么会一次列全
 | `requirements.txt` | Python 依赖（版本来自实测环境） |
 | `submodules/ATTRIBUTION.md` | vendored 源码的来源、许可与差异 |
 | `src/live3dgsavatar/compat/__init__.py` | 第三方兼容性补丁（numpy 2.x 别名，见 §3.6） |
-| `scripts/_compat_shim.py` | 上者的精简副本，供独立脚本在未安装本项目时使用 |
+| `scripts/_compat_shim.py` | 上者的精简副本，供 `env_check.py` 在未安装本项目时使用 |
 | `docs/ARCHITECTURE.md` §4、§8 | 目录结构与环境在整体设计中的位置 |

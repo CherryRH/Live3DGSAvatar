@@ -106,7 +106,6 @@ _FALLBACK: dict[str, Any] = {
     "train.pipeline.test_ratio": 0.1,
     "train.pipeline.augment_dir": "augmented",
     "train.pipeline.augment_weight": 1.0,
-    "train.pipeline.test_frames": 350,
     "train.pipeline.mask_weight": 1.0,
     "train.pipeline.eval_every": 1_000,
     "train.pipeline.patience": 3,

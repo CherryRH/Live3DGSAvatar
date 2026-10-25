@@ -170,7 +170,7 @@ output_dir: output                     # output 特殊：相对**当前工作目
 | `encode_quality` | `85` | JPEG 质量 1–100。85 实测约 24 KiB/帧且肉眼无差别 |
 | `batch_size` | `4` | 批大小。6GB 显存建议 ≤ 4 |
 | `frames` | `20` | 默认渲染帧数；`-1` 为全部 |
-| `max_batch_size` / `max_gaussian_size` / `num_streams` | `10` / `60353` / `3` | 训练用的预分配上限（训练待接入，先保留） |
+| `max_batch_size` / `max_gaussian_size` / `num_streams` | `10` / `60353` / `3` | 光栅化器的预分配上限（显存预算） |
 
 > 输出**尺寸**由这里决定：`scale × 数据集相机内参下的分辨率`。
 > 真实渲染分辨率（光栅化器输出）始终是数据集尺寸，`scale` 在渲染后缩放 ——
@@ -209,15 +209,29 @@ output_dir: output                     # output 特殊：相对**当前工作目
 |---|---|
 | `dataset.use_shape_weight` / `use_pose_weight` | 驱动参数的分段开关（与训练侧一致） |
 | `dataset.pin_memory` | 是否锁页内存 |
-| `test.dump_diff` | 渲染测试是否输出对比图（原图 \| 各模型 横排，带 PSNR） |
+| `test.dump_diff` | 渲染测试是否输出对比图（原图 \| 渲染，带 PSNR） |
 
 ## 5.5 `train.yaml` 字段
 
-### `train.pipeline` —— 完整训练（合作方提供，暂未接入）
+### `train.pipeline` —— 完整训练（`scripts/train.py`）
+
+详见 [`TRAINING.md`](TRAINING.md)；这里只列键的默认值与作用。
 
 | 键 | 默认 | 说明 |
 |---|---|---|
-| `enabled` | `false` | 总开关。**关闭时训练入口直接报错退出**，而不是静默跳过 |
+| `enabled` | `true` | 训练入口是否可用（关闭时直接报错退出，而不是静默跳过）|
+| `iterations` | `50000` | 训练步数 |
+| `batch_size` | `10` | 批大小 |
+| `blend_start` | `3000` | 第几步开始启用形变基（暖启动）|
+| `test_ratio` | `0.1` | 末尾多少比例作验证集 |
+| `augment_dir` | `augmented` | 增强集目录（相对数据集）|
+| `augment_weight` | `1.0` | 增强样本的损失权重；0 = 完全不考虑 |
+| `mask_weight` | `1.0` | 背景在损失里的权重；0 = 只看前景（易出现背景发散）|
+| `eval_every` | `1000` | 每多少步验证一次 |
+| `patience` | `3` | 连续多少次无提升就停 |
+| `min_delta` | `0.05` | 认为"有提升"的最小 dB |
+| `save_every` | `5000` | 定期存档间隔（另有 `model_best.ply`）|
+| `prefetch_workers` | `2` | 后台预取线程数；0 关闭 |
 | `max_frames` | `null` | 采样上限；`null` 表示全部 |
 
 ### `train.online_update` —— 在线更新

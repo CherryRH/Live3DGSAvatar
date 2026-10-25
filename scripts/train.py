@@ -32,13 +32,12 @@ import live3dgsavatar  # noqa: F401
 
 
 def promote_model(*, source_ply: Path, structure_config: Path, report: Path | None,
-                  target: Path, force: bool = False,
-                  filename: str = "model.ply") -> Path:
+                  target: Path, force: bool = False) -> Path:
     """把一个训练好的模型装进 `models/<对象>/<版本>/`，供渲染直接使用。
 
     拷贝三样东西：
 
-    - `model.ply`（或 `filename`）：高斯参数（PLY 头内嵌 `gaussian_config`）
+    - `model.ply`：高斯参数（PLY 头内嵌 `gaussian_config`，可自描述结构）
     - `config.yaml`：结构配置的可读副本（换机器/人工查看用）
     - `report.json`：训练指标（可选，便于回溯训练来源）
 
@@ -51,9 +50,7 @@ def promote_model(*, source_ply: Path, structure_config: Path, report: Path | No
     if not Path(source_ply).is_file():
         raise FileNotFoundError(f"找不到要装的模型：{source_ply}")
     target = Path(target)
-    dest = target / filename
-    # 只拦"要装的这个文件已存在"：同一目录下 `model.ply` 与 `model_aug.ply`
-    # 应该能并存（这正是对比增强训练效果所需要的）
+    dest = target / "model.ply"
     if dest.exists() and not force:
         raise FileExistsError(
             f"{dest} 已存在；确认覆盖请加 --force")
@@ -65,7 +62,7 @@ def promote_model(*, source_ply: Path, structure_config: Path, report: Path | No
             return
         shutil.copyfile(src, dst)
 
-    _copy(source_ply, target / filename)
+    _copy(source_ply, dest)
     _copy(structure_config, target / "config.yaml")
     if report is not None and Path(report).is_file():
         _copy(report, target / "report.json")
@@ -127,9 +124,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--augment-weight", type=float, default=None,
                    help="增强样本的损失权重（0 = 完全不考虑）")
     p.add_argument("--test-ratio", type=float, default=None,
-                   help="验证集比例（0.1 表示末尾 10%%）；默认 0.1")
-    p.add_argument("--test-frames", type=int, default=None,
-                   help="按帧数指定验证集（与 --test-ratio 二选一）")
+                   help="验证集比例（0.1 表示末尾 10%%，默认 0.1）")
     p.add_argument("--eval-every", type=int, default=None)
     p.add_argument("--save-every", type=int, default=None)
     p.add_argument("--patience", type=int, default=None,
@@ -181,10 +176,8 @@ def main(argv: list[str] | None = None) -> int:
                      else cfg.get("train.pipeline.batch_size", 10))
     blend_start = int(args.blend_start if args.blend_start is not None
                       else cfg.get("train.pipeline.blend_start", 3_000))
-    test_ratio = (None if args.test_frames is not None else
-                  float(args.test_ratio if args.test_ratio is not None
-                        else cfg.get("train.pipeline.test_ratio", 0.1)))
-    test_frames = int(args.test_frames if args.test_frames is not None else 0)
+    test_ratio = float(args.test_ratio if args.test_ratio is not None
+                       else cfg.get("train.pipeline.test_ratio", 0.1))
     augment_weight = float(args.augment_weight if args.augment_weight is not None
                            else cfg.get("train.pipeline.augment_weight", 1.0))
     eval_every = int(args.eval_every if args.eval_every is not None
@@ -200,17 +193,15 @@ def main(argv: list[str] | None = None) -> int:
 
     from live3dgsavatar.data.sources import ManifestSource
 
-    train_src = ManifestSource(data_dir, split="train", test_frames=test_frames,
-                               test_ratio=test_ratio, device="cpu", seed=args.seed)
-    val_src = ManifestSource(data_dir, split="test", test_frames=test_frames,
-                             test_ratio=test_ratio, device="cpu")
+    train_src = ManifestSource(data_dir, split="train", test_ratio=test_ratio,
+                               device="cpu", seed=args.seed)
+    val_src = ManifestSource(data_dir, split="test", test_ratio=test_ratio,
+                             device="cpu")
 
     print(f"训练 {subject}/{work}")
     print(f"  数据   : {data_dir}")
-    split_text = (f"比例 {test_ratio:.0%}" if test_ratio is not None
-                  else f"{test_frames} 帧")
     print(f"  训练集 : {len(train_src)} 帧    验证集 : {len(val_src)} 帧"
-          f"（{split_text}）")
+          f"（末尾 {test_ratio:.0%}）")
     models_dir = Path(str(cfg.get("paths.models_dir")))
     model_cfg = resolve_structure_config(
         models_dir, subject, work, explicit=args.model_config,
@@ -317,14 +308,12 @@ def main(argv: list[str] | None = None) -> int:
 
     from live3dgsavatar.core.io.ply import save_ply
 
-    tag = "_aug" if (args.augment and augment_weight > 0) else ""
-
     def save(iteration: int) -> None:
-        save_ply(avatar, out_dir / f"model{tag}_{iteration:06d}.ply")
+        save_ply(avatar, out_dir / f"model_{iteration:06d}.ply")
 
     def save_best(iteration: int, psnr: float) -> None:
         """验证指标刷新最好成绩时存一份 —— 后训变差也能拿回好的那份。"""
-        save_ply(avatar, out_dir / f"model_best{tag}.ply")
+        save_ply(avatar, out_dir / "model_best.ply")
         print(f"  [best] 第 {iteration} 步 验证 {psnr:.2f} dB → model_best.ply",
               flush=True)
 
@@ -374,7 +363,7 @@ def main(argv: list[str] | None = None) -> int:
     # 最终模型（训练结束时的那一份）—— 定期存档已在 CheckpointHook 里做过
     from live3dgsavatar.core.io.ply import save_ply
 
-    final_ply = out_dir / f"model{tag}.ply"
+    final_ply = out_dir / "model.ply"
     save_ply(avatar, final_ply)
     import shutil as _shutil
 
@@ -395,15 +384,14 @@ def main(argv: list[str] | None = None) -> int:
     }, indent=2, ensure_ascii=False), encoding="utf-8")
 
     if args.promote:
-        best_ply = out_dir / f"model_best{tag}.ply"
+        best_ply = out_dir / "model_best.ply"
         src = args.promote_from or (best_ply if best_ply.is_file() else final_ply)
         print(f"  装入来源：{src.name}")
         name = args.promote_name or work
         target = models_dir / subject / name
         try:
             promote_model(source_ply=src, structure_config=model_cfg,
-                          report=report_path, target=target, force=args.force,
-                          filename=f"model{tag}.ply")
+                          report=report_path, target=target, force=args.force)
         except (FileExistsError, FileNotFoundError) as e:
             print(f"[error] {e}", file=sys.stderr)
             return 1

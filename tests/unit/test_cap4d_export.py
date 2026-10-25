@@ -11,7 +11,6 @@
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import sys
 from pathlib import Path
@@ -19,19 +18,14 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from script_loader import load_script
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "export_cap4d.py"
 
 
 def _load():
-    """把脚本当模块加载（脚本顶层不 import RDF，所以这里能加载）。"""
-    if "_cap4d_export" in sys.modules:
-        return sys.modules["_cap4d_export"]
-    spec = importlib.util.spec_from_file_location("_cap4d_export", SCRIPT)
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules["_cap4d_export"] = mod
-    spec.loader.exec_module(mod)
-    return mod
+    return load_script(SCRIPT.name)
 
 
 # ------------------------------------------------------------------ 几何 --

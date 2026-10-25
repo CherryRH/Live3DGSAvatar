@@ -12,10 +12,13 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 
 from ..config import Config, repo_root
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -60,6 +63,16 @@ def list_models(cfg: Config) -> list[ModelInfo]:
                 continue
             ply = work_dir / "model.ply"
             if not ply.is_file():
+                # 目录里有别的 .ply 却没有 model.ply：几乎一定是命名不对
+                # （旧版本曾把增强训练的模型存成 model_aug.ply）。这类目录
+                # 在界面上会"凭空消失"，所以要明确说出来怎么修。
+                strays = sorted(p.name for p in work_dir.glob("*.ply"))
+                if strays:
+                    log.warning(
+                        "%s 里没有 model.ply，但有 %s —— 界面不会显示它。"
+                        "把主模型重命名为 model.ply 即可："
+                        " mv %s %s",
+                        work_dir, strays, work_dir / strays[0], ply)
                 continue
             try:
                 size = ply.stat().st_size / 1024 ** 2
