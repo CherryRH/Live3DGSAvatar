@@ -180,3 +180,41 @@ def test_promote_with_custom_filename_keeps_both_models(tmp_path) -> None:
 
     assert (target / "model.ply").read_bytes() == b"plain"
     assert (target / "model_aug.ply").read_bytes() == b"aug"
+
+
+def test_promote_is_idempotent_when_config_already_there(tmp_path) -> None:
+    """结构配置就在目标目录里时（续训场景），不能再拷一次。
+
+    真实故障：`resolve_structure_config` 回退选中了 `models/<s>/<w>/config.yaml`
+    正是 promote 的目标，`shutil.copyfile` 抛 SameFileError，训练明明跑完了
+    却在最后一步失败。
+    """
+    m = _load()
+    target = tmp_path / "models" / "s" / "w"
+    target.mkdir(parents=True)
+    cfg = target / "config.yaml"
+    cfg.write_text("model: {}\n", encoding="utf-8")
+    ply = tmp_path / "model.ply"
+    ply.write_bytes(b"x")
+
+    out = m.promote_model(source_ply=ply, structure_config=cfg, report=None,
+                          target=target)
+
+    assert out == target
+    assert (target / "model.ply").read_bytes() == b"x"
+    assert (target / "config.yaml").read_text(encoding="utf-8") == "model: {}\n"
+
+
+def test_promote_skips_when_source_and_dest_are_same(tmp_path) -> None:
+    """源 PLY 已经就在目标位置时，也不应报错。"""
+    m = _load()
+    target = tmp_path / "models" / "s" / "w"
+    target.mkdir(parents=True)
+    ply = target / "model.ply"
+    ply.write_bytes(b"x")
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text("model: {}\n", encoding="utf-8")
+
+    m.promote_model(source_ply=ply, structure_config=cfg, report=None,
+                    target=target, force=True)
+    assert ply.read_bytes() == b"x"

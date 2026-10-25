@@ -99,8 +99,14 @@ def _finalize(args: argparse.Namespace, cfg: Config) -> argparse.Namespace:
     if args.data is not None:
         cfg.set("paths.data_root", args.data.parent)
         cfg.set("subject", args.data.name)
+    # `--ply` 是"用户直接指的文件"，按当前工作目录解析；不能塞进
+    # `paths.model_ply`（那里是**相对模型目录的文件名**），否则会被拼成
+    # `models/.../models/...` 这种路径
+    explicit_ply = None
     if args.ply is not None:
-        cfg.set("paths.model_ply", args.ply)
+        explicit_ply = Path(args.ply).expanduser()
+        if not explicit_ply.is_file():
+            raise SystemExit(f"[error] --ply 不存在：{explicit_ply}")
 
     if not (str(cfg.get("subject") or "").strip()
             and str(cfg.get("work_name") or "").strip()):
@@ -110,7 +116,8 @@ def _finalize(args: argparse.Namespace, cfg: Config) -> argparse.Namespace:
     args.subject = str(cfg.get("subject"))
     args.work_name = str(cfg.get("work_name"))
     args.data = resolve_data_dir(cfg)
-    args.ply = resolve_model_ply(cfg)
+    args.ply = (explicit_ply.resolve() if explicit_ply is not None
+                else resolve_model_ply(cfg))
     args.model_config = resolve_model_config(cfg)
     args.gt_dir = args.data / str(cfg.get("paths.image_subdir", "images"))
 

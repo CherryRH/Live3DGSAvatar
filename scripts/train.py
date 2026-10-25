@@ -58,10 +58,17 @@ def promote_model(*, source_ply: Path, structure_config: Path, report: Path | No
         raise FileExistsError(
             f"{dest} 已存在；确认覆盖请加 --force")
     target.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(source_ply, target / filename)
-    shutil.copyfile(structure_config, target / "config.yaml")
+    def _copy(src: Path, dst: Path) -> None:
+        # 源与目标可能是同一个文件：结构配置常常就是目标目录里的那份
+        # （续训时 `resolve_structure_config` 会选中它），直接拷会抛 SameFileError
+        if Path(src).resolve() == Path(dst).resolve():
+            return
+        shutil.copyfile(src, dst)
+
+    _copy(source_ply, target / filename)
+    _copy(structure_config, target / "config.yaml")
     if report is not None and Path(report).is_file():
-        shutil.copyfile(report, target / "report.json")
+        _copy(report, target / "report.json")
     return target
 
 

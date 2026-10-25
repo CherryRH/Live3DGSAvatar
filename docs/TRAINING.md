@@ -278,3 +278,19 @@ python scripts/render_test.py --subject crh_1 --work-name run4 \
 
 只满足 1 说明"没坏但也没用"，此时应把 `augment_weight` 调小或直接放弃。
 
+⚠️ **对比必须用同一个切分**。`test_ratio` 变了，验证集就变了，数字不可比：
+
+```bash
+# A（无增强）与 B（有增强）都要跑
+python scripts/train.py --subject crh_1 --work-name ab --promote
+python scripts/train.py --subject crh_1 --work-name ab --augment --promote
+
+# 两边都用同一段留出集评估
+python scripts/render_test.py --subject crh_1 --work-name ab \
+    --frame-offset 2577 --frames 286
+python scripts/render_test.py --subject crh_1 --work-name ab \
+    --ply models/crh_1/ab/model_aug.ply --frame-offset 2577 --frames 286
+```
+
+`--frame-offset` 要按 `test_ratio=0.1` 算：crh_1 共 2863 帧 → 验证集从 2577 起。
+
