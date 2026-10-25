@@ -434,7 +434,9 @@ def test_live_source_caches_by_sequence() -> None:
     if not (repo_root() / "data" / "FLAME2020").is_dir():
         pytest.skip("缺少 FLAME 资产")
 
-    src = LS.LiveSource(_cfg(), "cpu", client=_FakeClient())
+    # 放宽过期时间：默认 1 s，机器繁忙时这个用例会"观测过期"而偶发失败
+    src = LS.LiveSource(_cfg(**{"tracking.max_age_s": 60.0}), "cpu",
+                        client=_FakeClient())
     src.ingest(_observation(seq=3))
     a = src.observation()
     b = src.observation()

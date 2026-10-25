@@ -113,8 +113,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="背景在损失里的权重；1 表示与前景同权（默认）")
     p.add_argument("--test-frames", type=int, default=None,
                    help="末尾多少帧作验证集（默认 350）")
-    p.add_argument("--eval-every", type=int, default=2000)
-    p.add_argument("--save-every", type=int, default=5000)
+    p.add_argument("--eval-every", type=int, default=None)
+    p.add_argument("--save-every", type=int, default=None)
+    p.add_argument("--patience", type=int, default=None,
+                   help="验证连续多少次无提升就停（次数 × eval-every 步）")
+    p.add_argument("--min-delta", type=float, default=None,
+                   help="认为'有提升'的最小 dB 幅度")
+    p.add_argument("--prefetch-workers", type=int, default=None,
+                   help="后台预取线程数；0 表示不预取")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--model-config", type=Path, default=None,
                    help="模型结构配置（默认：模型目录里的 config.yaml，"
@@ -160,6 +166,16 @@ def main(argv: list[str] | None = None) -> int:
                       else cfg.get("train.pipeline.blend_start", 3_000))
     test_frames = int(args.test_frames if args.test_frames is not None
                       else cfg.get("train.pipeline.test_frames", 350))
+    eval_every = int(args.eval_every if args.eval_every is not None
+                     else cfg.get("train.pipeline.eval_every", 1000))
+    save_every = int(args.save_every if args.save_every is not None
+                     else cfg.get("train.pipeline.save_every", 5000))
+    patience = int(args.patience if args.patience is not None
+                   else cfg.get("train.pipeline.patience", 3))
+    min_delta = float(args.min_delta if args.min_delta is not None
+                      else cfg.get("train.pipeline.min_delta", 0.05))
+    workers = int(args.prefetch_workers if args.prefetch_workers is not None
+                  else cfg.get("train.pipeline.prefetch_workers", 2))
 
     from live3dgsavatar.data.sources import ManifestSource
 
@@ -275,19 +291,39 @@ def main(argv: list[str] | None = None) -> int:
 
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    def save(iteration: int) -> None:
-        from live3dgsavatar.core.io.ply import save_ply
+    from live3dgsavatar.core.io.ply import save_ply
 
+    def save(iteration: int) -> None:
         save_ply(avatar, out_dir / f"model_{iteration:06d}.ply")
+
+    def save_best(iteration: int, psnr: float) -> None:
+        """验证指标刷新最好成绩时存一份 —— 后训变差也能拿回好的那份。"""
+        save_ply(avatar, out_dir / "model_best.ply")
+        print(f"  [best] 第 {iteration} 步 验证 {psnr:.2f} dB → model_best.ply",
+              flush=True)
 
     hooks = (
         LogHook(every=100),
-        ValidationHook(source=val_src, evaluate=evaluate, every=args.eval_every,
-                       early_stop=EarlyStopping(patience=5)),
-        CheckpointHook(save=save, every=args.save_every),
+        ValidationHook(source=val_src, evaluate=evaluate, every=eval_every,
+                       early_stop=EarlyStopping(patience=patience,
+                                                min_delta=min_delta),
+                       on_improve=save_best),
+        CheckpointHook(save=save, every=save_every),
     )
 
-    trainer = Trainer(source=train_src, plan=plan, objective=objective,
+    from live3dgsavatar.data.sources import PrefetchSource
+
+    train_source = train_src
+    if workers > 0:
+        train_source = PrefetchSource(train_src, batch_size, workers=workers,
+                                      depth=max(2, workers * 2))
+        print(f"  取数   : 预取 {workers} 线程（批 {batch_size}）")
+    if train_src.has_image_cache:
+        print("  取数   : 使用 images.npy 缓存（跳过 PNG 解码）")
+    else:
+        print("  取数   : 逐帧解 PNG —— 可跑 scripts/cache_images.py 加速")
+
+    trainer = Trainer(source=train_source, plan=plan, objective=objective,
                       render_fn=render_fn, params=avatar.parameter_groups(),
                       iterations=iterations, batch_size=batch_size,
                       blend_start=blend_start, hooks=hooks, device=device)
@@ -317,7 +353,9 @@ def main(argv: list[str] | None = None) -> int:
     }, indent=2, ensure_ascii=False), encoding="utf-8")
 
     if args.promote:
-        src = args.promote_from or final_ply
+        best_ply = out_dir / "model_best.ply"
+        src = args.promote_from or (best_ply if best_ply.is_file() else final_ply)
+        print(f"  装入来源：{src.name}")
         name = args.promote_name or work
         target = models_dir / subject / name
         try:

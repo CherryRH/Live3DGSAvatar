@@ -200,6 +200,9 @@ class _FakeSource:
     def iter_batches(self, batch_size: int, shuffle: bool = False):
         yield self.random_batch(batch_size)
 
+    def __len__(self) -> int:
+        return 100
+
 
 def _trainer(*, iterations=3, params=None, render_fn=None, hooks=(), plan=None,
              source=None):
@@ -433,3 +436,60 @@ def test_log_hook_handles_missing_total() -> None:
     with contextlib.redirect_stdout(buf):
         hook.on_step(trainer, 0, {"l1": 0.5})
     assert "损失 —" in buf.getvalue()
+
+
+# ------------------------------------------------------------ 取数加速 --
+
+
+def test_prefetch_source_returns_batches_and_closes() -> None:
+    """预取只是包装：批大小必须一致，且 close 后线程要退出。"""
+    from live3dgsavatar.data.sources import PrefetchSource
+
+    inner = _FakeSource(n=3, size=8)
+    with PrefetchSource(inner, batch_size=2, workers=2, depth=2) as src:
+        for _ in range(4):
+            batch = src.random_batch(2)
+            assert batch.image.shape == (2, 3, 8, 8)
+        with pytest.raises(ValueError, match="固定批大小"):
+            src.random_batch(3)
+    assert not src._threads, "close 后不应留下线程"
+
+
+def test_prefetch_source_propagates_worker_error() -> None:
+    """后台线程里出错必须抛回主线程，不能静默卡住。"""
+    from live3dgsavatar.data.sources import PrefetchSource
+
+    class Boom:
+        def random_batch(self, n):
+            raise RuntimeError("读图失败")
+
+    src = PrefetchSource(Boom(), batch_size=1, workers=1, depth=1).start()
+    with pytest.raises(RuntimeError, match="读图失败"):
+        src.random_batch(1)
+    src.close()
+
+
+def test_validation_hook_calls_on_improve() -> None:
+    """验证刷新最好成绩时要回调（用来存 model_best.ply）。"""
+    improved: list[tuple[int, float]] = []
+    values = iter([10.0, 10.5, 10.2])
+
+    def evaluate(_source):
+        return {"psnr": next(values)}
+
+    t = _trainer(iterations=6, hooks=(
+        ValidationHook(source=_FakeSource(), evaluate=evaluate, every=2,
+                       early_stop=EarlyStopping(patience=5, min_delta=0.0),
+                       on_improve=lambda it, v: improved.append((it, v))),))
+    t.run()
+    assert [round(v, 2) for _, v in improved] == [10.0, 10.5], improved
+
+
+def test_trainer_closes_prefetch_source_on_exit() -> None:
+    """训练结束（含异常）要关闭数据源，否则预取线程会一直挂着。"""
+    from live3dgsavatar.data.sources import PrefetchSource
+
+    src = PrefetchSource(_FakeSource(), batch_size=2, workers=1, depth=1)
+    t = _trainer(iterations=2, source=src)
+    t.run()
+    assert not src._threads

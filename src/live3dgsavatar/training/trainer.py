@@ -161,6 +161,9 @@ class Trainer:
             self.report.iterations = iteration + 1 if self.iterations > 0 else 0
             self.report.seconds = time.perf_counter() - t0
             self._emit("on_end")
+            close = getattr(self.source, "close", None)
+            if callable(close):
+                close()
         return self.report
 
     def step(self, iteration: int) -> dict[str, float]:
@@ -227,13 +230,17 @@ class ValidationHook:
 
     def __init__(self, *, source, evaluate: Callable, every: int = 2000,
                  early_stop: EarlyStopping | None = None,
-                 metric: str = "psnr") -> None:
+                 metric: str = "psnr",
+                 on_improve: Callable[[int, float], None] | None = None) -> None:
         self.source = source
         self.evaluate = evaluate
         self.every = int(every)
         self.early_stop = early_stop
         self.metric = metric
+        #: 验证指标刷新最好成绩时调用 `(iteration, value)` —— 存"最佳模型"用
+        self.on_improve = on_improve
         self.history: list[tuple[int, dict[str, float]]] = []
+        self.best_iteration: int | None = None
 
     def on_start(self, trainer: "Trainer") -> None:
         self.history.clear()
@@ -251,6 +258,9 @@ class ValidationHook:
             elif self.early_stop.improved:
                 trainer.report.best_metric = self.early_stop.best
                 trainer.report.best_iteration = iteration
+                self.best_iteration = iteration
+                if self.on_improve is not None:
+                    self.on_improve(iteration, float(self.early_stop.best))
 
     def on_end(self, trainer: "Trainer") -> None:
         if self.best is not None:

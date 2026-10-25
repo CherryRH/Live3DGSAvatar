@@ -159,3 +159,56 @@ python scripts/render_test.py --subject crh_1 --work-name run2 \
 | **P2** | 随机背景/掩码、逐帧内参、fused-ssim | 训练速度提升；白底合成数据可训 |
 | **P3** | CAP4D 数据做增广微调 | 在 crh_2（同人不同采集）上提升，crh_1 不降 |
 | **P4** | `updater` 收敛为 trainer 的薄壳 | 热更新的数字与 `finetune` 一致 |
+
+## 8. 速度：GPU 利用率上不去时先查取数
+
+训练时 GPU 空转，绝大多数是**取数在主线程串行做**：解一张 512² PNG 要几毫秒，
+一个 batch 就是几十毫秒，而一步计算只有十几毫秒。三档手段，按见效顺序：
+
+**① 预取（默认开）**
+
+```yaml
+train.pipeline:
+  prefetch_workers: 2      # 后台线程数；0 关闭
+```
+
+本机实测（batch 4，CPU 解码）：**85.8 ms/batch → 42.2 ms/batch（2.0×）**。
+`close()` 由 Trainer 在结束时调用，线程不会泄漏。
+
+**② 图像缓存（最有效）**
+
+```bash
+python scripts/cache_images.py --subject crh_1     # 生成 datasets/crh_1/images.npy
+```
+
+把 PNG 打包成 `uint8 [N,H,W,C]`，训练时走 `np.load(mmap_mode="r")`，跳过解码。
+`ManifestSource` 自动检测并优先用它。注意：**图像更新后要重新生成**。
+
+**③ 加大 batch**
+
+GPU 利用率低时，把 `train.pipeline.batch_size` 从 10 提到 16–24（显存够的话）。
+批越大，每步的固定开销摊得越薄。
+
+三者可以叠加。判断瓶颈在哪：看日志里的 `it/s` —— 如果加大 batch 后
+`it/s × batch_size` 明显上升，瓶颈在固定开销；如果不变，瓶颈在数据。
+
+## 9. 早停与"最佳模型"
+
+```yaml
+train.pipeline:
+  eval_every: 1000    # 每 1000 步验证一次
+  patience: 3         # 连续 3 次无提升就停（3 × 1000 = 3000 步）
+  min_delta: 0.05     # 提升小于 0.05 dB 不算提升
+```
+
+- 验证刷新最好成绩时，会另存一份 `model_best.ply`
+- `--promote` 默认装 **`model_best.ply`**（没有就装最终的 `model.ply`）
+- `--promote-from` 可以指定任意存档点
+
+调早停的三条经验：
+
+1. `min_delta` 太小 → 噪声被当成提升，迟迟不停；0.05 dB 一般合适
+2. `patience × eval_every` 才是"容忍多少步没有进步"；想让总时长更短，
+   先减 `patience`，再考虑减 `eval_every`
+3. 验证集和训练集同分布时早停很容易触发；跨采集（crh_2）才是真考验
+
