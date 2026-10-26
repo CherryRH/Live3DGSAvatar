@@ -155,3 +155,96 @@ def test_promote_without_report_is_allowed(tmp_path) -> None:
     target = tmp_path / "models" / "s" / "w"
     m.promote_model(source_ply=src, structure_config=cfg, report=None, target=target)
     assert not (target / "report.json").exists()
+
+
+# ------------------------------------------------------ 数据集构建脚本 --
+
+
+def test_build_dataset_new_dataset_from_baked_source(tmp_path) -> None:
+    """已烘焙的来源 → 数据集（images/ + render_inputs.npz）。
+
+    这是 `build_dataset.sh` 的后半段：前端只负责拿到跟踪结果，整理交给这里。
+    """
+    import numpy as np
+
+    m = load_script("build_dataset.py")
+    src = tmp_path / "src"
+    (src / "images").mkdir(parents=True)
+    n, v = 3, 6
+    np.savez(src / "render_inputs.npz",
+             mesh=np.zeros((n, v, 3), np.float32),
+             blend_weight=np.zeros((n, 129), np.float32),
+             K=np.eye(3), w2v=np.eye(4),
+             width=np.int64(8), height=np.int64(8),
+             names=np.array([f"{i:05d}" for i in range(n)]))
+    from PIL import Image
+
+    for i in range(n):
+        Image.fromarray(np.zeros((8, 8, 4), np.uint8)).save(
+            src / "images" / f"{i:05d}.png")
+
+    out = tmp_path / "datasets" / "ds1"
+    m.build(source=src, out_dir=out, flame_dir=tmp_path,
+            base_dataset=None, limit=0, force=False)
+
+    assert (out / "images").is_dir()
+    with np.load(out / "render_inputs.npz", allow_pickle=True) as d:
+        for key in ("mesh", "blend_weight", "K", "w2v", "width", "height", "names"):
+            assert key in d.files, key
+        assert int(d["mesh"].shape[0]) == n
+
+
+def test_build_dataset_refuses_to_overwrite(tmp_path) -> None:
+    m = load_script("build_dataset.py")
+    out = tmp_path / "ds"
+    out.mkdir()
+    (out / "render_inputs.npz").write_bytes(b"x")
+    with pytest.raises(FileExistsError, match="force"):
+        m.build(source=tmp_path, out_dir=out, flame_dir=tmp_path,
+                base_dataset=None, force=False)
+
+
+def test_build_dataset_requires_images_for_every_frame(tmp_path) -> None:
+    """图像与跟踪结果必须一一对应：缺一张就报错，不能悄悄跳过。"""
+    import numpy as np
+
+    m = load_script("build_dataset.py")
+    src = tmp_path / "src"
+    (src / "images").mkdir(parents=True)
+    np.savez(src / "render_inputs.npz",
+             mesh=np.zeros((2, 6, 3), np.float32),
+             blend_weight=np.zeros((2, 129), np.float32),
+             K=np.eye(3), w2v=np.eye(4),
+             width=np.int64(8), height=np.int64(8),
+             names=np.array(["0", "1"]))
+    with pytest.raises(FileNotFoundError, match="缺少第 0 帧"):
+        m.build(source=src, out_dir=tmp_path / "out", flame_dir=tmp_path,
+                base_dataset=None, force=False)
+
+
+def test_build_dataset_renames_images_to_five_digits(tmp_path) -> None:
+    """构建出的数据集图像一律 `00000.png …`，与 npz 行序一致。"""
+    import numpy as np
+
+    m = load_script("build_dataset.py")
+    src = tmp_path / "src"
+    (src / "images").mkdir(parents=True)
+    n = 2
+    np.savez(src / "render_inputs.npz",
+             mesh=np.zeros((n, 6, 3), np.float32),
+             blend_weight=np.zeros((n, 129), np.float32),
+             K=np.eye(3), w2v=np.eye(4),
+             width=np.int64(8), height=np.int64(8),
+             names=np.array(["frame_1", "frame_2"]))
+    from PIL import Image
+
+    for name in ("frame_1", "frame_2"):
+        Image.fromarray(np.zeros((8, 8, 4), np.uint8)).save(
+            src / "images" / f"{name}.png")
+
+    out = tmp_path / "ds"
+    m.build(source=src, out_dir=out, flame_dir=tmp_path, base_dataset=None)
+    assert sorted(p.name for p in (out / "images").iterdir()) == [
+        "00000.png", "00001.png"]
+    with np.load(out / "render_inputs.npz", allow_pickle=True) as d:
+        assert list(d["names"]) == ["00000", "00001"]

@@ -21,7 +21,7 @@ train:
     # 验证集比例：0.1 = 末尾 10% 作验证，其余训练。
     # 增强集按**同一比例**切分（它的验证部分不参与训练）。
     test_ratio: 0.1
-    # 增强集目录（相对数据集），由 scripts/build_augmented.py 生成。
+    # 增强集目录（相对数据集），由 ./build_dataset.sh --into 生成。
     # 训练时加 --augment 才会用到；验证集永远只含真实数据。
     augment_dir: augmented
     # 增强样本的损失权重：1 = 与真实同权，0 = 完全不考虑。

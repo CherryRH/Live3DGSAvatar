@@ -111,10 +111,15 @@ train.pipeline:
 格式与主数据集一致。生成分两步（跨环境）：
 
 ```bash
-python scripts/rdf_dump.py --images <增强图目录> --out <目录>/rdf.npz    # realdenseface
-python scripts/build_augmented.py --subject crh_1 \
-    --rdf <目录>/rdf.npz --images <目录>                                  # live3dgs
+# 一条命令：需要时先跑 RDF，再整理进 <数据集>/augmented/
+./build_dataset.sh <图像目录> --into crh_1
 ```
+
+`build_dataset.sh` 会检测目录里是否已有跟踪结果：有就跳过 RDF 直接整理，没有就
+先在 `realdenseface` 环境里跟踪（环境名可用 `RDF_ENV` / `MAIN_ENV` 覆盖）。
+
+目录约定见 [`CONVENTIONS.md`](CONVENTIONS.md) §6：`images/` + `render_inputs.npz`，
+与数据集、CAP4D 输出目录完全一致。
 
 训练时加 `--augment` 才启用：
 

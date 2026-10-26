@@ -334,7 +334,7 @@ def main(argv: list[str] | None = None) -> int:
         if not (aug_dir / "render_inputs.npz").is_file():
             raise SystemExit(
                 f"[error] 找不到增强集 {aug_dir}/render_inputs.npz\n"
-                "        先用 scripts/build_augmented.py 打包")
+                "        先跑 ./build_dataset.sh <图像目录> --into <对象>")
         if augment_weight <= 0:
             print("  [warn] --augment-weight=0：增强集不参与（等于没开 --augment）")
         else:

@@ -11,10 +11,11 @@
     conda activate realdenseface
     cd ~/Projects/Live3DGSAvatar
     python scripts/rdf_dump.py \
-        --images ~/Datasets/INSTA/<数据集>/input \
-        --out output/rdf/<数据集>.npz --limit 300
+        --images ~/Projects/cap4d/output/<任务>/generated_images/images \
+        --out ~/Projects/cap4d/output/<任务>/generated_images
 
-产出：``x`` (N,118)、``verts`` (N,V,3)、``identity`` (300)、相机参数、
+产出（写在 `--out` 目录下的 `render_inputs.npz`，与数据集同构）：
+``x`` (N,118)、``verts`` (N,V,3)、``identity`` (300)、相机参数、
 以及每帧对应的图像文件名。``verts`` 由 RDF 用**它自己的 FLAME2023** 算出，
 我们的进程因此不需要 FLAME2023 —— 也就不会出现"用 2020 的基算 2023 的参数"。
 
@@ -36,7 +37,9 @@ def parse_args() -> argparse.Namespace:
     # 不用 `required=True`：`--check-deps` 只需要环境，不需要图像与输出。
     p.add_argument("--images", type=Path, default=None,
                    help="图像目录（按文件名排序）")
-    p.add_argument("--out", type=Path, default=None, help="输出 npz")
+    p.add_argument("--out", type=Path, default=None,
+                   help="输出目录（写 <dir>/render_inputs.npz，与数据集同构）；"
+                        "给 .npz 路径则按该文件名写出")
     p.add_argument("--limit", type=int, default=0,
                    help="最多处理多少帧；0 表示全部")
     p.add_argument("--stride", type=int, default=1, help="抽帧步长")
@@ -224,9 +227,16 @@ def main() -> int:
         print("[error] 没有成功处理任何帧", file=sys.stderr)
         return 1
 
-    args.out.parent.mkdir(parents=True, exist_ok=True)
+    # 与数据集统一：--out 给目录时写 `<dir>/render_inputs.npz`，
+    # 这样该目录就是"可渲染目录"（images/ + render_inputs.npz），
+    # render_test 可以直接拿它渲染，不必再关心文件名。
+    out_path = args.out
+    if out_path.suffix.lower() != ".npz":
+        out_path = out_path / "render_inputs.npz"
+        print(f"输出目录：{args.out}（帧文件 {out_path.name}）")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(
-        args.out,
+        out_path,
         x=np.stack(xs).astype(np.float32),
         verts=np.stack(verts).astype(np.float32),
         identity=(identity if identity is not None
@@ -237,7 +247,9 @@ def main() -> int:
         camera_rot=np.diag([1.0, -1.0, -1.0]).astype(np.float32),
         camera_pos=np.array([0.0, 0.0, args.camera_distance], dtype=np.float32),
     )
-    print(f"\n已写出 {args.out}：x {np.stack(xs).shape}，verts {np.stack(verts).shape}")
+    print(f"\n已写出 {out_path}：x {np.stack(xs).shape}，verts {np.stack(verts).shape}")
+    print(f"渲染检查：python scripts/render_test.py --subject <对象> --work-name <版本> "
+          f"--frames-dir {args.out if out_path.parent == args.out else out_path.parent}")
     return 0
 
 

@@ -32,7 +32,7 @@ if str(REPO_ROOT / "src") not in sys.path:
 
 import numpy as np  # noqa: E402
 
-from live3dgsavatar.config import (Config, load_config, resolve_data_dir,  # noqa: E402
+from live3dgsavatar.config import (Config, load_config,  # noqa: E402
                                    resolve_model_config, resolve_model_ply)
 
 
@@ -40,30 +40,66 @@ from live3dgsavatar.config import (Config, load_config, resolve_data_dir,  # noq
 
 
 def _normalize_argv(argv: list[str]) -> list[str]:
-    """把 `--work_name` 规整成 `--work-name`（两种写法都接受）。"""
-    return [a.replace("_", "-") for a in argv if a.strip()]
+    """把 `--work_name` 这类**选项名**规整成 `--work-name`（两种写法都接受）。
+
+    只改以 `--` 开头的 token。之前对**所有**参数做替换，会把取值也改掉：
+    `--subject crh_1` 变成 `crh-1`、路径里的下划线被改掉 —— 后者只在测试里
+    暴露（真实运行时 `main()` 走的是未规整的分支），很难查。
+    """
+    return [a.replace("_", "-") if a.startswith("--") else a
+            for a in argv if a.strip()]
+
+
+def clean_previous_outputs(out_root: Path, share_dir: Path | None) -> int:
+    """清掉上一次运行留下的图（`images/`、`diff/`）。
+
+    产物目录按"对象/版本/数据集"复用，但**帧数会变**（换 `--frames`、换数据集）。
+    实测踩过一次：先跑 2863 帧中途中断，再跑 212 帧，`images/` 里留下 1025 张
+    新旧混杂的图，统计与肉眼检查都会被污染。
+
+    Returns:
+        删除的文件数
+    """
+    removed = 0
+    for sub in (share_dir, Path(out_root) / "diff"):
+        if sub is None or not Path(sub).is_dir():
+            continue
+        for path in Path(sub).glob("*.png"):
+            path.unlink()
+            removed += 1
+    return removed
+
+
+def _images_have_alpha(directory: Path) -> bool:
+    """抽一张图看是否有 alpha 通道（决定对比时的背景色）。"""
+    from PIL import Image
+
+    for path in sorted(Path(directory).glob("*.png"))[:1]:
+        with Image.open(path) as im:
+            return im.mode in ("RGBA", "LA") or "transparency" in im.info
+    return False
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="渲染测试（本项目 core vs 数据集原图）")
-    p.add_argument("--subject", default=None, help="覆盖配置里的 subject")
-    p.add_argument("--work-name", default=None, help="覆盖配置里的 work_name")
+    p.add_argument("--subject", default=None, help="模型所属对象（models/<对象>/...）")
+    p.add_argument("--work-name", default=None, help="模型版本名（models/<对象>/<版本>/）")
+    p.add_argument("--dataset", default=None,
+                   help="用哪个数据集评测（datasets/<名字>，必须是标准数据集；"
+                        "默认取 --subject 同名数据集）")
     p.add_argument("--frames", type=int, default=None, help="帧数；-1 表示全部")
     # `default=None`：脚本不硬编码业务默认量，未给时在 `_finalize` 里取 0
     p.add_argument("--frame-offset", type=int, default=None,
                    help="从第几帧开始取（配合 --frames 可只评估留出的尾段）")
     p.add_argument("--batch-size", type=int, default=None, help="批大小")
-    p.add_argument("--ply", type=Path, default=None,
-                   help="直接指定模型文件（默认取模型目录下的 model.ply）")
-    p.add_argument("--data", type=Path, default=None, help="数据集目录（覆盖配置）")
-    p.add_argument("--cap4d", type=Path, default=None,
-                   help="CAP4D 的输出目录（含 generated_images/）；"
-                        "给了它就渲染这些生成图并与它们对比")
-    p.add_argument("--output-dir", type=Path, default=None, help="产物目录")
+    p.add_argument("--output-dir", type=Path, default=None,
+                   help="产物根目录（默认 output/render_test/<对象>/<版本>/<数据集>）")
     p.add_argument("--no-save", action="store_true",
                    help="不落盘、不拷贝到主机（干净测量渲染耗时）")
     p.add_argument("--dump-diff", action="store_true",
                    help="输出对比图（默认开）")
+    p.add_argument("--profile", action="store_true",
+                   help="额外输出 deform / 光栅化分阶段耗时（诊断用）")
     p.add_argument("--no-diff", action="store_true",
                    help="不输出对比图（只出 images 与 report）")
     p.add_argument("--background", type=float, nargs=3, default=None,
@@ -75,7 +111,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--no-weight-proj", action="store_true")
     p.add_argument("--dry-run", action="store_true",
                    help="无需 GPU：用真实模型 + 合成帧验证形状与约定")
-    return p.parse_args(_normalize_argv(argv) if argv is not None else None)
+    import sys as _sys
+
+    raw = list(_sys.argv[1:] if argv is None else argv)
+    return p.parse_args(_normalize_argv(raw))
 
 
 def _validate(args: argparse.Namespace) -> None:
@@ -100,38 +139,36 @@ def _finalize(args: argparse.Namespace, cfg: Config) -> argparse.Namespace:
         cfg.set("subject", args.subject)
     if args.work_name is not None:
         cfg.set("work_name", args.work_name)
-    if args.data is not None:
-        cfg.set("paths.data_root", args.data.parent)
-        cfg.set("subject", args.data.name)
-    # `--ply` 是"用户直接指的文件"，按当前工作目录解析；不能塞进
-    # `paths.model_ply`（那里是**相对模型目录的文件名**），否则会被拼成
-    # `models/.../models/...` 这种路径
-    explicit_ply = None
-    if args.ply is not None:
-        explicit_ply = Path(args.ply).expanduser()
-        if not explicit_ply.is_file():
-            raise SystemExit(f"[error] --ply 不存在：{explicit_ply}")
-
     if not (str(cfg.get("subject") or "").strip()
             and str(cfg.get("work_name") or "").strip()):
         raise SystemExit(
             "[error] 需要指定模型：--subject 与 --work-name\n"
-            "        默认配置不再写死对象名，所以必须显式给出。")
+            "        例如 --subject crh_1 --work-name run")
     args.subject = str(cfg.get("subject"))
     args.work_name = str(cfg.get("work_name"))
-    args.data = resolve_data_dir(cfg)
-    args.ply = (explicit_ply.resolve() if explicit_ply is not None
-                else resolve_model_ply(cfg))
-    args.model_config = resolve_model_config(cfg)
+
+    # 数据集：必须是标准数据集（datasets/<名字>，含 images/ + render_inputs.npz）。
+    # 不允许直接指任意目录 —— 数据集的构建走 build_dataset.sh，渠道唯一。
+    from live3dgsavatar.data.datasets import resolve_dataset_dir
+
+    args.dataset = str(args.dataset or args.subject)
+    # ⚠️ 不能改 cfg 的 subject：模型路径是按 subject 拼的，
+    # 改了就会去找 `models/<数据集>/<版本>/model.ply`（渲染别的数据集时必错）
+    try:
+        args.data = resolve_dataset_dir(cfg, args.dataset)
+        args.ply = resolve_model_ply(cfg)
+        args.model_config = resolve_model_config(cfg)
+    except (FileNotFoundError, ValueError) as e:
+        # 模型/数据集缺一不可，错误要能直接指出该补哪个
+        raise SystemExit(f"[error] {e}") from None
     args.gt_dir = args.data / str(cfg.get("paths.image_subdir", "images"))
-    # 对比图默认输出；配置里可整体关掉，命令行 --no-diff 优先
     args.dump_diff = not args.no_diff and (
         args.dump_diff or bool(cfg.get("test.dump_diff", True)))
 
-    # 默认按 "<对象>/<版本>" 分目录：否则不同模型的对比图会互相覆盖。
+    # 三层目录：<对象>/<版本>/<数据集>；内部统一 report.json + images/ + diff/
     out_root = Path(args.output_dir) if args.output_dir else (
         Path(str(cfg.get("paths.output_dir", "output"))) / "render_test"
-        / str(cfg.get("subject")) / str(cfg.get("work_name") or "default"))
+        / args.subject / args.work_name / args.dataset)
     args.output_dir = out_root
 
     args.frames = int(cfg.get("render.frames", 20) if args.frames is None else args.frames)
@@ -147,6 +184,7 @@ def _finalize(args: argparse.Namespace, cfg: Config) -> argparse.Namespace:
         args.mlp_hidden = list(cfg.get("model.network.mlp_hidden") or [])
     args.use_weight_proj = (not args.no_weight_proj) and bool(
         cfg.get("model.network.use_weight_proj", True))
+    args._explicit_background = args.background is not None
     if args.background is None:
         args.background = [float(x) for x in cfg.get("render.background", [0, 0, 0])]
     return args
@@ -209,6 +247,8 @@ def render_core(args, scene, frames: list[int], out_dir: Path,
     bg = torch.tensor(args.background, dtype=torch.float32, device="cuda")
     rasterizer = SimpleRasterizer()
 
+    stages: dict[str, list[float]] = {"deform": [], "rasterize": []}
+
     def run_batch(idx: list[int]):
         mesh = Mesh(verts=scene.frames_tensor(idx, device="cuda"),
                     faces=scene.faces, uvs=scene.uvs, uv_faces=scene.uv_faces)
@@ -216,8 +256,21 @@ def render_core(args, scene, frames: list[int], out_dir: Path,
         K = scene.intrinsics(idx, device="cuda")
         camera = Camera(K=K, w2c=w2c.expand(len(idx), 4, 4).contiguous(),
                         width=scene.width, height=scene.height).to("cuda")
+        weight = scene.weights_tensor(idx, device="cuda")
         with torch.no_grad():
-            gs = avatar.deform(mesh, scene.weights_tensor(idx, device="cuda"))
+            if args.profile:
+                torch.cuda.synchronize()
+                t0 = time.perf_counter()
+                gs = avatar.deform(mesh, weight)
+                torch.cuda.synchronize()
+                t1 = time.perf_counter()
+                out = rasterizer.render(gs, camera, bg)
+                torch.cuda.synchronize()
+                t2 = time.perf_counter()
+                stages["deform"].append((t1 - t0) * 1000.0 / len(idx))
+                stages["rasterize"].append((t2 - t1) * 1000.0 / len(idx))
+                return out
+            gs = avatar.deform(mesh, weight)
             return rasterizer.render(gs, camera, bg)
 
     run_batch(frames[:1])                       # 预热
@@ -228,7 +281,13 @@ def render_core(args, scene, frames: list[int], out_dir: Path,
 
     images: dict[int, np.ndarray] = {}
     per_frame_ms: list[float] = []
+    total_frames = len(frames)
+    # 进度：不打印的话，几百帧的渲染在终端里看起来就是"卡住"。
+    # 每 10% 打一次，且随总帧数自适应（少帧时每帧都打太吵）。
+    step = max(1, total_frames // 10)
     for start in range(0, len(frames), args.batch_size):
+        if start % step == 0:
+            print(f"  [render] {start}/{total_frames}", flush=True)
         chunk = frames[start:start + args.batch_size]
         torch.cuda.synchronize()
         t0 = time.perf_counter()
@@ -248,7 +307,8 @@ def render_core(args, scene, frames: list[int], out_dir: Path,
             images[i] = arr[j]
             Image.fromarray(arr[j]).save(share_dir / f"{i:05d}.png")
 
-    return images, {
+    print(f"  [render] {total_frames}/{total_frames} 完成", flush=True)
+    perf = {
         "mean_ms_per_frame": float(np.mean(per_frame_ms)),
         "median_ms_per_frame": float(np.median(per_frame_ms)),
         "fps": 1000.0 / float(np.mean(per_frame_ms)),
@@ -256,6 +316,9 @@ def render_core(args, scene, frames: list[int], out_dir: Path,
         "batch_size": args.batch_size,
         "num_gaussian": int(avatar.num_gaussians),
     }
+    if args.profile:
+        perf["stages_ms"] = {k: float(np.mean(v)) for k, v in stages.items() if v}
+    return images, perf
 
 
 def load_gt(args, frames: list[int], offset: int = 0):
@@ -300,7 +363,9 @@ def main() -> int:
     print(f"渲染测试 —— {args.subject}/{args.work_name}")
     print(f"  model = {args.ply}")
     print(f"  data  = {args.data}")
-    print(f"  配置  : {args.frames} 帧（起始 {args.frame_offset}）, "
+    print(f"  数据集: {args.dataset}")
+    frames_text = "全部" if args.frames < 0 else f"{args.frames} 帧"
+    print(f"  配置  : {frames_text}（起始 {args.frame_offset}）, "
           f"batch={args.batch_size}, {args.tex_size} tex, "
           f"D={args.num_basis_in}, K={args.num_basis_blend}")
     print(f"  产物  : {args.output_dir}")
@@ -316,52 +381,44 @@ def main() -> int:
 
     from live3dgsavatar.data.scene import load_scene
 
-    scene = load_scene(cfg, frames=args.frames, frame_offset=args.frame_offset)
+    # ⚠️ 必须显式传 `data_dir`：`--dataset` 选的数据集与模型所属对象的
+    # subject 不一定同名，而 `load_scene(cfg)` 只按 cfg 的 subject 找数据集 ——
+    # 漏了这个参数就会"显示 crh_1_cap4d，实际渲染 crh_1"（2863 帧）。
+    scene = load_scene(cfg, frames=args.frames,
+                       frame_offset=args.frame_offset, data_dir=args.data)
     total = scene.total_frames
     n = scene.num_frames
+    print(f"  数据集: 载入 {n} / 共 {total} 帧（起始 {args.frame_offset}）", flush=True)
 
-    if args.cap4d is not None:
-        # 用 **RDF 拟合生成图** 的结果：网格与相机天然自洽，不需要任何换算。
-        # RDF 的虚拟相机（fov 30°、(0,0,1)、diag(1,-1,-1)）与本数据集相机一致，
-        # 所以这里直接沿用 scene 的 K/R/T。
-        from live3dgsavatar.data.cap4d import images_dir, load_rdf_dump, to_frames
-
-        assets = Path(args.cap4d)
-        dump_path = assets / "cap4d_rdf.npz"
-        if not dump_path.is_file():
-            raise SystemExit(
-                f"[error] 找不到 {dump_path}\n"
-                "        先在 realdenseface 环境里让 RDF 拟合这些图：\n"
-                f"        python scripts/rdf_dump.py --images {images_dir(assets)} "
-                f"--out {dump_path}")
-        dump = load_rdf_dump(dump_path)
-        scene.frames = to_frames(dump, Path(str(cfg.get("paths.flame_dir"))))
-        scene.dataset_frames = len(scene.frames)
-        n = len(scene.frames)
-        # 生成图是白底，对比时背景也用白（否则 PSNR 全被背景吃掉）
-        if args.background is None:
-            args.background = [1.0, 1.0, 1.0]
-        args.gt_dir = images_dir(assets)
-        print(f"  CAP4D: {n} 帧（{dump_path}）")
-    print(f"  数据集: 载入 {n} / 共 {total} 帧")
+    # 背景按图像本身判定：带 alpha 的是实拍（用配置的黑底），
+    # 纯 RGB 的多为白底合成图（用白底，否则 PSNR 全被背景吃掉）。
+    if not args._explicit_background and not _images_have_alpha(args.gt_dir):
+        args.background = [1.0, 1.0, 1.0]
 
     out_root = args.output_dir
     out_root.mkdir(parents=True, exist_ok=True)
     share_dir = None if args.no_save else out_root / "images"
     if share_dir is not None:
         share_dir.mkdir(parents=True, exist_ok=True)
+    stale = clean_previous_outputs(out_root, share_dir)
+    if stale:
+        print(f"  清理旧产物：{stale} 张（images/ 与 diff/ 会重新生成）",
+              flush=True)
 
     images, perf = render_core(args, scene, list(range(n)), out_root, share_dir)
 
     report: dict = {"subject": args.subject, "work_name": args.work_name,
-                    "model_path": str(args.ply),
+                    "dataset": args.dataset, "model_path": str(args.ply),
                     "num_frames": n, "dataset_frames": total,
                     "width": scene.width, "height": scene.height, "perf": perf}
 
+    print(f"  读取原图：{n} 张（解码 512² PNG，约 {n * 14 / 1000:.0f} s）…",
+          flush=True)
     gt = load_gt(args, list(range(n)), offset=args.frame_offset)
     if gt is None:
         print("      [warn] 找不到数据集原图，跳过质量对比")
     else:
+        print(f"  原图就绪：{len(gt)} 张", flush=True)
         full, masked, mad = Accum(), Accum(), Accum()
         for i, img in images.items():
             if i not in gt:
@@ -377,6 +434,7 @@ def main() -> int:
     # 原图 | 渲染结果（每格带 PSNR 标签）—— 一眼能看出差在哪一帧
     if args.dump_diff and not args.no_save and gt and images:
         diff_dir = out_root / "diff"
+        print(f"  写对比图：{len(gt)} 张 …", flush=True)
         written = 0
         for i in sorted(gt):
             ref_rgb, ref_mask = gt[i]
@@ -397,7 +455,12 @@ def main() -> int:
     report_path.write_text(json.dumps(report, indent=2, ensure_ascii=False),
                            encoding="utf-8")
     _print_summary(report)
-    print(f"\n  报告：{report_path}")
+    print(f"\n  产物：{out_root}")
+    print(f"    report.json  指标")
+    if not args.no_save:
+        print(f"    images/      渲染图（{n} 张）")
+        if args.dump_diff and gt:
+            print(f"    diff/        对比图（原图 | 渲染）")
     return 0
 
 
@@ -433,6 +496,11 @@ def _print_summary(report: dict) -> None:
     print(f"  {'峰值显存 (MiB)':28s} {p['peak_memory_mib']:.0f}")
     print(f"  {'批大小':28s} {p['batch_size']}")
     print(f"  {'高斯数':28s} {p['num_gaussian']}")
+    stages = p.get("stages_ms")
+    if stages:
+        print("  [分阶段] ms/帧")
+        for key, value in stages.items():
+            print(f"    {key:26s} {value:.2f}")
     print()
 
 

@@ -159,6 +159,23 @@ class ManifestSource:
             return list(range(n - k, n))
         return list(range(n))
 
+    @property
+    def has_image_cache(self) -> bool:
+        """是否存在 `images.npy` 缓存（有则跳过 PNG 解码）。"""
+        return self._memmap is not None
+
+    def _read_array(self, i: int) -> np.ndarray:
+        """取第 i 帧的原始像素（HWC uint8）。有缓存走 memmap，否则解 PNG。"""
+        if self._memmap is not None:
+            return np.asarray(self._memmap[i])
+        from PIL import Image
+
+        name = self._names[i]
+        path = self.root / "images" / f"{name}.png"
+        if not path.is_file():
+            path = self.root / "images" / name
+        return np.array(Image.open(path))
+
     def _load_image(self, i: int) -> tuple[torch.Tensor, torch.Tensor]:
         """读第 i 帧并合成背景。返回 `(rgb [3,H,W], mask [1,H,W])`。"""
         cached = self._cache.get(i)

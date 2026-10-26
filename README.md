@@ -18,6 +18,19 @@ bash run_gui.sh            # 启动服务，浏览器打开 http://localhost:800
 > 用 `localhost` 或 `127.0.0.1` 都可以。
 > 只想看界面、不连后端：`cd web && python3 -m http.server 8912`（本地预览画面）。
 
+## 构建数据集
+
+```bash
+./build_dataset.sh <图像目录> --name crh_3     # 新数据集 → datasets/crh_3/
+./build_dataset.sh <图像目录> --into crh_1     # 作为 crh_1 的增强集
+```
+
+脚本会按需运行 RDF 跟踪（`realdenseface` 环境），再整理成标准数据集
+（`images/` + `render_inputs.npz`）。已有跟踪结果的目录会跳过 RDF。
+结构与约定见 [`docs/CONVENTIONS.md`](docs/CONVENTIONS.md) §6。
+
+> 视频入口已预留（`--video`），当前会提示先用 ffmpeg 抽帧。
+
 ## 实时驱动（可选）
 
 实时驱动需要一个**追踪服务**进程（跑在独立环境里，与本项目不共享 Python）：

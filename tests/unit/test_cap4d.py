@@ -26,7 +26,7 @@ FLAME_DIR = REPO_ROOT / "data" / "FLAME2020"
 
 
 def _dump(tmp_path: Path, n: int = 2, verts: int = 5023) -> Path:
-    p = tmp_path / "cap4d_rdf.npz"
+    p = tmp_path / "rdf.npz"
     np.savez(p,
              x=np.zeros((n, 118), np.float32),
              verts=np.zeros((n, verts, 3), np.float32),

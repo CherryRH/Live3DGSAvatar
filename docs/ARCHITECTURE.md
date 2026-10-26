@@ -202,7 +202,7 @@ Live3DGSAvatar/
 │   ├── render_test.py           # 渲染测试：core vs 数据集原图（质量 + 性能）
 │   ├── train.py                 # 训练入口（参数计划 + 损失 + 钩子 + 落地）
 │   ├── cache_images.py          # 图像打包成 images.npy（训练直读，跳过解码）
-│   ├── build_augmented.py       # 增强图 + RDF 结果 → 训练可用的数据分片
+│   ├── build_dataset.py         # RDF 结果 → 标准数据集 / 增强集
 │   ├── online_update.py         # 在线更新（闭式颜色校正 + 梯度微调）
 │   ├── rdf_bridge.py            # 追踪服务（realdenseface 环境，画面进参数出）
 │   ├── rdf_dump.py              # 离线导出 RDF 结果（标定/回归对照）

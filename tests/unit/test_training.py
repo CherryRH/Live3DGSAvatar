@@ -602,3 +602,78 @@ def test_objective_rejects_bad_sample_weight_length() -> None:
         Objective(l1=1.0)(pred=pred, target=pred.clone(),
                           mask=torch.ones(2, 1, 4, 4, dtype=torch.bool),
                           sample_weight=torch.tensor([1.0]))
+
+
+# ----------------------------------------------------- 数据源基本可用性 --
+# 这段曾经因为一次大范围编辑被整段删掉（`_read_array` / `has_image_cache`
+# 丢失），而当时的测试只覆盖"切分下标"，没有真正读一张图 —— 于是这类
+# 删漏一直没被发现。这里用小数据集把读图路径完整走一遍。
+
+
+def _make_dataset(root: Path, n: int = 6, size: int = 8) -> Path:
+    import numpy as np
+    from PIL import Image
+
+    (root / "images").mkdir(parents=True)
+    np.savez(root / "render_inputs.npz",
+             mesh=np.zeros((n, 12, 3), np.float32),
+             blend_weight=np.zeros((n, 129), np.float32),
+             K=np.eye(3), w2v=np.eye(4),
+             width=np.int64(size), height=np.int64(size),
+             names=np.array([f"{i:05d}" for i in range(n)]))
+    for i in range(n):
+        rgba = np.zeros((size, size, 4), np.uint8)
+        rgba[..., 0] = 100 + i          # 每帧不同的红
+        rgba[..., 3] = 255
+        Image.fromarray(rgba).save(root / "images" / f"{i:05d}.png")
+    return root
+
+
+def test_manifest_source_reads_images_and_masks(tmp_path) -> None:
+    from live3dgsavatar.data.sources import ManifestSource
+
+    root = _make_dataset(tmp_path / "ds")
+    src = ManifestSource(root, device="cpu")
+    sample = src.sample(2)
+
+    assert tuple(sample.image.shape) == (3, 8, 8)
+    assert tuple(sample.mask.shape) == (1, 8, 8)
+    assert bool(sample.mask.all()), "全不透明图应当整幅都是前景"
+    # 读到的是第 2 帧（R=102）
+    assert abs(float(sample.image[0].mean()) - 102 / 255.0) < 1e-6
+
+
+def test_manifest_source_reports_no_image_cache_by_default(tmp_path) -> None:
+    from live3dgsavatar.data.sources import ManifestSource
+
+    src = ManifestSource(_make_dataset(tmp_path / "ds"), device="cpu")
+    assert src.has_image_cache is False
+
+
+def test_manifest_source_uses_images_npy_cache(tmp_path) -> None:
+    """有 `images.npy` 时走 memmap，不再解 PNG。"""
+    import numpy as np
+
+    from live3dgsavatar.data.sources import ManifestSource
+
+    root = _make_dataset(tmp_path / "ds", n=4)
+    cache = np.zeros((4, 8, 8, 4), np.uint8)
+    cache[..., 2] = 200                    # 蓝通道标记：证明读的是缓存
+    cache[..., 3] = 255
+    np.save(root / "images.npy", cache)
+
+    src = ManifestSource(root, device="cpu")
+    assert src.has_image_cache is True
+    assert abs(float(src.sample(0).image[2].mean()) - 200 / 255.0) < 1e-6
+
+
+def test_manifest_source_batches_and_iterates(tmp_path) -> None:
+    from live3dgsavatar.data.sources import ManifestSource
+
+    # split="all"：默认切分会把末尾 10% 留给验证集，这里要 5 帧全部
+    src = ManifestSource(_make_dataset(tmp_path / "ds", n=5), split="all",
+                         device="cpu")
+    batch = src.random_batch(3)
+    assert batch.image.shape[0] == 3 and batch.mesh.shape[0] == 3
+    chunks = list(src.iter_batches(2))
+    assert [c.image.shape[0] for c in chunks] == [2, 2, 1]

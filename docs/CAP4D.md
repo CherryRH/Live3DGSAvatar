@@ -208,20 +208,25 @@ sampler 里 `R = min(n_ref, R_max)`，且 `e_t = model_output[:, R:]` 按 R 切�
 用途：不训练，先看**现有 crh_1 模型**能不能重现这些生成视角。
 它直接决定要不要投入微调。
 
-### 做法：让 RDF 拟合生成图
+### 做法：先建成数据集，再评测
+
+生成图 + RDF 跟踪结果就是一份标准数据集（`docs/CONVENTIONS.md` §6），所以先用
+构建脚本把它落到 `datasets/` 下，再用渲染测试评测：
 
 ```bash
-# ① realdenseface 环境：RDF 拟合每张生成图 → x + 5023 顶点
-conda activate realdenseface
-python scripts/rdf_dump.py \
-    --images ~/output/crh_1_200/generated_images/images \
-    --out ~/output/crh_1_200/cap4d_rdf.npz
+# ① 建数据集（目录里已有跟踪结果时会跳过 RDF）
+./build_dataset.sh ~/Projects/cap4d/output/crh_1_200/generated_images \
+    --name crh_1_cap4d
 
-# ② live3dgs 环境：补牙 + 映射 129 维 + 用数据集相机渲染对比
-conda activate live3dgs
-python scripts/render_test.py --subject <对象> --work-name <版本> \
-    --cap4d ~/output/crh_1_200 --dump-diff
+# ② 用任意模型渲染这份数据集
+python scripts/render_test.py --subject crh_1 --work-name run \
+    --dataset crh_1_cap4d --frames 20
 ```
+
+产物在 `output/render_test/<对象>/<版本>/crh_1_cap4d/`（report / images / diff）。
+
+> 结果里 PSNR 低不等于模型差：生成图与实拍之间存在涂抹与光照差异，
+> 这项诊断看的是"能不能对上位置/形状"，不是画质。
 
 ### 为什么不是"读 CAP4D 的参数自己算网格"
 

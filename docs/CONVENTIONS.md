@@ -220,9 +220,63 @@ rot_world  = q(R) ⊗ rot_tangent            # 四元数左乘，WXYZ
 > 回归测试：`test_scene_tensors_share_one_device`、
 > `test_flame_topology_is_device_independent`。
 
-## 6. 数值精度与容差
+## 6. 数据目录约定
 
-### 6.1 验收门
+**任何"可渲染目录"都是同一套结构**：
+
+```
+<目录>/
+├── images/             图像（文件名按字典序对应帧号）
+└── render_inputs.npz   帧数据
+```
+
+`render_inputs.npz` 的**内容**有两种 schema，读取时按键自动判别
+（`data/cap4d.py::frames_schema`）：
+
+| schema | 必需键 | 来源 | 是否需转换 |
+|---|---|---|---|
+| `baked` | `mesh (N,V,3)`、`blend_weight (N,D)` | 数据集、增强集 | 否，直接渲染 |
+| `rdf` | `x (N,118)`、`verts (N,5023,3)` | `rdf_dump.py`（CAP4D 生成图等）| 补牙 + 映射为 129 维 |
+
+同一约定适用于：`datasets/<对象>/`、`datasets/<对象>/augmented/`、
+CAP4D 输出目录（`<任务>/generated_images/`）。
+
+旧文件名（`rdf.npz`、`cap4d_rdf.npz`）仍可读，但会打警告提示改名。
+
+### 构建数据集
+
+**唯一入口**是根目录的 `build_dataset.sh`：它按需跑 RDF 跟踪，再整理成上面的结构。
+
+```bash
+./build_dataset.sh <图像目录> --name crh_3     # 新数据集 → datasets/crh_3/
+./build_dataset.sh <图像目录> --into crh_1     # 增强集 → datasets/crh_1/augmented/
+```
+
+目录里若已有 `render_inputs.npz`（例如 CAP4D 生成图已跟踪过），会跳过 RDF。
+
+图像一律命名为 `00000.png …`（5 位、从 0 连续），与 `render_inputs.npz`
+的行序严格对应；构建脚本会重命名并校验。
+
+### 评测产物
+
+`render_test.py` 只接受**模型 + 数据集**两个输入，产物固定为三层：
+
+```
+output/render_test/<对象>/<版本>/<数据集>/
+├── report.json     指标
+├── images/         渲染图
+└── diff/           对比图（原图 | 渲染）
+```
+
+帧数较多时整轮要几十秒（渲染 ~0.1 s/帧、对比图 ~0.08 s/帧），过程会打印
+`[render] 40/212` 这样的进度；只想要指标可加 `--no-diff`，只测速度可加
+`--no-save`。
+
+---
+
+## 7. 数值精度与容差
+
+### 7.1 验收门
 
 数值容差的取值依据：
 
@@ -233,7 +287,7 @@ rot_world  = q(R) ⊗ rot_tangent            # 四元数左乘，WXYZ
 
 渲染图放宽到 1e-3 是因为光栅化在 tile 内的累加顺序在浮点下不严格可复现。
 
-### 6.2 已知的非确定性来源
+### 7.2 已知的非确定性来源
 
 | 来源 | 影响 | 处置 |
 |---|---|---|

@@ -1,4 +1,15 @@
-"""在 CAP4D 生成的图上跑我们自己的链路（**让 RDF 拟合图，而不是自己算网格**）。
+"""可渲染目录的读取：`images/` + `render_inputs.npz`。
+
+数据集、增强集、CAP4D 生成图用**同一套目录约定**，npz 内容按键判别：
+
+- `mesh` + `blend_weight`：已烘焙，可直接渲染
+- `x` + `verts`：RDF 跟踪结果（5023 顶点、118 维），需补牙与映射
+
+下面保留了最初针对 CAP4D 生成图的说明（为什么让 RDF 拟合，而不是自己算网格）。
+
+---
+
+在 CAP4D 生成的图上跑我们自己的链路（**让 RDF 拟合图，而不是自己算网格**）。
 
 ## 为什么不用 CAP4D 的 `flame/*.npz` + 自己的相机换算
 
@@ -30,6 +41,12 @@ from pathlib import Path
 
 import numpy as np
 import torch
+
+#: 可渲染目录里的帧文件（与数据集同名）
+FRAMES_FILE = "render_inputs.npz"
+
+#: 旧命名，仍可读但会提示改名
+LEGACY_FRAMES_FILES = ("rdf.npz", "cap4d_rdf.npz")
 
 #: RDF 的原生顶点数（补牙前的网格）
 RDF_VERTS = 5023
@@ -85,10 +102,66 @@ def to_frames(dump: dict, flame_dir: Path, device: str | torch.device = "cpu"):
     return frames
 
 
+def find_frames_file(directory: Path) -> Path:
+    """在目录里找帧文件：优先 `render_inputs.npz`，其次旧命名。
+
+    Raises:
+        FileNotFoundError: 都不存在，报错里写明该目录应有的结构
+    """
+    directory = Path(directory)
+    canonical = directory / FRAMES_FILE
+    if canonical.is_file():
+        return canonical
+    for name in LEGACY_FRAMES_FILES:
+        legacy = directory / name
+        if legacy.is_file():
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "%s 使用旧文件名 %s；建议改名为 %s",
+                directory, name, FRAMES_FILE)
+            return legacy
+    raise FileNotFoundError(
+        f"{directory} 里没有 {FRAMES_FILE}。可渲染目录的约定是：\n"
+        f"  {directory}/images/        图像\n"
+        f"  {directory}/{FRAMES_FILE}   帧数据（mesh 或 RDF 的 x/verts）")
+
+
+def frames_schema(path: Path) -> str:
+    """判别 npz 内容：``"baked"``（mesh/blend_weight）或 ``"rdf"``（x/verts）。"""
+    with np.load(Path(path), allow_pickle=True) as d:
+        keys = set(d.files)
+    if {"mesh", "blend_weight"} <= keys:
+        return "baked"
+    if {"x", "verts"} <= keys:
+        return "rdf"
+    raise ValueError(
+        f"{path} 既不是烘焙格式（mesh/blend_weight）也不是 RDF 格式（x/verts）；"
+        f"实际字段 {sorted(keys)}")
+
+
+def load_frames_dir(directory: Path, flame_dir: Path,
+                    device: str | torch.device = "cpu") -> list[dict]:
+    """读一个可渲染目录，返回渲染要的 `frames`。"""
+    path = find_frames_file(directory)
+    if frames_schema(path) == "rdf":
+        return to_frames(load_rdf_dump(path), Path(flame_dir), device=device)
+
+    with np.load(path, allow_pickle=True) as d:
+        mesh = np.asarray(d["mesh"], dtype=np.float32)
+        weight = np.asarray(d["blend_weight"], dtype=np.float32)
+        names = ([str(n) for n in d["names"]] if "names" in d.files
+                 else [f"{i:05d}" for i in range(mesh.shape[0])])
+    return [{"mesh": torch.as_tensor(mesh[i], device=device),
+             "blend_weight": torch.as_tensor(weight[i], device=device),
+             "name": names[i]} for i in range(mesh.shape[0])]
+
+
 def images_dir(cap4d_dir: Path) -> Path:
-    """CAP4D 生成图所在目录（兼容给到 `generated_images` 这一层）。"""
+    """帧目录里的 `images/`：给定目录本身，或它的 `generated_images/` 子目录。"""
     cap4d_dir = Path(cap4d_dir)
-    for cand in (cap4d_dir / "generated_images", cap4d_dir):
+    for cand in (cap4d_dir, cap4d_dir / "generated_images"):
         if (cand / "images").is_dir():
             return cand / "images"
-    raise FileNotFoundError(f"{cap4d_dir} 下找不到 generated_images/images")
+    raise FileNotFoundError(
+        f"{cap4d_dir} 下找不到 images/（可直接给 generated_images 目录）")
