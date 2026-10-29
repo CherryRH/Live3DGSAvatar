@@ -248,3 +248,31 @@ def test_build_dataset_renames_images_to_five_digits(tmp_path) -> None:
         "00000.png", "00001.png"]
     with np.load(out / "render_inputs.npz", allow_pickle=True) as d:
         assert list(d["names"]) == ["00000", "00001"]
+
+
+# ------------------------------------------------- SyncFix 输入的准备工作 --
+
+
+def test_rotation_y_is_proper_rotation() -> None:
+    """新视角靠绕 y 轴转相机实现，必须是正交、行列式为 1 的旋转。"""
+    import torch
+
+    m = load_script("make_syncfix_inputs.py")
+    R = m.rotation_y(30.0)
+    assert R.shape == (4, 4)
+    assert torch.allclose(R[:3, :3] @ R[:3, :3].T, torch.eye(3), atol=1e-6)
+    assert abs(float(torch.det(R[:3, :3])) - 1.0) < 1e-6
+    assert torch.allclose(m.rotation_y(0.0), torch.eye(4))
+    # 不改变相机中心到原点的距离（只是绕头转）
+    assert torch.allclose(R[:3, 3], torch.zeros(3))
+
+
+def test_to_uint8_range_and_shape() -> None:
+    import torch
+
+    m = load_script("make_syncfix_inputs.py")
+    x = torch.zeros(1, 3, 4, 5)
+    x[0, 0] = 1.0
+    img = m.to_uint8(x)
+    assert img.shape == (4, 5, 3) and img.dtype.name == "uint8"
+    assert img[..., 0].max() == 255 and img[..., 1].max() == 0
