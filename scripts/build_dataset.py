@@ -95,8 +95,8 @@ def build(*, source: Path, out_dir: Path, flame_dir: Path,
     import numpy as np
     from PIL import Image
 
-    from live3dgsavatar.data.cap4d import (find_frames_file, frames_schema,
-                                           load_frames_dir)
+    from live3dgsavatar.data.tracked import (find_frames_file, frames_schema,
+                                            load_frames_dir)
 
     source = Path(source)
     if (out_dir / "render_inputs.npz").exists() and not force:
@@ -132,7 +132,7 @@ def build(*, source: Path, out_dir: Path, flame_dir: Path,
         print(f"相机：由 RDF 虚拟相机推出（{width}x{height}）")
 
     # 图像一律重命名为 `00000.png …`：帧序与 npz 的行序严格一致，
-    # 不依赖来源目录的命名（CAP4D 是 00000.png，视频抽帧可能是 1.png）。
+    # 不依赖来源目录的命名（可能是 00000.png，也可能是 1.png）。
     images_out = out_dir / "images"
     images_out.mkdir(parents=True, exist_ok=True)
     names: list[str] = []

@@ -12,7 +12,7 @@
 #   ./build_dataset.sh --video <视频文件> --name crh_4        # 预留（暂未实现）
 #
 # 已经跟踪过的目录（含 images/ 与 render_inputs.npz）会跳过 RDF，直接整理：
-#   ./build_dataset.sh ~/Projects/cap4d/output/crh_1_200/generated_images --name crh_1_cap4d
+#   ./build_dataset.sh <已跟踪的目录> --name <数据集名>
 #
 # 环境变量：
 #   RDF_ENV     跑 RDF 的 conda 环境（默认 realdenseface）
@@ -81,7 +81,7 @@ else
 fi
 
 # ------------------------------------------------------------- RDF 跟踪 --
-if [[ -f "$SOURCE/render_inputs.npz" || -f "$SOURCE/rdf.npz" || -f "$SOURCE/cap4d_rdf.npz" ]]; then
+if [[ -f "$SOURCE/render_inputs.npz" || -f "$SOURCE/rdf.npz" ]]; then
   info "已有跟踪结果，跳过 RDF"
 else
   info "运行 RDF 跟踪（环境：$RDF_ENV）"

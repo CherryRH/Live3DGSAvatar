@@ -116,7 +116,6 @@ def test_no_arbitrary_directory_option() -> None:
     """
     src = SCRIPT.read_text(encoding="utf-8")
     assert "--frames-dir" not in src
-    assert "--cap4d" not in src
     assert 'add_argument("--data"' not in src
 
 
@@ -132,7 +131,7 @@ def test_output_dir_has_three_levels() -> None:
 def test_scene_is_loaded_from_selected_dataset() -> None:
     """`--dataset` 选的数据集与模型 subject 可以不同名，场景必须按它加载。
 
-    真实故障：日志显示 `data = datasets/crh_1_cap4d`（212 帧），
+    真实故障：日志显示的数据集是 A（212 帧），
     却渲染了 2863 帧 —— `load_scene(cfg)` 只按 cfg 的 subject 找数据集，
     于是读成了 crh_1。
     """

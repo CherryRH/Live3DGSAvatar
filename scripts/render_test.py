@@ -252,7 +252,7 @@ def render_core(args, scene, frames: list[int], out_dir: Path,
     def run_batch(idx: list[int]):
         mesh = Mesh(verts=scene.frames_tensor(idx, device="cuda"),
                     faces=scene.faces, uvs=scene.uvs, uv_faces=scene.uv_faces)
-        # 逐帧内参（CAP4D 每帧裁剪框不同）；数据集走广播
+        # 逐帧内参（每帧裁剪框可能不同）；数据集的各帧共用一份，走广播
         K = scene.intrinsics(idx, device="cuda")
         camera = Camera(K=K, w2c=w2c.expand(len(idx), 4, 4).contiguous(),
                         width=scene.width, height=scene.height).to("cuda")
@@ -344,7 +344,7 @@ def load_gt(args, frames: list[int], offset: int = 0):
         if arr.shape[2] == 4:
             out[i] = (arr[..., :3], arr[..., 3] > 250)   # alpha 即 mask
         else:
-            # 白底图（CAP4D）没有 alpha：把"接近纯白"的像素当背景。
+            # 白底图没有 alpha：把"接近纯白"的像素当背景。
             # 这不是完美的抠图，但足以把 PSNR 限制在前景区域。
             fg = arr[..., :3].min(axis=-1) < 250
             out[i] = (arr[..., :3], fg)
@@ -383,7 +383,7 @@ def main() -> int:
 
     # ⚠️ 必须显式传 `data_dir`：`--dataset` 选的数据集与模型所属对象的
     # subject 不一定同名，而 `load_scene(cfg)` 只按 cfg 的 subject 找数据集 ——
-    # 漏了这个参数就会"显示 crh_1_cap4d，实际渲染 crh_1"（2863 帧）。
+    # 漏了这个参数就会"显示的是 A 数据集，实际渲染 B 数据集"。
     scene = load_scene(cfg, frames=args.frames,
                        frame_offset=args.frame_offset, data_dir=args.data)
     total = scene.total_frames

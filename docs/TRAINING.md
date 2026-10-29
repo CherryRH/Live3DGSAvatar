@@ -107,7 +107,7 @@ train.pipeline:
 
 ## 增强数据（可选）
 
-外部生成的图（如 CAP4D）可作补充训练样本，放在 `<数据集>/augmented/`，
+外部生成的图可作补充训练样本，放在 `<数据集>/augmented/`，
 格式与主数据集一致。生成分两步（跨环境）：
 
 ```bash
@@ -119,7 +119,7 @@ train.pipeline:
 先在 `realdenseface` 环境里跟踪（环境名可用 `RDF_ENV` / `MAIN_ENV` 覆盖）。
 
 目录约定见 [`CONVENTIONS.md`](CONVENTIONS.md) §6：`images/` + `render_inputs.npz`，
-与数据集、CAP4D 输出目录完全一致。
+与数据集完全一致。
 
 训练时加 `--augment` 才启用：
 
@@ -142,5 +142,5 @@ python scripts/train.py --subject crh_1 --work-name run5_aug --augment --promote
 | **P0**（已通）| sources / plans / schedule / objectives / trainer | crh_1 留出集 PSNR 与基线同量级 |
 | **P1** | 加密 + 剪枝（重心坐标空间） | 同迭代数下 PSNR 提升 |
 | **P2** | 随机背景、逐帧内参、fused-ssim | 训练更快；白底合成数据可训 |
-| **P3** | CAP4D 增广微调 | crh_2 提升且 crh_1 不降 |
+| **P3** | 局部修复式增广（见 `CAP4D.md` 的判据）| crh_2 提升且 crh_1 不降 |
 | **P4** | `updater` 收敛为 trainer 薄壳 | 热更新数字与 `finetune` 一致 |

@@ -11,8 +11,8 @@
     conda activate realdenseface
     cd ~/Projects/Live3DGSAvatar
     python scripts/rdf_dump.py \
-        --images ~/Projects/cap4d/output/<任务>/generated_images/images \
-        --out ~/Projects/cap4d/output/<任务>/generated_images
+        --images <图像目录> \
+        --out <该目录>
 
 产出（写在 `--out` 目录下的 `render_inputs.npz`，与数据集同构）：
 ``x`` (N,118)、``verts`` (N,V,3)、``identity`` (300)、相机参数、

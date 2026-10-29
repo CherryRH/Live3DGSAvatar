@@ -231,17 +231,17 @@ rot_world  = q(R) ⊗ rot_tangent            # 四元数左乘，WXYZ
 ```
 
 `render_inputs.npz` 的**内容**有两种 schema，读取时按键自动判别
-（`data/cap4d.py::frames_schema`）：
+（`data/tracked.py::frames_schema`）：
 
 | schema | 必需键 | 来源 | 是否需转换 |
 |---|---|---|---|
 | `baked` | `mesh (N,V,3)`、`blend_weight (N,D)` | 数据集、增强集 | 否，直接渲染 |
-| `rdf` | `x (N,118)`、`verts (N,5023,3)` | `rdf_dump.py`（CAP4D 生成图等）| 补牙 + 映射为 129 维 |
+| `rdf` | `x (N,118)`、`verts (N,5023,3)` | `rdf_dump.py` 的跟踪输出 | 补牙 + 映射为 129 维 |
 
 同一约定适用于：`datasets/<对象>/`、`datasets/<对象>/augmented/`、
-CAP4D 输出目录（`<任务>/generated_images/`）。
+以及任何经 `rdf_dump.py` 跟踪过的图像目录。
 
-旧文件名（`rdf.npz`、`cap4d_rdf.npz`）仍可读，但会打警告提示改名。
+旧文件名 `rdf.npz` 仍可读，但会打警告提示改名。
 
 ### 构建数据集
 
@@ -252,7 +252,7 @@ CAP4D 输出目录（`<任务>/generated_images/`）。
 ./build_dataset.sh <图像目录> --into crh_1     # 增强集 → datasets/crh_1/augmented/
 ```
 
-目录里若已有 `render_inputs.npz`（例如 CAP4D 生成图已跟踪过），会跳过 RDF。
+目录里若已有 `render_inputs.npz`（已跟踪过），会跳过 RDF。
 
 图像一律命名为 `00000.png …`（5 位、从 0 连续），与 `render_inputs.npz`
 的行序严格对应；构建脚本会重命名并校验。

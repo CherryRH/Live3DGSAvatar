@@ -80,7 +80,7 @@ data/FLAME2020/                 # FLAME 资产（启动前必须就位）
 | [`docs/LIVE_DRIVING.md`](docs/LIVE_DRIVING.md) | 实时驱动链路与标定 |
 | [`docs/ONLINE_UPDATE.md`](docs/ONLINE_UPDATE.md) | 在线更新：方法、实验与判据 |
 | [`docs/TRAINING.md`](docs/TRAINING.md) | 训练管线：切分、早停、增广、速度 |
-| [`docs/CAP4D.md`](docs/CAP4D.md) | 用 CAP4D 生成缺失角度（增强数据来源）|
+| [`docs/CAP4D.md`](docs/CAP4D.md) | 生成式数据增广的评估结论（已停用）|
 | [`docs/ENVIRONMENT.md`](docs/ENVIRONMENT.md) | 环境搭建与排错 |
 
 各脚本的用法写在文件开头的注释里（`scripts/*.py`）。测试入口：

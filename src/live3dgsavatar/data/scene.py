@@ -47,7 +47,7 @@ class Scene:
     height: int
     #: 数据集**总共**多少帧（可能大于已载入的 `len(frames)`）
     dataset_frames: int = 0
-    #: 逐帧内参（可选）。CAP4D 这类"每帧裁剪框不同"的数据源需要它；
+    #: 逐帧内参（可选）。"每帧裁剪框不同"的数据源需要它；
     #: 数据集是固定相机，保持 ``None`` 即可。
     K_list: list | None = None
 
