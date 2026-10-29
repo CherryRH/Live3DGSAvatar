@@ -59,7 +59,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--subject", default=None)
     p.add_argument("--work-name", default=None)
     p.add_argument("--dataset", default=None, help="渲染哪个数据集（默认同 subject）")
-    p.add_argument("--frames", type=int, default=6, help="真实姿态用几帧")
+    p.add_argument("--frames", type=int, default=6, help="真实姿态用几帧（随机抽）")
+    p.add_argument("--seed", type=int, default=0, help="随机抽样种子")
     p.add_argument("--frame-offset", type=int, default=None,
                    help="从第几帧开始取（默认取留出段起始）")
     p.add_argument("--novel-frame", type=int, default=None,
@@ -76,7 +77,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def rotation_y(deg: float):
-    """绕 y 轴旋转（相机绕头转一圈 → 新视角）。"""
+    """绕 y 轴旋转（角度制）。"""
     import math
 
     import torch
@@ -87,6 +88,81 @@ def rotation_y(deg: float):
                          [0.0, 1.0, 0.0, 0.0],
                          [-s, 0.0, c, 0.0],
                          [0.0, 0.0, 0.0, 1.0]], dtype=torch.float32)
+
+
+def rotation_x(deg: float):
+    """绕 x 轴旋转（俯仰）。"""
+    import math
+
+    import torch
+
+    r = math.radians(deg)
+    c, s = math.cos(r), math.sin(r)
+    return torch.tensor([[1.0, 0.0, 0.0, 0.0],
+                         [0.0, c, -s, 0.0],
+                         [0.0, s, c, 0.0],
+                         [0.0, 0.0, 0.0, 1.0]], dtype=torch.float32)
+
+
+def orbit_w2c(w2c, center, yaw_deg: float = 0.0, pitch_deg: float = 0.0):
+    """让相机**绕 `center` 转**，返回新的 w2c。
+
+    把世界绕头心旋转 `R`，等价于相机反向绕头心转：
+
+        p' = center + R (p - center) = M p,   M = T(center) R T(-center)
+        w2c_new = w2c @ M
+
+    这样头心在画面中的位置**完全不动**（M 固定 center），只改变观察角度。
+    早前把旋转直接乘在 w2c 左侧（`R_y @ w2c`），那是绕**世界原点**转 ——
+    而头心在 z≈0.4、相机在 z=1，绕原点转 60° 就把人甩出画面了。
+    """
+    import torch
+
+    center = torch.as_tensor(center, dtype=torch.float32).reshape(3)
+    R = rotation_x(pitch_deg) @ rotation_y(yaw_deg)
+    M = torch.eye(4, dtype=torch.float32)
+    M[:3, :3] = R[:3, :3]
+    M[:3, 3] = center - R[:3, :3] @ center
+    return torch.as_tensor(w2c, dtype=torch.float32) @ M
+
+
+def pick_holdout_frames(total: int, ratio: float, count: int, seed: int = 0,
+                        frame_offset: int | None = None):
+    """在**留出段**内随机抽帧。
+
+    连续帧几乎相同（同一段视频相邻两帧的差异很小），做多视角/多表情对照没有意义，
+    所以在留出段内随机取。
+
+    Args:
+        total: 数据集总帧数
+        ratio: 验证集比例（与 `train.pipeline.test_ratio` 一致）
+        count: 要抽几帧
+        seed: 抽样种子
+        frame_offset: 显式指定留出段起点（默认 `total - round(total*ratio)`）
+
+    Returns:
+        `(offset, held, picks)`，`picks` 升序、互不重复、落在留出段内
+    """
+    import random
+
+    held = max(1, int(round(total * ratio)))
+    offset = total - held if frame_offset is None else int(frame_offset)
+    offset = max(0, min(offset, total - 1))
+    held = min(held, total - offset)
+    k = max(1, min(int(count), held))
+    picks = sorted(random.Random(seed).sample(range(offset, offset + held), k))
+    return offset, held, picks
+
+
+def project_center(K, w2c, center):
+    """把头心投到像素坐标，用于自检（应始终接近主点）。"""
+    import torch
+
+    p = torch.cat([torch.as_tensor(center, dtype=torch.float32),
+                   torch.ones(1)])
+    cam = (torch.as_tensor(w2c, dtype=torch.float32) @ p)[:3]
+    uv = torch.as_tensor(K, dtype=torch.float32) @ (cam / cam[2])
+    return float(uv[0]), float(uv[1])
 
 
 def to_uint8(color):
@@ -117,18 +193,28 @@ def main(argv: list[str] | None = None) -> int:
     out_root = args.out or (Path(str(cfg.get("paths.output_dir", "output")))
                             / f"syncfix_{subject}")
 
-    total = 2863
-    offset = args.frame_offset
-    if offset is None:
-        # 默认用留出段的起始：那里没参与训练，PSNR 有参考价值
-        ratio = float(cfg.get("train.pipeline.test_ratio", 0.1))
-        offset = int(round(total * (1.0 - ratio)))
-    novel_frame = args.novel_frame if args.novel_frame is not None else offset
+    # 数据集总帧数：直接读 npz，不写死
+    import numpy as np
+
+    with np.load(data_dir / "render_inputs.npz", allow_pickle=True) as d:
+        total = int(d["mesh"].shape[0])
+    ratio = float(cfg.get("train.pipeline.test_ratio", 0.1))
+    offset, held, picks = pick_holdout_frames(
+        total, ratio, args.frames, seed=args.seed,
+        frame_offset=args.frame_offset)
+    default_novel = picks[len(picks) // 2]
+    novel_frame = (args.novel_frame if args.novel_frame is not None
+                   else default_novel)
+    if not (offset <= novel_frame < offset + held):
+        print(f"  [warn] --novel-frame {novel_frame} 不在留出段内，改用 "
+              f"{default_novel}")
+        novel_frame = default_novel
 
     print(f"模型   : {ply}")
-    print(f"数据集 : {data_dir}（{dataset}）")
+    print(f"数据集 : {data_dir}（{dataset}，共 {total} 帧）")
+    print(f"留出段 : [{offset}, {offset + held - 1}]（末尾 {ratio:.0%}，{held} 帧）")
     print(f"输出   : {out_root}")
-    print(f"真实姿态帧：{offset} … {offset + args.frames - 1}")
+    print(f"真实姿态帧：{picks}（随机，seed={args.seed}）")
     print(f"新视角     ：第 {novel_frame} 帧，yaw = {args.yaws}")
     print(f"参考帧     ：{args.ref_frames}")
 
@@ -151,8 +237,8 @@ def main(argv: list[str] | None = None) -> int:
     from live3dgsavatar.core.types import Camera, Mesh
     from live3dgsavatar.data.scene import load_scene
 
-    need = max(args.frames, 1)
-    scene = load_scene(cfg, frames=need, frame_offset=offset, data_dir=data_dir)
+    # 载入整段留出段（几百帧，几十 MB），再按 picks 取
+    scene = load_scene(cfg, frames=held, frame_offset=offset, data_dir=data_dir)
     avatar = load_ply(ply, config=read_embedded_config(ply), device="cuda")
     rasterizer = SimpleRasterizer()
 
@@ -163,12 +249,16 @@ def main(argv: list[str] | None = None) -> int:
     w2c[:3, :3] = scene.R
     w2c[:3, 3] = scene.T
 
-    def render(mesh, weight, yaw_deg: float = 0.0):
+    def head_center(mesh) -> torch.Tensor:
+        """头心 = 当前帧网格的质心（用它做旋转中心，人不会跑出画面）。"""
+        return mesh[0].mean(dim=0).detach().cpu()
+
+    def render(mesh, weight, center=None, yaw_deg: float = 0.0):
         m = Mesh(verts=mesh, faces=scene.faces, uvs=scene.uvs,
                  uv_faces=scene.uv_faces)
-        # 相机绕头旋转 = 新视角；旋转在 CPU 上做再整体送 GPU（w2c 在 CPU 上）
-        view = (rotation_y(yaw_deg) @ w2c).unsqueeze(0).to("cuda")
-        cam = Camera(K=scene.K, w2c=view,
+        view = orbit_w2c(w2c, center if center is not None
+                         else head_center(mesh), yaw_deg)
+        cam = Camera(K=scene.K, w2c=view.unsqueeze(0).to("cuda"),
                      width=scene.width, height=scene.height).to("cuda")
         with torch.no_grad():
             gs = avatar.deform(m, weight)
@@ -180,15 +270,15 @@ def main(argv: list[str] | None = None) -> int:
     manifest: dict = {"subject": subject, "work_name": work, "dataset": dataset,
                       "model": str(ply), "pose": [], "novel": [], "refs": []}
 
-    # ---- 真实姿态：渲染 + GT ----
+    # ---- 真实姿态：渲染 + GT（随机抽自留出段）----
     print("\n渲染真实姿态 …")
-    for i in range(scene.num_frames):
-        idx = offset + i
-        mesh = scene.frames[i]["mesh"].unsqueeze(0)
-        weight = scene.frames[i]["blend_weight"].unsqueeze(0)
-        out = render(mesh, weight, 0.0)
+    for k, idx in enumerate(picks):
+        local = idx - offset
+        mesh = scene.frames[local]["mesh"].unsqueeze(0)
+        weight = scene.frames[local]["blend_weight"].unsqueeze(0)
+        out = render(mesh, weight, yaw_deg=0.0)
         pred = to_uint8(out.color)
-        name = f"{i:05d}.png"
+        name = f"{k:05d}.png"
         Image.fromarray(pred).save(out_root / "input_pose" / name)
 
         gt_path = data_dir / "images" / f"{idx:05d}.png"
@@ -201,19 +291,29 @@ def main(argv: list[str] | None = None) -> int:
                                  "psnr_masked": None if value is None else round(value, 2)})
         print(f"  {name}  帧 {idx}  PSNR(mask) {value:.2f} dB")
 
-    # ---- 新视角：同一帧的不同偏航 ----
+    # ---- 新视角：同一帧绕头心转 ----
     print("\n渲染新视角 …")
-    src = novel_frame - offset
-    src = min(max(src, 0), scene.num_frames - 1)
-    mesh = scene.frames[src]["mesh"].unsqueeze(0)
-    weight = scene.frames[src]["blend_weight"].unsqueeze(0)
+    local = min(max(novel_frame - offset, 0), scene.num_frames - 1)
+    mesh = scene.frames[local]["mesh"].unsqueeze(0)
+    weight = scene.frames[local]["blend_weight"].unsqueeze(0)
+    center = head_center(mesh)
+    print(f"  旋转中心（头心）：{center.tolist()}")
     for yaw in args.yaws:
-        out = render(mesh, weight, float(yaw))
+        out = render(mesh, weight, center=center, yaw_deg=float(yaw))
         name = f"yaw{yaw:+.0f}.png"
-        Image.fromarray(to_uint8(out.color)).save(out_root / "input_novel" / name)
+        img = to_uint8(out.color)
+        Image.fromarray(img).save(out_root / "input_novel" / name)
+        # 自检：头心应始终落在画面内（绕头心转就不该飞出去）
+        view = orbit_w2c(w2c, center, float(yaw))
+        u, v = project_center(scene.K, view, center)
+        inside = 0 <= u < scene.width and 0 <= v < scene.height
+        fg = float((img.max(axis=-1) > 8).mean())
         manifest["novel"].append({"file": name, "frame": novel_frame,
-                                  "yaw_deg": float(yaw)})
-        print(f"  {name}")
+                                  "yaw_deg": float(yaw),
+                                  "center_uv": [round(u, 1), round(v, 1)],
+                                  "fg_ratio": round(fg, 4)})
+        flag = "" if inside else "  [warn] 头心已在画面外"
+        print(f"  {name}  中心 ({u:.0f}, {v:.0f})  前景占比 {fg:.1%}{flag}")
 
     # ---- 参考图：训练段的真实帧（干净） ----
     print("\n复制参考图 …")
