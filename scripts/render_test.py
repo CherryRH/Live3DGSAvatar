@@ -191,10 +191,12 @@ def _finalize(args: argparse.Namespace, cfg: Config) -> argparse.Namespace:
 
 
 # --------------------------------------------------------------- 指标 --
-# 口径与 GUI/在线更新一致，统一由 `core.metrics` 提供。
+# 口径与 GUI/在线更新一致：图像度量来自 `core.metrics`，
+# 聚合与报告结构来自 `evaluation.protocol`（脚本不再自己算一遍）。
 
-from live3dgsavatar.core.metrics import (Accum, max_abs_diff,  # noqa: E402
-                                         psnr, psnr_masked)
+from live3dgsavatar.core.metrics import psnr, psnr_masked  # noqa: E402
+from live3dgsavatar.evaluation import (  # noqa: E402
+    EvaluationReport, summarize_no_reference, summarize_quality)
 
 
 # ------------------------------------------------------------- 渲染 --
@@ -407,29 +409,22 @@ def main() -> int:
 
     images, perf = render_core(args, scene, list(range(n)), out_root, share_dir)
 
-    report: dict = {"subject": args.subject, "work_name": args.work_name,
-                    "dataset": args.dataset, "model_path": str(args.ply),
-                    "num_frames": n, "dataset_frames": total,
-                    "width": scene.width, "height": scene.height, "perf": perf}
+    result = EvaluationReport(
+        subject=args.subject, work_name=args.work_name, dataset=args.dataset,
+        num_frames=n, dataset_frames=total,
+        width=scene.width, height=scene.height,
+        perf=perf, extra={"model_path": str(args.ply)})
+    report: dict = result.to_dict()
 
     print(f"  读取原图：{n} 张（解码 512² PNG，约 {n * 14 / 1000:.0f} s）…",
           flush=True)
     gt = load_gt(args, list(range(n)), offset=args.frame_offset)
     if gt is None:
-        print("      [warn] 找不到数据集原图，跳过质量对比")
+        print("      [warn] 找不到数据集原图，改做无真值统计", flush=True)
+        report["no_reference"] = summarize_no_reference(images)
     else:
         print(f"  原图就绪：{len(gt)} 张", flush=True)
-        full, masked, mad = Accum(), Accum(), Accum()
-        for i, img in images.items():
-            if i not in gt:
-                continue
-            ref_rgb, ref_mask = gt[i]
-            full.add(psnr(img, ref_rgb))
-            masked.add(psnr_masked(img, ref_rgb, ref_mask))
-            mad.add(max_abs_diff(img, ref_rgb))
-        report["quality"] = {"psnr_full": full.summary(),
-                             "psnr_masked": masked.summary(),
-                             "max_abs_diff": mad.summary()}
+        report["quality"] = summarize_quality(images, gt)
 
     # 原图 | 渲染结果（每格带 PSNR 标签）—— 一眼能看出差在哪一帧
     if args.dump_diff and not args.no_save and gt and images:
@@ -486,7 +481,15 @@ def _print_summary(report: dict) -> None:
             print(f"  {'max|Δ| (0-255)':24s} 中位 {s['median']:.0f}  "
                   f"最大 {s['max']:.0f}")
     else:
-        print("\n[重建质量]  未做（缺少数据集原图）")
+        nr = report.get("no_reference") or {}
+        print("\n[无真值统计]  缺少数据集原图，只给出图像自身指标")
+        for label, key, unit in (("前景占比", "foreground", "%.3f"),
+                                 ("锐度（梯度）", "sharpness", "%.2f"),
+                                 ("饱和度", "saturation", "%.1f"),
+                                 ("截断比例", "clip_ratio", "%.3f")):
+            s = nr.get(key)
+            if s:
+                print(f"  {label:24s} 中位 {unit % s['median']}  (n={s['n']})")
 
     p = report["perf"]
     print("\n[性能]")

@@ -147,7 +147,10 @@ def _install_pytest_stub() -> None:
             return lambda f: f
         return func
 
-    def _approx(expected, rel=1e-6, abs_tol=1e-12):
+    def _approx(expected, rel=1e-6, abs_tol=1e-12, **kwargs):
+        # `pytest.approx` 也接受 `abs=`（内置名遮蔽，桩里单独处理）
+        if "abs" in kwargs:
+            abs_tol = kwargs["abs"]
         """`pytest.approx` 的最小实现（标量/序列，支持 `==`）。
 
         之前这里是**恒等**（`lambda v, **k: v`），任何有浮点误差的比较都会

@@ -253,82 +253,6 @@ def test_build_dataset_renames_images_to_five_digits(tmp_path) -> None:
 # ------------------------------------------------- SyncFix 输入的准备工作 --
 
 
-def test_rotation_y_is_proper_rotation() -> None:
-    """新视角靠绕 y 轴转相机实现，必须是正交、行列式为 1 的旋转。"""
-    import torch
-
-    m = load_script("make_syncfix_inputs.py")
-    R = m.rotation_y(30.0)
-    assert R.shape == (4, 4)
-    assert torch.allclose(R[:3, :3] @ R[:3, :3].T, torch.eye(3), atol=1e-6)
-    assert abs(float(torch.det(R[:3, :3])) - 1.0) < 1e-6
-    assert torch.allclose(m.rotation_y(0.0), torch.eye(4))
-    # 不改变相机中心到原点的距离（只是绕头转）
-    assert torch.allclose(R[:3, 3], torch.zeros(3))
-
-
-def test_orbit_keeps_head_center_fixed_on_screen() -> None:
-    """新视角必须绕**头心**转：头心像素不变、相机到头心距离不变。
-
-    早前把旋转乘在 w2c 左侧（绕世界原点转），而头心在 z≈0.4、相机在 z=1，
-    转 60° 后人直接被甩出画面（渲染全黑）。
-    """
-    import numpy as np
-
-    m = load_script("make_syncfix_inputs.py")
-    d = np.load(REPO_ROOT / "datasets" / "crh_1" / "render_inputs.npz",
-                allow_pickle=True)
-    w2v = np.asarray(d["w2v"], np.float32)
-    K = np.asarray(d["K"], np.float32)
-    center = d["mesh"][2577].mean(axis=0)
-
-    ref = None
-    for yaw in (-60.0, -20.0, 0.0, 30.0, 60.0):
-        view = m.orbit_w2c(w2v, center, yaw)
-        u, v = m.project_center(K, view, center)
-        R, t = view[:3, :3], view[:3, 3]
-        dist = float(np.linalg.norm(-(R.T @ t) - center))
-        assert 0 <= u < 512 and 0 <= v < 512, f"yaw={yaw} 头心出画 ({u:.0f},{v:.0f})"
-        assert abs(dist - 0.610) < 0.02, f"yaw={yaw} 相机距离变了：{dist:.3f}"
-        if ref is None:
-            ref = (u, v)
-        else:
-            assert abs(u - ref[0]) < 0.5 and abs(v - ref[1]) < 0.5
-
-
-def test_orbit_at_zero_yaw_is_identity() -> None:
-    import numpy as np
-    import torch
-
-    m = load_script("make_syncfix_inputs.py")
-    w2c = torch.tensor(np.eye(4), dtype=torch.float32)
-    center = torch.tensor([0.0, 0.0, 0.4])
-    assert torch.allclose(m.orbit_w2c(w2c, center, 0.0), w2c)
-
-
-def test_pick_holdout_frames_is_random_within_validation_range() -> None:
-    """留出段内随机抽样：不连续、不重复、不越界，且种子可复现。"""
-    m = load_script("make_syncfix_inputs.py")
-    offset, held, picks = m.pick_holdout_frames(2863, 0.1, 6, seed=0)
-    assert offset == 2577 and held == 286
-    assert len(picks) == len(set(picks)) == 6
-    assert all(offset <= i < offset + held for i in picks)
-    assert picks == sorted(picks)
-    assert max(b - a for a, b in zip(picks, picks[1:])) > 1, "不该是连续帧"
-
-    assert m.pick_holdout_frames(2863, 0.1, 6, seed=0) == (offset, held, picks)
-    assert m.pick_holdout_frames(2863, 0.1, 6, seed=1)[2] != picks
-
-
-def test_pick_holdout_frames_handles_small_ranges() -> None:
-    m = load_script("make_syncfix_inputs.py")
-    offset, held, picks = m.pick_holdout_frames(10, 0.1, 6)
-    assert held == 1 and picks == [9]
-    # 显式给起点时也要落在合法范围
-    offset, held, picks = m.pick_holdout_frames(10, 0.1, 2, frame_offset=8)
-    assert offset == 8 and all(8 <= i < 10 for i in picks)
-
-
 def test_to_uint8_range_and_shape() -> None:
     import torch
 
@@ -338,3 +262,40 @@ def test_to_uint8_range_and_shape() -> None:
     img = m.to_uint8(x)
     assert img.shape == (4, 5, 3) and img.dtype.name == "uint8"
     assert img[..., 0].max() == 255 and img[..., 1].max() == 0
+
+
+# ------------------------------------------------------- 缺陷定位脚本 --
+
+
+def test_find_defects_dry_run_plans_without_gpu() -> None:
+    """`--dry-run` 必须在没有 GPU 的机器上把计划算出来（候选数、产物路径）。"""
+    import io
+    import contextlib
+
+    root = REPO_ROOT / "datasets" / "crh_1"
+    if not (root / "render_inputs.npz").is_file():
+        pytest.skip("缺少仓库内数据集")
+
+    m = load_script("find_defects.py")
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        code = m.main(["--subject", "crh_1", "--work-name", "run",
+                       "--dataset", "crh_1", "--dry-run"])
+
+    out = buf.getvalue()
+    assert code == 0
+    assert "候选" in out and "55 视角" in out
+    assert "output/defects" in out
+
+
+def test_find_defects_requires_model_and_dataset() -> None:
+    """模型或数据集不存在时给出单行错误，而不是堆栈。"""
+    import io
+    import contextlib
+
+    m = load_script("find_defects.py")
+    with pytest.raises(SystemExit) as err:
+        with contextlib.redirect_stdout(io.StringIO()):
+            m.main(["--subject", "crh_1", "--work-name", "nope",
+                    "--dataset", "crh_1", "--dry-run"])
+    assert "[error]" in str(err.value.code)

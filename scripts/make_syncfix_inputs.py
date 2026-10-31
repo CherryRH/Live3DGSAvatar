@@ -53,6 +53,9 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 
 import live3dgsavatar  # noqa: F401
 
+from live3dgsavatar.core.camera import (as_cpu, orbit_w2c,  # noqa: E402
+                                       project_point)
+
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="生成 SyncFix 的实验输入")
@@ -66,8 +69,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--novel-frame", type=int, default=None,
                    help="用哪一帧的网格渲染新视角（默认取 --frame-offset）")
     p.add_argument("--yaws", type=float, nargs="+",
-                   default=[-60.0, -40.0, -20.0, 0.0, 20.0, 40.0, 60.0],
-                   help="新视角的偏航角（度）")
+                   default=[-40.0, -20.0, 0.0, 20.0, 40.0],
+                   help="新视角的偏航角（度）；默认 ±40°，更大角度超出可靠范围")
     p.add_argument("--ref-frames", type=int, nargs="+", default=[0, 400, 800],
                    help="参考图取数据集哪几帧（训练段，干净）")
     p.add_argument("--out", type=Path, default=None,
@@ -76,61 +79,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
-def rotation_y(deg: float):
-    """绕 y 轴旋转（角度制）。"""
-    import math
-
-    import torch
-
-    r = math.radians(deg)
-    c, s = math.cos(r), math.sin(r)
-    return torch.tensor([[c, 0.0, s, 0.0],
-                         [0.0, 1.0, 0.0, 0.0],
-                         [-s, 0.0, c, 0.0],
-                         [0.0, 0.0, 0.0, 1.0]], dtype=torch.float32)
-
-
-def rotation_x(deg: float):
-    """绕 x 轴旋转（俯仰）。"""
-    import math
-
-    import torch
-
-    r = math.radians(deg)
-    c, s = math.cos(r), math.sin(r)
-    return torch.tensor([[1.0, 0.0, 0.0, 0.0],
-                         [0.0, c, -s, 0.0],
-                         [0.0, s, c, 0.0],
-                         [0.0, 0.0, 0.0, 1.0]], dtype=torch.float32)
-
-
-def orbit_w2c(w2c, center, yaw_deg: float = 0.0, pitch_deg: float = 0.0):
-    """让相机**绕 `center` 转**，返回新的 w2c。
-
-    把世界绕头心旋转 `R`，等价于相机反向绕头心转：
-
-        p' = center + R (p - center) = M p,   M = T(center) R T(-center)
-        w2c_new = w2c @ M
-
-    这样头心在画面中的位置**完全不动**（M 固定 center），只改变观察角度。
-    早前把旋转直接乘在 w2c 左侧（`R_y @ w2c`），那是绕**世界原点**转 ——
-    而头心在 z≈0.4、相机在 z=1，绕原点转 60° 就把人甩出画面了。
-    """
-    import torch
-
-    center = torch.as_tensor(center, dtype=torch.float32).reshape(3)
-    R = rotation_x(pitch_deg) @ rotation_y(yaw_deg)
-    M = torch.eye(4, dtype=torch.float32)
-    M[:3, :3] = R[:3, :3]
-    M[:3, 3] = center - R[:3, :3] @ center
-    return torch.as_tensor(w2c, dtype=torch.float32) @ M
-
-
 def pick_holdout_frames(total: int, ratio: float, count: int, seed: int = 0,
                         frame_offset: int | None = None):
     """在**留出段**内随机抽帧。
 
-    连续帧几乎相同（同一段视频相邻两帧的差异很小），做多视角/多表情对照没有意义，
+    连续帧几乎相同（同一段视频相邻两帧差异很小），做多视角/多表情对照没有意义，
     所以在留出段内随机取。
 
     Args:
@@ -152,17 +105,6 @@ def pick_holdout_frames(total: int, ratio: float, count: int, seed: int = 0,
     k = max(1, min(int(count), held))
     picks = sorted(random.Random(seed).sample(range(offset, offset + held), k))
     return offset, held, picks
-
-
-def project_center(K, w2c, center):
-    """把头心投到像素坐标，用于自检（应始终接近主点）。"""
-    import torch
-
-    p = torch.cat([torch.as_tensor(center, dtype=torch.float32),
-                   torch.ones(1)])
-    cam = (torch.as_tensor(w2c, dtype=torch.float32) @ p)[:3]
-    uv = torch.as_tensor(K, dtype=torch.float32) @ (cam / cam[2])
-    return float(uv[0]), float(uv[1])
 
 
 def to_uint8(color):
@@ -245,9 +187,11 @@ def main(argv: list[str] | None = None) -> int:
     # 背景与数据集一致（黑底）：参考图是 RGBA 转 RGB，透明处就是黑
     bg = torch.tensor([float(x) for x in cfg.get("render.background", [0, 0, 0])],
                       dtype=torch.float32, device="cuda")
+    # 几何换算全在 CPU 上：新视角的相机由 orbit_w2c 算出后再整体送 GPU
     w2c = torch.eye(4, dtype=torch.float32)
-    w2c[:3, :3] = scene.R
-    w2c[:3, 3] = scene.T
+    w2c[:3, :3] = as_cpu(scene.R)
+    w2c[:3, 3] = as_cpu(scene.T)
+    K_cpu = as_cpu(scene.K)
 
     def head_center(mesh) -> torch.Tensor:
         """头心 = 当前帧网格的质心（用它做旋转中心，人不会跑出画面）。"""
@@ -305,7 +249,7 @@ def main(argv: list[str] | None = None) -> int:
         Image.fromarray(img).save(out_root / "input_novel" / name)
         # 自检：头心应始终落在画面内（绕头心转就不该飞出去）
         view = orbit_w2c(w2c, center, float(yaw))
-        u, v = project_center(scene.K, view, center)
+        u, v = project_point(K_cpu, view, center)
         inside = 0 <= u < scene.width and 0 <= v < scene.height
         fg = float((img.max(axis=-1) > 8).mean())
         manifest["novel"].append({"file": name, "frame": novel_frame,

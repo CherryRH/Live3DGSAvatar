@@ -175,7 +175,30 @@ Live3DGSAvatar/
 │   │   ├── checkpoint_loader.py  #   参照格式数据集（每帧 .frame）
 │   │   ├── datasets.py          #   数据集发现（列出/校验可用作驱动的数据集）
 │   │   └── models.py            #   模型发现（列出含 model.ply 的目录）
-│   ├── training/                # 在线更新（observations/losses/color_fit/updater）
+│   ├── training/                # 训练与在线更新（plans/schedule/objectives/trainer/updater）
+│   ├── evaluation/              # 评估：候选视角网格、有/无真值度量、报告结构
+
+> `core/metrics.py` 只做**单张图的度量**（PSNR / max|Δ| / Accum）；`evaluation/`
+> 负责**组织评估**：候选视角网格、有真值/无真值的统计口径、报告结构。
+> 脚本（`render_test.py`）、训练验证钩子、GUI 都从这两层取，不再各算一套。
+
+表情候选（`evaluation/expressions.py`）由"聚类中心（这个人常做的表情）+ 主轴极值
+（没做过但参数空间合理的方向）"组成。FLAME 的表情是 PCA 系数、**没有语义标签**
+（实测各维标准差 0.23–1.29 且非单调），所以不能把某一维当成"愤怒"；若需要具名原型，
+应由标注数据的均值给出（`load_named` 只接收现成向量，不猜数值）。
+
+候选减选（`evaluation/selection.py`）是**`budget` 次贪心集合覆盖**：看着每个候选
+能覆盖多少"缺陷质量"，每步选新增最多者，并报出边际收益。渲染候选很便宜、精修很贵，
+这一步把精修预算压到十几张。
+
+缺陷质量的两个归一化容易写错，这里记下结论：覆盖率要**饱和**（看过 N 次即充分），
+不能用分位数——观测次数横跨四个数量级，按 P90 归一化会把中位数也算成缺陷；孔洞要用
+**命中率**（多少个候选里漏了），不能用最大值——候选一多，几乎每个面都会偶发漏一次。
+
+缺陷定位（`evaluation/defects.py`）把图像空间的量**按面 id 聚合到几何/texel**：
+孔洞、锐度、精修差分都先落到三角面，再经 binding 铺回 UV 图。这样"视角覆盖"
+与"表情覆盖"是两个独立问题，不必做笛卡尔积。面 id 图由 `core/render/faceid.py`
+在屏幕空间用 nvdiffrast 光栅化得到（注意 y 轴方向与渲染器约定相反，需取反）。
 │   ├── tracking/                # 实时驱动
 │   │   ├── rdf_wire.py          #   线上协议（请求/回复，自描述，纯函数）
 │   │   ├── rdf_client.py        #   追踪服务客户端（请求/响应）
@@ -202,6 +225,7 @@ Live3DGSAvatar/
 │   ├── render_test.py           # 渲染测试：core vs 数据集原图（质量 + 性能）
 │   ├── train.py                 # 训练入口（参数计划 + 损失 + 钩子 + 落地）
 │   ├── cache_images.py          # 图像打包成 images.npy（训练直读，跳过解码）
+│   ├── find_defects.py          # 找瑕疵并选视角：覆盖统计 → 候选评估 → 贪心选择
 │   ├── build_dataset.py         # RDF 结果 → 标准数据集 / 增强集
 │   ├── online_update.py         # 在线更新（闭式颜色校正 + 梯度微调）
 │   ├── rdf_bridge.py            # 追踪服务（realdenseface 环境，画面进参数出）

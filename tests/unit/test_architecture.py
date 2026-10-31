@@ -28,6 +28,7 @@ CORE_FORBIDDEN_PREFIXES = (
     "live3dgsavatar.tracking",
     "live3dgsavatar.runtime",
     "live3dgsavatar.streaming",
+    "live3dgsavatar.evaluation",      # 评估需要数据集，属于上层
 )
 
 # 唯一允许接触 CUDA 扩展的位置
@@ -572,3 +573,165 @@ def test_scripts_with_main_have_entry_point_guard() -> None:
         assert guarded, (
             f"{path.name} 定义了 main() 却没有 `if __name__ == \"__main__\"` 入口 —— "
             "运行它会静默退出（0，无输出），main() 永远不会被调用")
+
+
+def test_training_does_not_depend_on_evaluation() -> None:
+    """`training/` 不得 import `evaluation/`。
+
+    评估需要数据集与场景，而训练层必须能脱离数据集使用（摄像头来源同样要能训练）。
+    训练只需要一个 `evaluate` 回调（`ValidationHook`），由脚本把评估实现注入。
+    """
+    training = SRC / "training"
+    offenders: list[str] = []
+    for path in sorted(training.rglob("*.py")):
+        if "__pycache__" in path.parts:
+            continue
+        for lineno, module in _imports(path):
+            if module.startswith("live3dgsavatar.evaluation"):
+                offenders.append(f"{path.relative_to(SRC)}:{lineno} → {module}")
+    assert not offenders, "training/ 不应依赖 evaluation/：\n  " + "\n  ".join(offenders)
+
+
+def test_torch_attributes_exist() -> None:
+    """`torch.xxx` 用到的属性必须真的存在于当前 torch。
+
+    为什么值得查：我们无法在本机跑 GPU 路径，像 `torch.flatnonzero`（不存在，
+    应写 `nonzero`）这种错误只能等到用户机器上才炸。这里静态扫一遍属性名，
+    在没有 GPU 的机器上也能拦住同类问题。
+    """
+    import re
+
+    try:
+        import torch
+    except ImportError:                                # pragma: no cover
+        return
+
+    # 负向断言排除 `nvdiffrast.torch.xxx` 这类"别的包的 torch 子模块"
+    pattern = re.compile(r"(?<![\w.])torch\.([A-Za-z_][A-Za-z0-9_]*)")
+    missing: list[str] = []
+    for path in sorted(SRC.rglob("*.py")):
+        if "__pycache__" in path.parts:
+            continue
+        text = path.read_text(encoding="utf-8")
+        for match in pattern.finditer(text):
+            name = match.group(1)
+            if not hasattr(torch, name):
+                line = text[:match.start()].count("\n") + 1
+                missing.append(f"{path.relative_to(SRC)}:{line} → torch.{name}")
+    assert not missing, "使用了不存在的 torch 属性：\n  " + "\n  ".join(missing)
+
+
+def _use_before_assignment(source: str) -> list[str]:
+    """找出"同一个语句块内先用后赋值"的名字（Python 会抛 `UnboundLocalError`）。
+
+    只比较**同一语句块**内的先后顺序：跨分支/跨循环的比较会产生大量误报
+    （例如 `if` 分支里赋值、另一分支里使用是合法的）。这正是我们踩过的模式 ——
+    `find_defects.py` 的 `hit_rate` 在函数体里先被使用、几十行后才赋值。
+    """
+    import ast
+
+    tree = ast.parse(source)
+    problems: list[str] = []
+
+    def binds(stmt: ast.stmt) -> set[str]:
+        names: set[str] = set()
+        for node in ast.walk(stmt):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+                continue
+            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+                names.add(node.id)
+        return names
+
+    def own_loads(stmt: ast.stmt) -> list[tuple[str, int]]:
+        """只取该语句**自身表达式**里的读取，嵌套语句块交给递归。
+
+        推导式（`[f(i) for i in xs]`）与 lambda 的参数名在**语句内部**绑定，
+        不算"先用后赋值"，必须排除，否则会产生成片误报。
+        """
+        inner: set[str] = set()
+        for node in ast.walk(stmt):
+            if isinstance(node, ast.comprehension):
+                for target in ast.walk(node.target):
+                    if isinstance(target, ast.Name):
+                        inner.add(target.id)
+            elif isinstance(node, ast.Lambda):
+                for arg in (list(node.args.args) + list(node.args.kwonlyargs)
+                            + list(node.args.posonlyargs)):
+                    inner.add(arg.arg)
+
+        out: list[tuple[str, int]] = []
+        for node in ast.iter_child_nodes(stmt):
+            # 子语句块（含 `except` handler）由 `nested_bodies` 递归处理
+            if isinstance(node, (ast.stmt, ast.ExceptHandler)):
+                continue
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+                continue
+            for sub in ast.walk(node):
+                if (isinstance(sub, ast.Name) and isinstance(sub.ctx, ast.Load)
+                        and sub.id not in inner):
+                    out.append((sub.id, sub.lineno))
+        return out
+
+    def nested_bodies(stmt: ast.stmt) -> list[list[ast.stmt]]:
+        bodies: list[list[ast.stmt]] = []
+        for field in ("body", "orelse", "finalbody"):
+            body = getattr(stmt, field, None)
+            if isinstance(body, list) and body and isinstance(body[0], ast.stmt):
+                # `orelse`/`finalbody` 只在复合语句上出现
+                bodies.append(body)
+        if isinstance(stmt, ast.Try):
+            bodies.extend(handler.body for handler in stmt.handlers)
+        return bodies
+
+    def check_block(stmts: list[ast.stmt], bound: set[str], fn_name: str) -> None:
+        later: set[str] = set()
+        for stmt in stmts:
+            later |= binds(stmt)
+        for stmt in stmts:
+            for name, lineno in own_loads(stmt):
+                if name in bound:
+                    continue
+                if name in later or name in binds(stmt):
+                    problems.append(
+                        f"{fn_name}:{lineno} 使用了 {name!r}，但它在同一段里稍后才赋值")
+            bound |= binds(stmt)
+            for body in nested_bodies(stmt):
+                check_block(body, set(bound), fn_name)
+
+    for fn in [n for n in ast.walk(tree)
+               if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]:
+        params = {a.arg for a in list(fn.args.args) + list(fn.args.kwonlyargs)
+                  + list(fn.args.posonlyargs)}
+        if fn.args.vararg:
+            params.add(fn.args.vararg.arg)
+        if fn.args.kwarg:
+            params.add(fn.args.kwarg.arg)
+        declared = {n for node in ast.walk(fn)
+                    if isinstance(node, (ast.Global, ast.Nonlocal))
+                    for n in node.names}
+        check_block(fn.body, params | declared, fn.name)
+    return problems
+
+
+def test_no_use_before_local_assignment() -> None:
+    """全仓库不得有"函数内先用后赋值"（会抛 `UnboundLocalError`）。
+
+    真实故障：`find_defects.py` 里 `hit_rate` 在第 272 行被使用、却在第 280 行
+    才赋值。这类错误只在那条 GPU 分支上才炸，本机跑不到。
+    """
+    problems: list[str] = []
+    for path in sorted(SRC.rglob("*.py")):
+        if "__pycache__" in path.parts:
+            continue
+        problems.extend(f"{path.relative_to(SRC)}: {p}"
+                        for p in _use_before_assignment(
+                            path.read_text(encoding="utf-8")))
+    assert not problems, "存在先用后赋值：\n  " + "\n  ".join(problems)
+
+
+def test_checker_detects_known_case() -> None:
+    """守卫自身的自检：确认它真的能抓到这个模式。"""
+    src = "def f():\n    print(x)\n    x = 1\n"
+    assert _use_before_assignment(src)
+    ok = "def f():\n    x = 1\n    print(x)\n"
+    assert not _use_before_assignment(ok)
