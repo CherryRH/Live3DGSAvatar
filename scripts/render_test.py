@@ -480,6 +480,11 @@ def _print_summary(report: dict) -> None:
         if s:
             print(f"  {'max|Δ| (0-255)':24s} 中位 {s['median']:.0f}  "
                   f"最大 {s['max']:.0f}")
+        sharp = q.get("sharpness")
+        if sharp:
+            r, g = sharp["render"], sharp["gt"]
+            print(f"  {'锐度（梯度, 掩码内）':24s} 渲染 {r['median']:.2f} / "
+                  f"原图 {g['median']:.2f}（比值 {sharp['ratio']:.2f}）")
     else:
         nr = report.get("no_reference") or {}
         print("\n[无真值统计]  缺少数据集原图，只给出图像自身指标")

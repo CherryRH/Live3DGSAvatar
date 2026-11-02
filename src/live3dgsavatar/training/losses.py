@@ -47,19 +47,28 @@ def masked_mse(
 
 def weighted_l1(prediction: torch.Tensor, target: torch.Tensor,
                 mask: torch.Tensor | None = None, mask_weight: float = 0.0,
-                sample_weight: torch.Tensor | None = None) -> torch.Tensor:
+                sample_weight: torch.Tensor | None = None,
+                weight_map: torch.Tensor | None = None) -> torch.Tensor:
     """带**空间权重**与**逐样本权重**的 L1（唯一实现）。
 
     - 空间：mask 内权重 1，mask 外 `mask_weight`（0 = 不看背景）
     - 样本：`sample_weight [B]`，给增强数据打折（None = 全 1）
+    - 像素：`weight_map [B,1,H,W]`，与空间权重相乘（用于"只在缺陷区域监督"）
 
     归一化分母同时含空间权重与样本权重，所以"权重整体缩放"不改变损失。
     """
     diff = (prediction - target).abs()
     if mask is None:
-        per_sample = diff.flatten(1).mean(dim=1)
+        if weight_map is None:
+            per_sample = diff.flatten(1).mean(dim=1)
+        else:
+            w = weight_map.to(diff.dtype).expand_as(diff)
+            den = w.flatten(1).sum(dim=1).clamp(min=1e-6)
+            per_sample = (diff * w).flatten(1).sum(dim=1) / den
     else:
         w = mask.to(diff.dtype) + float(mask_weight) * (~mask).to(diff.dtype)
+        if weight_map is not None:
+            w = w * weight_map.to(diff.dtype)
         num = (diff * w).flatten(1).sum(dim=1)
         den = (w.flatten(1).sum(dim=1) * diff.shape[1]).clamp(min=1.0)
         per_sample = num / den

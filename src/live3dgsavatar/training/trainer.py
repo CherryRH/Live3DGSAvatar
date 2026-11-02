@@ -178,6 +178,7 @@ class Trainer:
         loss, parts = self.objective(
             pred=out.color, target=batch.image, mask=batch.mask,
             sample_weight=getattr(batch, "weight", None),
+            weight_map=getattr(batch, "weight_map", None),
             alpha=getattr(out, "alpha", None),
             target_alpha=batch.mask.to(out.color.dtype),
             iteration=iteration,

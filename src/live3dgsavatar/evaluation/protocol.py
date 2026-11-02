@@ -36,6 +36,7 @@ def summarize_quality(images: dict[int, np.ndarray],
         没有可比对的帧时返回空字典。
     """
     full, masked, mad = Accum(), Accum(), Accum()
+    sharp_r, sharp_g = Accum(), Accum()
     for index, image in images.items():
         item = gt.get(index)
         if item is None:
@@ -46,10 +47,28 @@ def summarize_quality(images: dict[int, np.ndarray],
         full.add(psnr(image, ref_rgb))
         masked.add(psnr_masked(image, ref_rgb, ref_mask))
         mad.add(max_abs_diff(image, ref_rgb))
+        # 锐度：只在掩码内统计平均梯度。PSNR 会奖励"更平滑"，必须同时看它，
+        # 否则"PSNR 涨了但细节糊了"这种退化会被漏掉（踩过）。
+        if ref_mask is not None and bool(ref_mask.any()):
+            sharp_r.add(_mean_gradient(image, ref_mask))
+            sharp_g.add(_mean_gradient(ref_rgb, ref_mask))
+
     out: dict = {"psnr_full": full.summary(),
                  "psnr_masked": masked.summary(),
                  "max_abs_diff": mad.summary()}
+    sr, sg = sharp_r.summary(), sharp_g.summary()
+    if sr and sg and sg["median"] > 0:
+        out["sharpness"] = {"render": sr, "gt": sg,
+                            "ratio": round(sr["median"] / sg["median"], 3)}
     return {k: v for k, v in out.items() if v is not None}
+
+
+def _mean_gradient(image: np.ndarray, mask: np.ndarray) -> float:
+    """掩码内的平均梯度（0–255 尺度）；越小越糊。"""
+    grey = np.asarray(image, dtype=np.float32).mean(axis=-1)
+    gy, gx = np.gradient(grey)
+    mag = np.hypot(gx, gy)
+    return float(mag[np.asarray(mask, bool)].mean())
 
 
 def summarize_no_reference(images: dict[int, np.ndarray],

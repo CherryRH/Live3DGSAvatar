@@ -93,6 +93,7 @@ class Objective:
     def __call__(self, *, pred: torch.Tensor, target: torch.Tensor,
                  mask: torch.Tensor | None = None,
                  sample_weight: torch.Tensor | None = None,
+                 weight_map: torch.Tensor | None = None,
                  alpha: torch.Tensor | None = None,
                  target_alpha: torch.Tensor | None = None,
                  iteration: int = 0,
@@ -104,6 +105,7 @@ class Objective:
             pred: `[B,3,H,W]` 渲染结果（已叠背景）
             target: `[B,3,H,W]` 目标图
             mask: `[B,1,H,W]` 前景掩码；`None` 表示全图
+            weight_map: `[B,1,H,W]` 逐像素权重；用于"只在缺陷区域监督"
             alpha: `[B,1,H,W]` 渲染的不透明度
             target_alpha: `[B,1,H,W]` 目标掩码（作为不透明度监督）
             iteration: 当前步（用于 LPIPS 的启用时机）
@@ -121,7 +123,8 @@ class Objective:
         total = pred.new_zeros(())
 
         if self.l1 > 0:
-            v = weighted_l1(pred, target, m, self.mask_weight, sample_weight)
+            v = weighted_l1(pred, target, m, self.mask_weight, sample_weight,
+                            weight_map=weight_map)
             total = total + self.l1 * v
             parts["l1"] = float(v.detach())
 

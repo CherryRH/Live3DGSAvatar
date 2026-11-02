@@ -293,8 +293,14 @@ def main(argv: list[str] | None = None) -> int:
     counts = np.bincount(face_id_binding, minlength=n_faces).astype(np.float64)
     nz = counts > 0
     off_face[nz] /= counts[nz]
+    unseen = cov_gauss == 0
     mass_summary = {
         "sum": round(float(mass.sum()), 1),
+        # 拆分：从未被真实数据观测到的部分（结构缺口，靠调颜色修不了）
+        # 与"看过但渲染还是坏"的部分（真正可被微调改善）
+        "unseen_share": round(float(mass[unseen].sum() / max(1e-9, mass.sum())), 4),
+        "observed_bad_share": round(
+            float(mass[~unseen].sum() / max(1e-9, mass.sum())), 4),
         "mean": round(float(mass.mean()), 4),
         "nonzero_share": round(float((mass > 1e-6).mean()), 4),
         "strong_share": round(float((mass > 0.3).mean()), 4),
@@ -364,7 +370,9 @@ def main(argv: list[str] | None = None) -> int:
                     rgb[rgba[..., 3] <= 127] = 0        # 与渲染同底（黑）
                     Image.fromarray(rgb).save(dst)
 
-    print(f"\n候选可触达质量 {reachable_mass:.0f}/{mass.sum():.0f}"
+    print(f"\n缺陷质量构成：从未观测 {mass_summary['unseen_share']:.1%}，"
+          f"看过但坏 {mass_summary['observed_bad_share']:.1%}")
+    print(f"候选可触达质量 {reachable_mass:.0f}/{mass.sum():.0f}"
           f"（{reachable_mass / max(1e-9, mass.sum()):.1%}）")
     print(f"选中 {len(result.chosen)} 组，覆盖缺陷质量 {result.covered_ratio:.1%}")
     for cand, gain in zip(result.chosen, result.gains):

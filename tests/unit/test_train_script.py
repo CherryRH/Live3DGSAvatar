@@ -15,6 +15,8 @@ import pytest
 
 from script_loader import load_script
 
+from live3dgsavatar.data.models import promote_model
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "train.py"
 
@@ -108,7 +110,7 @@ def test_promote_copies_model_structure_and_report(tmp_path) -> None:
     (src / "report.json").write_text("{\"best_psnr\": 29.0}", encoding="utf-8")
 
     target = tmp_path / "models" / "s" / "w"
-    out = m.promote_model(source_ply=src / "model.ply",
+    out = promote_model(source_ply=src / "model.ply",
                           structure_config=src / "config.yaml",
                           report=src / "report.json", target=target)
 
@@ -126,13 +128,13 @@ def test_promote_refuses_to_overwrite_without_force(tmp_path) -> None:
     cfg = tmp_path / "config.yaml"
     cfg.write_text("model: {}\n", encoding="utf-8")
     target = tmp_path / "models" / "s" / "w"
-    m.promote_model(source_ply=src, structure_config=cfg, report=None, target=target)
+    promote_model(source_ply=src, structure_config=cfg, report=None, target=target)
 
     with pytest.raises(FileExistsError, match="force"):
-        m.promote_model(source_ply=src, structure_config=cfg, report=None,
+        promote_model(source_ply=src, structure_config=cfg, report=None,
                         target=target)
     # 加了 force 就可以
-    m.promote_model(source_ply=src, structure_config=cfg, report=None,
+    promote_model(source_ply=src, structure_config=cfg, report=None,
                     target=target, force=True)
 
 
@@ -141,7 +143,7 @@ def test_promote_reports_missing_source(tmp_path) -> None:
     cfg = tmp_path / "config.yaml"
     cfg.write_text("model: {}\n", encoding="utf-8")
     with pytest.raises(FileNotFoundError, match="找不到"):
-        m.promote_model(source_ply=tmp_path / "nope.ply",
+        promote_model(source_ply=tmp_path / "nope.ply",
                         structure_config=cfg, report=None,
                         target=tmp_path / "models" / "s" / "w")
 
@@ -153,7 +155,7 @@ def test_promote_without_report_is_allowed(tmp_path) -> None:
     cfg = tmp_path / "config.yaml"
     cfg.write_text("model: {}\n", encoding="utf-8")
     target = tmp_path / "models" / "s" / "w"
-    m.promote_model(source_ply=src, structure_config=cfg, report=None, target=target)
+    promote_model(source_ply=src, structure_config=cfg, report=None, target=target)
     assert not (target / "report.json").exists()
 
 
@@ -299,3 +301,44 @@ def test_find_defects_requires_model_and_dataset() -> None:
             m.main(["--subject", "crh_1", "--work-name", "nope",
                     "--dataset", "crh_1", "--dry-run"])
     assert "[error]" in str(err.value.code)
+
+
+# ------------------------------------------------- 缺陷加权微调（脚本） --
+
+
+def test_parse_label_handles_signs_and_expression_names() -> None:
+    m = load_script("finetune_refined.py")
+    d = m.parse_label("yaw+40_pitch-20_roll+0_frame00348")
+    assert (d["yaw"], d["pitch"], d["roll"], d["expr"]) == (40.0, -20.0, 0.0,
+                                                            "frame00348")
+    d = m.parse_label("yaw-40_pitch+20_roll+15_axis02-")
+    assert (d["yaw"], d["pitch"], d["roll"], d["expr"]) == (-40.0, 20.0, 15.0,
+                                                            "axis02-")
+    with pytest.raises(ValueError, match="无法解析"):
+        m.parse_label("garbage")
+
+
+def test_defect_finetune_plan_includes_scaling() -> None:
+    """极角缺陷多半是覆盖不足，只改颜色填不上 —— 计划里必须有 scaling。"""
+    from live3dgsavatar.training.plans import ParameterPlan
+
+    plan = ParameterPlan.defect_finetune()
+    assert set(plan.enabled) == {"f_dc", "opacity", "scaling"}
+    assert plan.lr_at("scaling", 0) < plan.lr_at("f_dc", 0) * 2
+
+
+def test_finetune_dry_run_plans_without_refined_dir() -> None:
+    import io
+    import contextlib
+
+    root = REPO_ROOT / "datasets" / "crh_1"
+    if not (root / "render_inputs.npz").is_file():
+        pytest.skip("缺少仓库内数据集")
+
+    m = load_script("finetune_refined.py")
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        code = m.main(["--subject", "crh_1", "--work-name", "run", "--dry-run"])
+    out = buf.getvalue()
+    assert code == 0
+    assert "精修视角" in out and "微调" in out

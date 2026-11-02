@@ -105,6 +105,65 @@ train.pipeline:
 - `patience × eval_every` 才是"容忍多少步没有进步"；想更短就先减 patience
 - `min_delta` 太小会把噪声当提升，0.05 dB 一般合适
 
+## 缺陷修复微调（精修图）
+
+`find_defects.py` 找出极角缺陷并选出待精修视角，外部精修器（如 SyncFix）产出
+`<缺陷目录>/refined/*.png` 之后：
+
+```bash
+python scripts/finetune_refined.py --subject crh_1 --work-name run \
+    --defects output/defects/crh_1/run/crh_1 --steps 600
+```
+
+- 参数：`f_dc + opacity + scaling`（见 `ParameterPlan.defect_finetune`）——
+  极角缺陷多是覆盖不足，只改颜色填不上。实测对照：只改颜色、或颜色+不透明度，
+  留出集都比三者全开时低约 **0.15 dB**；未覆盖区域的表面本就不完整，
+  需要靠尺度把高斯"撑"过去；
+- 损失：L1 按 `|精修 − 渲染|` 的逐像素权重加权，只在前景内生效；
+- 每批固定混入真实帧做锚定，验收看**留出真值 PSNR**（掉了会告警）；
+- `--eval-frames -1`（默认）用**整个留出段**评估，口径与训练时的验证一致。
+
+加 `--promote` 会把结果装进 `models/<对象>/<版本>_refined/`：
+
+```bash
+python scripts/finetune_refined.py --subject crh_1 --work-name run \
+    --defects output/defects/crh_1/run/crh_1 --steps 600 --promote
+
+# 之后用同一段留出集对比两个模型
+python scripts/render_test.py --subject crh_1 --work-name run \
+    --dataset crh_1 --frame-offset 2577 --frames 286
+python scripts/render_test.py --subject crh_1 --work-name run_refined \
+    --dataset crh_1 --frame-offset 2577 --frames 286
+```
+
+与在线热更新的关系：共用同一条训练循环，但热更新是"颜色跟随光照"，这里是
+"补结构性缺陷"，参数与监督都不同。
+
+### 怎么判断"那些缺陷真的被修了"
+
+不能用"与精修图的 PSNR"当判据 —— 我们就是在拟合它，这个数必然涨。正确的做法是
+**回到同一批视角，比较结构性指标**：
+
+```bash
+python scripts/compare_defects.py --subject crh_1 --work-name run_refined \
+    --base-work run --dataset crh_1
+```
+
+| 指标 | 定义 | 说明 |
+|---|---|---|
+| `hole` | 面 id 图说有表面、但 `alpha < 0.5` 的比例 | **结构断裂/空洞**；只与几何覆盖有关，调颜色改不了 |
+| `sharpness` | `alpha > 0.5` 内的平均梯度 | 糊/涂抹 |
+| `psnr_refined` | 与该视角精修图的 PSNR | 拟合程度，仅作参考 |
+
+若 `hole` 基本不降，说明缺陷是"没东西可画"而不是"画得不好"：**需要新增高斯
+（加密），而不是继续调颜色或尺度**。
+
+表里的 `psnr_refined` 是**渲染 vs SyncFix 输出**，不是真值 —— 它涨只说明"更像增强器"。
+判据要把三件事一起看：缺口（结构）、锐度（细节）、真值 PSNR（准确性）。实测一次
+微调的结果是：缺口 −1.9%、锐度 −2.5%、拟合 +3.0 dB、留出真值 +0.9 dB（其中低频
++1.9 dB、高频仅 +0.35 dB）—— 结论是"色调与平滑变准了，结构没补上"。`find_defects.py` 的报告里也把缺陷质量拆成
+"从未观测"与"看过但坏"两部分，前者占比高时同样指向这个结论。
+
 ## 增强数据（可选）
 
 外部生成的图可作补充训练样本，放在 `<数据集>/augmented/`，

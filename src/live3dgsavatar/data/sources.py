@@ -62,6 +62,11 @@ class Batch:
     image: torch.Tensor
     mask: torch.Tensor
     weight: torch.Tensor | None = None
+    #: 逐像素监督权重 `[B,1,H,W]`（缺陷加权微调用）
+    weight_map: torch.Tensor | None = None
+    #: 逐样本相机（缺省表示用数据集相机广播）：内参与 world→camera
+    K: torch.Tensor | None = None
+    w2c: torch.Tensor | None = None
 
     def __len__(self) -> int:
         return self.image.shape[0]

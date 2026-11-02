@@ -262,6 +262,32 @@ def hole_rate(hole_hits: np.ndarray, visible: np.ndarray) -> np.ndarray:
     return out
 
 
+def refine_weight_map(render: np.ndarray, refined: np.ndarray,
+                      mask: np.ndarray | None = None, *, floor: float = 0.05,
+                      peak_percentile: float = 90.0) -> np.ndarray:
+    """由"精修 − 渲染"的差分生成**监督权重图**（`[H, W]`，0–1）。
+
+    做法：
+    - 差分的通道平均 → 归一化到 90 分位（只留少数极端值，避免被个别像素拉满）
+    - 前景内取 `max(归一化值, floor)`：给一个下限，否则大部分像素权重为 0，
+      梯度会非常稀疏、优化不动
+    - 前景外置 0：背景本来就不可信，不参与
+
+    这个图同时是"哪里该修"和"修多少分算"的量 —— 一个量两用。
+    """
+    delta = refine_delta(render, refined)
+    fg = np.ones(delta.shape, dtype=bool) if mask is None else np.asarray(mask, bool)
+    out = np.zeros(delta.shape, dtype=np.float32)
+    if not bool(fg.any()):
+        return out
+    peak = float(np.percentile(delta[fg], peak_percentile))
+    if peak <= 0:
+        return out
+    w = np.clip(delta / peak, 0.0, 1.0)
+    out[fg] = np.maximum(w[fg], float(floor)).astype(np.float32)
+    return out
+
+
 def build_defect_map(*, per_face: dict[str, np.ndarray],
                      texel_face_id: torch.Tensor | np.ndarray,
                      tex_size: int,

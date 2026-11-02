@@ -17,6 +17,8 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 
 import live3dgsavatar  # noqa: E402, F401
 
+from script_loader import load_script  # noqa: E402
+
 from live3dgsavatar.core.camera import (orbit_w2c, project_point,  # noqa: E402
                                         rotation_x, rotation_y, roll_w2c)
 from live3dgsavatar.evaluation import (EvaluationReport, ViewSpec,  # noqa: E402
@@ -493,3 +495,113 @@ def test_cluster_frames_returns_real_rows() -> None:
         idx = int(spec.name[5:])
         assert 0 <= idx < len(X)
         assert np.allclose(spec.vector, X[idx]), "候选应当就是某一帧的表情"
+
+
+# ------------------------------------------------- 精修后的监督权重图 --
+
+
+def test_refine_weight_map_is_zero_without_delta() -> None:
+    from live3dgsavatar.evaluation import refine_weight_map
+
+    img = np.full((8, 8, 3), 100, np.uint8)
+    mask = np.zeros((8, 8), bool)
+    mask[2:6, 2:6] = True
+    out = refine_weight_map(img, img.copy(), mask, floor=0.05)
+    assert out.shape == (8, 8)
+    assert float(out[mask].max()) == 0.0, "没有差分就不该有权重"
+    assert float(out[~mask].max()) == 0.0
+
+
+def test_refine_weight_map_floor_and_foreground_only() -> None:
+    """前景内至少给 floor，前景外恒为 0（背景不参与监督）。"""
+    from live3dgsavatar.evaluation import refine_weight_map
+
+    render = np.zeros((8, 8, 3), np.uint8)
+    refined = render.copy()
+    refined[:, 4:] = 120                      # 右半边有改动
+    mask = np.zeros((8, 8), bool)
+    mask[:, :6] = True                        # 前景覆盖到第 6 列
+
+    out = refine_weight_map(render, refined, mask, floor=0.1)
+    assert float(out[:, :4][mask[:, :4]].max()) == pytest.approx(0.1), "无差分处取下限"
+    assert float(out[mask][out[mask] > 0.5].size) > 0, "有差分处应显著更大"
+    assert float(out[~mask].max()) == 0.0
+
+
+def test_refine_weight_map_handles_shapes() -> None:
+    from live3dgsavatar.evaluation import refine_weight_map
+
+    with pytest.raises(ValueError, match="尺寸不一致"):
+        refine_weight_map(np.zeros((4, 4, 3), np.uint8),
+                          np.zeros((8, 8, 3), np.uint8))
+    out = refine_weight_map(np.zeros((4, 4, 3), np.uint8),
+                            np.zeros((4, 4, 3), np.uint8), None, floor=0.2)
+    assert out.shape == (4, 4)
+
+
+# ------------------------------------------------ 标签解析与缺陷对比汇总 --
+
+
+def test_parse_view_label_roundtrip() -> None:
+    from live3dgsavatar.evaluation.views import parse_view_label
+
+    d = parse_view_label("yaw+40_pitch-20_roll+0_frame00348")
+    assert (d["yaw"], d["pitch"], d["roll"], d["expr"]) == (40.0, -20.0, 0.0,
+                                                            "frame00348")
+    d = parse_view_label("yaw-40_pitch+20_roll+15_axis02-")
+    assert (d["yaw"], d["pitch"], d["roll"], d["expr"]) == (-40.0, 20.0, 15.0,
+                                                            "axis02-")
+    with pytest.raises(ValueError, match="无法解析"):
+        parse_view_label("nonsense")
+
+
+def test_summarize_rows_reports_relative_changes() -> None:
+    """比较脚本的汇总：缺口相对变化、锐度相对变化、拟合增量。"""
+    m = load_script("compare_defects.py")
+    rows = [
+        {"label": "a", "hole_base": 0.10, "hole_new": 0.08,
+         "sharp_base": 4.0, "sharp_new": 3.8, "psnr_base": 23.0, "psnr_new": 25.0},
+        {"label": "b", "hole_base": 0.02, "hole_new": 0.02,
+         "sharp_base": 5.0, "sharp_new": 5.0, "psnr_base": 24.0, "psnr_new": 26.0},
+    ]
+    s = m.summarize_rows(rows)
+    assert s["n"] == 2
+    assert s["hole_delta"] == pytest.approx(-0.01)
+    assert s["hole_rel"] == pytest.approx(-0.1667, abs=1e-3)
+    # 相对变化是"均值的比"：4.4/4.5-1 = -2.2%，不是逐视角相对变化的平均
+    assert s["sharp_rel"] == pytest.approx(-0.0222, abs=1e-3)
+    assert s["psnr_delta"] == pytest.approx(2.0)
+
+
+def test_summarize_rows_handles_empty() -> None:
+    m = load_script("compare_defects.py")
+    assert m.summarize_rows([]) == {}
+
+
+def test_erode_shrinks_by_radius() -> None:
+    """比较脚本的腐蚀：每轮收缩 1 px，且不能越界回绕。"""
+    m = load_script("compare_defects.py")
+
+    mask = np.zeros((10, 10), bool)
+    mask[2:9, 2:9] = True                     # 7×7
+    assert int(m._erode(mask, 1).sum()) == 25
+    assert int(m._erode(mask, 2).sum()) == 9
+    # 贴着边界的块：不能因为回绕而"连"到对面
+    corner = np.zeros((10, 10), bool)
+    corner[:2, :2] = True
+    assert int(m._erode(corner, 2).sum()) == 0
+
+
+def test_per_face_texels_matches_binding_scale() -> None:
+    """UV 面积预测的 texel 数应与真实量级一致（口径自检）。"""
+    m = load_script("analyze_uv_density.py")
+    import numpy as np
+
+    # 一个 UV 面积 0.5 的三角形 + 一个零面积三角形
+    uvs = np.array([[0, 0], [1, 0], [0, 1], [0.2, 0.2]], np.float64)
+    uv_faces = np.array([[0, 1, 2], [0, 3, 3]], np.int64)
+    counts = m.per_face_texels(uvs, uv_faces, tex_size=2)
+    assert counts[0] == pytest.approx(0.5 * 4)
+    assert counts[1] == 0.0
+    row = m.summarise(counts, 2)
+    assert row["zero_texel_faces"] == pytest.approx(0.5)

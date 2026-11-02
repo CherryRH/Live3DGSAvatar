@@ -12,9 +12,11 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
-__all__ = ["ViewSpec", "candidate_views", "grid_size"]
+__all__ = ["ViewSpec", "candidate_views", "grid_size", "parse_view_label",
+           "LABEL_RE"]
 
 
 @dataclass(frozen=True)
@@ -84,3 +86,20 @@ def candidate_views(yaw_limit: float = 40.0, pitch_limit: float = 20.0,
 def grid_size(*args, **kwargs) -> int:
     """候选视角数量（不必真的构造列表）。"""
     return len(candidate_views(*args, **kwargs))
+
+
+#: 候选标签：`yaw+40_pitch+20_roll+0_frame00348`（`find_defects.py` 产出）
+LABEL_RE = re.compile(r"yaw([+-]\d+)_pitch([+-]\d+)_roll([+-]\d+)_(.+)")
+
+
+def parse_view_label(label: str) -> dict:
+    """把候选标签拆成 `{yaw, pitch, roll, expr}`（角度为 float）。
+
+    Raises:
+        ValueError: 标签不符合约定 —— 说明不是我们的产物，不能静默猜
+    """
+    m = LABEL_RE.match(str(label))
+    if m is None:
+        raise ValueError(f"无法解析候选标签：{label!r}")
+    return {"yaw": float(m.group(1)), "pitch": float(m.group(2)),
+            "roll": float(m.group(3)), "expr": m.group(4)}

@@ -31,44 +31,6 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 import live3dgsavatar  # noqa: F401
 
 
-def promote_model(*, source_ply: Path, structure_config: Path, report: Path | None,
-                  target: Path, force: bool = False) -> Path:
-    """把一个训练好的模型装进 `models/<对象>/<版本>/`，供渲染直接使用。
-
-    拷贝三样东西：
-
-    - `model.ply`：高斯参数（PLY 头内嵌 `gaussian_config`，可自描述结构）
-    - `config.yaml`：结构配置的可读副本（换机器/人工查看用）
-    - `report.json`：训练指标（可选，便于回溯训练来源）
-
-    Raises:
-        FileExistsError: 目标已存在且没给 `force` —— 覆盖已有模型是破坏性的，
-            必须显式确认
-    """
-    import shutil
-
-    if not Path(source_ply).is_file():
-        raise FileNotFoundError(f"找不到要装的模型：{source_ply}")
-    target = Path(target)
-    dest = target / "model.ply"
-    if dest.exists() and not force:
-        raise FileExistsError(
-            f"{dest} 已存在；确认覆盖请加 --force")
-    target.mkdir(parents=True, exist_ok=True)
-    def _copy(src: Path, dst: Path) -> None:
-        # 源与目标可能是同一个文件：结构配置常常就是目标目录里的那份
-        # （续训时 `resolve_structure_config` 会选中它），直接拷会抛 SameFileError
-        if Path(src).resolve() == Path(dst).resolve():
-            return
-        shutil.copyfile(src, dst)
-
-    _copy(source_ply, dest)
-    _copy(structure_config, target / "config.yaml")
-    if report is not None and Path(report).is_file():
-        _copy(report, target / "report.json")
-    return target
-
-
 def resolve_structure_config(models_dir: Path, subject: str, work: str,
                              *, explicit: Path | None = None,
                              repo_default: Path | None = None) -> Path:
@@ -154,6 +116,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     from live3dgsavatar.config import load_config, resolve_data_dir
+    from live3dgsavatar.data.models import promote_model
 
     cfg = load_config()
     subject = args.subject or str(cfg.get("subject") or "").strip()
