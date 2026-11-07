@@ -720,3 +720,48 @@ def test_trainer_picks_tensor_extras_from_render_output() -> None:
     out2 = SimpleNamespace(color=torch.zeros(1, 3, 2, 2),
                            alpha=torch.zeros(1, 1, 2, 2))
     assert trainer._extras(out2) == {}
+
+
+# ------------------------------------------------- 尺度上限（A3.1） --
+
+
+def test_scale_cap_hook_clamps_to_factor() -> None:
+    """尺度硬投影：只在启动后生效，且不超过快照的倍数。"""
+    import math
+    from types import SimpleNamespace
+
+    import torch
+
+    from live3dgsavatar.training.trainer import ScaleCapHook
+
+    scaling = torch.nn.Parameter(torch.full((4, 3), math.log(1e-3)))
+    module = SimpleNamespace(scaling=scaling)
+    hook = ScaleCapHook(module, factor=2.0, start=10)
+    hook.on_start(trainer=None)
+
+    with torch.no_grad():
+        scaling[:2] = math.log(50e-3)      # 两个高斯爆掉
+    hook.on_step(None, 5, {})
+    assert float(scaling[0, 0]) == pytest.approx(math.log(50e-3)), "未到起点不生效"
+
+    hook.on_step(None, 10, {})
+    expected = math.log(1e-3) + math.log(2.0)
+    assert float(scaling[0, 0]) == pytest.approx(expected, abs=1e-6)
+    assert float(scaling[2, 0]) == pytest.approx(math.log(1e-3), abs=1e-6)
+    # 计数是**按元素**的：2 个高斯 × 3 个轴
+    assert hook.clamped_last == 6
+
+
+def test_scale_cap_hook_can_be_disabled() -> None:
+    from types import SimpleNamespace
+
+    import torch
+
+    from live3dgsavatar.training.trainer import ScaleCapHook
+
+    scaling = torch.nn.Parameter(torch.zeros(2, 3))
+    hook = ScaleCapHook(SimpleNamespace(scaling=scaling), factor=0.0, start=0)
+    hook.on_start(trainer=None)
+    scaling.data.fill_(10.0)
+    hook.on_step(None, 100, {})
+    assert float(scaling[0, 0]) == 10.0, "factor=0 时不限制"

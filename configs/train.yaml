@@ -49,12 +49,18 @@ train:
     # 大角度孔洞正则：每隔 hole_every 步，在 ±hole_yaw 内随机取一个视角渲染，
     # 把轮廓内 alpha 不足（relu(0.5 − α)）作为一项损失。0 表示关闭。
     # 权重不宜大：它只负责"别在斜视角塌掉"，不负责细节。
-    hole_weight: 0.1
+    # 权重从小开始：0.1 的实测结果是"缺口 −89%、锐度 −51%"，属于把表面糊住。
+    hole_weight: 0.03
     hole_every: 20
     # 从第几步开始（默认与 blend_start 相同，即形变基启用之后）
     hole_start: 3000
     # 采样的最大水平角（度）
     hole_yaw: 40.0
+    # 只有 α 低于该值才罚。0.5 会把"略薄但没破"的地方也推实，导致整体变糊。
+    hole_threshold: 0.3
+    # 尺度相对启动快照的最大倍数（硬投影）。0 表示不限制。
+    # 实测不限制时个别高斯从 90 mm 涨到 318 mm，一个高斯盖住半张脸。
+    hole_scale_cap: 1.5
     # 训练产物写到 <output_dir>/train/<subject>/<work_name>/
     max_frames: null
 

@@ -108,6 +108,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="从第几步开始启用（默认与 blend_start 相同）")
     p.add_argument("--hole-yaw", type=float, default=None,
                    help="孔洞正则采样的最大水平角（默认 40°）")
+    p.add_argument("--hole-threshold", type=float, default=None,
+                   help="α 低于该值才罚（默认 0.3；0.5 会把'略薄'也算缺陷）")
+    p.add_argument("--hole-scale-cap", type=float, default=None,
+                   help="尺度相对启动快照的最大倍数（默认 1.5；0 表示不限制）")
+    p.add_argument("--hole-mask", type=Path, default=None,
+                   help="缺陷质量 npz（find_defects 的 mass.npz）：只罚高缺陷区域")
     p.add_argument("--robust-eval-frames", type=int, default=None,
                    help="参与大角度统计的验证帧数（默认 24）")
     p.add_argument("--robust-eval-weight", type=float, default=None,
@@ -185,6 +191,12 @@ def main(argv: list[str] | None = None) -> int:
                      else cfg.get("train.pipeline.hole_start", blend_start))
     hole_yaw = float(args.hole_yaw if args.hole_yaw is not None
                      else cfg.get("train.pipeline.hole_yaw", 40.0))
+    hole_threshold = float(args.hole_threshold
+                           if args.hole_threshold is not None
+                           else cfg.get("train.pipeline.hole_threshold", 0.3))
+    hole_scale_cap = float(args.hole_scale_cap
+                           if args.hole_scale_cap is not None
+                           else cfg.get("train.pipeline.hole_scale_cap", 1.5))
 
     from live3dgsavatar.data.sources import ManifestSource
 
@@ -278,9 +290,31 @@ def main(argv: list[str] | None = None) -> int:
     objective = Objective.rgba_avatar_defaults()
     objective.mask_weight = mask_weight
     objective.hole = hole_weight
+    # 可选：只在高缺陷区域施加孔洞惩罚（缺陷质量按 texel 存，转成逐面最大值）
+    hole_face_mass = None
+    if hole_weight > 0 and args.hole_mask is not None:
+        import numpy as _np
+
+        with _np.load(args.hole_mask) as _d:
+            if "mass" not in _d.files:
+                raise SystemExit(f"[error] {args.hole_mask} 里没有 mass")
+            _mass = _np.asarray(_d["mass"], dtype=_np.float32)
+        if _mass.size != avatar.num_gaussians:
+            raise SystemExit(
+                f"[error] 缺陷质量长度 {_mass.size} 与高斯数 "
+                f"{avatar.num_gaussians} 不一致")
+        _fid = avatar.binding_face_id.detach().cpu().numpy()
+        _face_max = _np.zeros(int(scene.faces.max()) + 1, dtype=_np.float32)
+        _np.maximum.at(_face_max, _fid, _mass)
+        hole_face_mass = torch.from_numpy(_face_max).to(device)
+        _thr = float(_np.percentile(_mass, 80))
+        print(f"  孔洞掩码: {args.hole_mask}（面阈值 {_thr:.3f}，"
+              f"命中面 {( _face_max > _thr).mean():.0%}）")
+
     if hole_weight > 0:
         print(f"  孔洞   : 权重 {hole_weight:g}，每 {hole_every} 步，"
-              f"第 {hole_start} 步起，±{hole_yaw:g}°")
+              f"第 {hole_start} 步起，±{hole_yaw:g}°，阈值 {hole_threshold:g}，"
+              f"尺度上限 ×{hole_scale_cap:g}")
     print(f"  损失   : L1（背景权重 {mask_weight:.2f}）")
 
     def render_fn(mesh_verts, weight, batch, iteration):
@@ -313,7 +347,13 @@ def main(argv: list[str] | None = None) -> int:
                 hole_out = rasterizer.render(
                     hole_gs, hole_cam, torch.zeros(1, 3, 1, 1, device=device))
                 alpha = hole_out.alpha[0, 0]
-                out.hole_loss = torch.relu(0.5 - alpha[surface]).mean()
+                sel = surface
+                if hole_face_mass is not None:
+                    # 只惩罚"高缺陷面"覆盖到的像素
+                    thr = float(torch.quantile(hole_face_mass, 0.8))
+                    sel = surface & (hole_face_mass[ids] > thr)
+                if bool(sel.any()):
+                    out.hole_loss = torch.relu(hole_threshold - alpha[sel]).mean()
         return out
 
     last_eval: dict[str, float] = {}
@@ -415,8 +455,11 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  [best] 第 {iteration} 步 验证 {metric:.2f} dB → model_best.ply",
                   flush=True)
 
+    from live3dgsavatar.training.trainer import ScaleCapHook
+
     hooks = (
         LogHook(every=100),
+        ScaleCapHook(avatar, factor=hole_scale_cap, start=hole_start),
         ValidationHook(source=val_src, evaluate=evaluate, every=eval_every,
                        early_stop=EarlyStopping(patience=patience,
                                                 min_delta=min_delta),
