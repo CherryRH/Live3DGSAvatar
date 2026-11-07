@@ -28,6 +28,8 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
+import numpy as np
+
 import live3dgsavatar  # noqa: F401
 
 
@@ -108,10 +110,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="从第几步开始启用（默认与 blend_start 相同）")
     p.add_argument("--hole-yaw", type=float, default=None,
                    help="孔洞正则采样的最大水平角（默认 40°）")
+    p.add_argument("--smooth-weight", type=float, default=None,
+                   help="UV 邻域平滑权重（0 关闭；建议 0.002–0.005）")
     p.add_argument("--hole-threshold", type=float, default=None,
                    help="α 低于该值才罚（默认 0.3；0.5 会把'略薄'也算缺陷）")
     p.add_argument("--hole-scale-cap", type=float, default=None,
-                   help="尺度相对启动快照的最大倍数（默认 1.5；0 表示不限制）")
+                   help="尺度相对启动快照的最大倍数（默认 0 = 不限制；"
+                        "开上限会压缩尺度分布，逼模型用不透明度补偿）")
     p.add_argument("--hole-mask", type=Path, default=None,
                    help="缺陷质量 npz（find_defects 的 mass.npz）：只罚高缺陷区域")
     p.add_argument("--robust-eval-frames", type=int, default=None,
@@ -191,12 +196,14 @@ def main(argv: list[str] | None = None) -> int:
                      else cfg.get("train.pipeline.hole_start", blend_start))
     hole_yaw = float(args.hole_yaw if args.hole_yaw is not None
                      else cfg.get("train.pipeline.hole_yaw", 40.0))
+    smooth_weight = float(args.smooth_weight if args.smooth_weight is not None
+                          else cfg.get("train.pipeline.smooth_weight", 0.0))
     hole_threshold = float(args.hole_threshold
                            if args.hole_threshold is not None
                            else cfg.get("train.pipeline.hole_threshold", 0.3))
     hole_scale_cap = float(args.hole_scale_cap
                            if args.hole_scale_cap is not None
-                           else cfg.get("train.pipeline.hole_scale_cap", 1.5))
+                           else cfg.get("train.pipeline.hole_scale_cap", 0.0))
 
     from live3dgsavatar.data.sources import ManifestSource
 
@@ -290,6 +297,7 @@ def main(argv: list[str] | None = None) -> int:
     objective = Objective.rgba_avatar_defaults()
     objective.mask_weight = mask_weight
     objective.hole = hole_weight
+    objective.smooth = smooth_weight
     # 可选：只在高缺陷区域施加孔洞惩罚（缺陷质量按 texel 存，转成逐面最大值）
     hole_face_mass = None
     if hole_weight > 0 and args.hole_mask is not None:
@@ -317,12 +325,33 @@ def main(argv: list[str] | None = None) -> int:
               f"尺度上限 ×{hole_scale_cap:g}")
     print(f"  损失   : L1（背景权重 {mask_weight:.2f}）")
 
+    # UV 邻域（供平滑正则用）：每个高斯的 UV = bary @ 面 UV
+    smooth_nb = None
+    if smooth_weight > 0:
+        from live3dgsavatar.training.regularizers import (laplacian_penalty,
+                                                          uv_adjacency)
+
+        _uv_faces = scene.uv_faces.detach().cpu().numpy()
+        _uvs = scene.uvs.detach().cpu().numpy()
+        _fid = avatar.binding_face_id.detach().cpu().numpy()
+        _bary = avatar.binding_face_bary.detach().cpu().numpy()
+        _uv = np.einsum("ni,nij->nj", _bary, _uvs[_uv_faces[_fid]])
+        smooth_nb = torch.from_numpy(
+            uv_adjacency(_uv, k=4, max_dist=1.5 / avatar.config.tex_size)
+        ).to(device)
+        with torch.no_grad():
+            _v = float(laplacian_penalty(avatar.xyz.detach(), smooth_nb))
+        print(f"  平滑   : 权重 {smooth_weight:g}（初始相对拉普拉斯 {_v:.3f}）")
+
     def render_fn(mesh_verts, weight, batch, iteration):
         mesh = Mesh(verts=mesh_verts.to(device), faces=scene.faces.to(device),
                     uvs=scene.uvs.to(device), uv_faces=scene.uv_faces.to(device))
         gs = avatar.deform(mesh, None if weight is None else weight.to(device))
         bg = torch.zeros(batch.image.shape[0], 3, 1, 1, device=device)
         out = rasterizer.render(gs, camera, bg, target_image=batch.image.to(device))
+
+        if smooth_nb is not None:
+            out.smooth_loss = laplacian_penalty(avatar.xyz, smooth_nb)
 
         # 孔洞正则：每隔若干步，在随机大角度视角下把"轮廓内 alpha 不足"变成损失。
         # 只在网格覆盖的像素上算，避免鼓励背景发散；软版本 relu(0.5 - α) 可反传。

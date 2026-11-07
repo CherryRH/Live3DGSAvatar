@@ -765,3 +765,59 @@ def test_scale_cap_hook_can_be_disabled() -> None:
     scaling.data.fill_(10.0)
     hook.on_step(None, 100, {})
     assert float(scaling[0, 0]) == 10.0, "factor=0 时不限制"
+
+
+# ------------------------------------------------ UV 邻域平滑（A4） --
+
+
+def test_uv_adjacency_links_grid_neighbours() -> None:
+    import numpy as np
+
+    from live3dgsavatar.training.regularizers import uv_adjacency
+
+    g = np.linspace(0, 1, 8)
+    gx, gy = np.meshgrid(g, g)
+    uv = np.stack([gx.ravel(), gy.ravel()], axis=1)
+    nb = uv_adjacency(uv, k=4, max_dist=0.2)
+    assert nb.shape == (64, 4)
+    assert not (nb == np.arange(64)[:, None]).any(), "不应包含自身"
+    # 每个邻居都必须在 4 邻域内（切比雪夫距离 1）
+    for i in range(64):
+        r, c = divmod(i, 8)
+        for j in nb[i]:
+            r2, c2 = divmod(int(j), 8)
+            assert max(abs(r - r2), abs(c - c2)) <= 1
+
+
+def test_laplacian_penalty_separates_smooth_from_noise() -> None:
+    import numpy as np
+    import torch
+
+    from live3dgsavatar.training.regularizers import (laplacian_penalty,
+                                                      uv_adjacency)
+
+    g = np.linspace(0, 1, 8)
+    gx, gy = np.meshgrid(g, g)
+    uv = np.stack([gx.ravel(), gy.ravel()], axis=1)
+    nb = torch.from_numpy(uv_adjacency(uv, k=4, max_dist=0.2))
+
+    smooth = torch.from_numpy(np.stack([uv[:, 0], uv[:, 1], uv[:, 0] * 0],
+                                       axis=1)).float()
+    noisy = torch.randn(64, 3)
+    assert float(laplacian_penalty(smooth, nb)) < 0.1
+    assert float(laplacian_penalty(noisy, nb)) > 0.4
+    assert float(laplacian_penalty(torch.zeros(64, 3), nb)) == 0.0
+
+
+def test_objective_can_weight_smooth_loss() -> None:
+    import torch
+
+    from live3dgsavatar.training.objectives import Objective
+
+    pred = torch.zeros(1, 3, 4, 4)
+    target = torch.zeros(1, 3, 4, 4)
+    obj = Objective(l1=1.0, smooth=0.5)
+    total, parts = obj(pred=pred, target=target, mask=None,
+                       extras={"smooth_loss": torch.tensor(0.2)})
+    assert parts["smooth_loss"] == pytest.approx(0.2)
+    assert float(total) == pytest.approx(0.1)

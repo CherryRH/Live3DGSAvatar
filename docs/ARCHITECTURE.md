@@ -226,8 +226,10 @@ Live3DGSAvatar/
 │   ├── train.py                 # 训练入口（参数计划 + 损失 + 钩子 + 落地）
 │   ├── cache_images.py          # 图像打包成 images.npy（训练直读，跳过解码）
 │   ├── find_defects.py          # 找瑕疵并选视角：覆盖统计 → 候选评估 → 贪心选择
-│   ├── finetune_refined.py      # 用精修图做缺陷加权微调（f_dc + opacity + scaling）
-│   ├── compare_defects.py       # 逐视角比较微调前后的结构缺口/锐度/拟合度
+│   ├── compare_defects.py       # 逐视角对比两个模型：缺口 / 尖刺 / 云外溢
+│   ├── compare_model_stats.py   # 对比两个模型的尺度/不透明度分布（离线）
+│   ├── analyze_failure_modes.py # 三角面 × 高斯 × 姿态暴露的离线剖析
+│   ├── analyze_uv_density.py    # UV 采样密度：每面 texel 数（离线）
 │   ├── build_dataset.py         # RDF 结果 → 标准数据集 / 增强集
 │   ├── online_update.py         # 在线更新（闭式颜色校正 + 梯度微调）
 │   ├── rdf_bridge.py            # 追踪服务（realdenseface 环境，画面进参数出）

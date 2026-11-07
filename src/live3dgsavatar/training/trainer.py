@@ -213,7 +213,7 @@ class Trainer:
         属性；没有就当 0（`Objective` 按权重跳过）。
         """
         extras = {}
-        for name in ("sparsity_loss", "orth_loss", "hole_loss"):
+        for name in ("sparsity_loss", "orth_loss", "hole_loss", "smooth_loss"):
             value = getattr(out, name, None)
             if callable(value):
                 extras[name] = value()

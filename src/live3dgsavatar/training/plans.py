@@ -132,24 +132,6 @@ class ParameterPlan:
         })
 
     @classmethod
-    def defect_finetune(cls, *, lr_color: float = 2e-3,
-                        lr_opacity: float = 1e-2,
-                        lr_scaling: float = 2e-3,
-                        max_steps: int = 800) -> "ParameterPlan":
-        """缺陷修复微调：颜色 + 不透明度 + 尺度。
-
-        比 `appearance_only` 多两类参数，原因是**极角缺陷往往不是颜色问题**：
-        侧脸"糊成一团"、发际线出现空洞，多半是那里没有足够的高斯覆盖，
-        只改颜色填不上。放开尺度与不透明度可以让已有高斯"长大一点"补住空洞，
-        代价是几何轻微变形，所以学习率比颜色低一个数量级、步数也更短。
-        """
-        return cls(groups={
-            "f_dc": GroupPlan(lr=float(lr_color), max_steps=max_steps),
-            "opacity": GroupPlan(lr=float(lr_opacity), max_steps=max_steps),
-            "scaling": GroupPlan(lr=float(lr_scaling), max_steps=max_steps),
-        })
-
-    @classmethod
     def appearance_only(cls, *, lr_color: float = 2e-3,
                         lr_opacity: float = 2e-2,
                         with_opacity: bool = True) -> "ParameterPlan":

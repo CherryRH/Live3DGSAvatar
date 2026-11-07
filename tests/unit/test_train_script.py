@@ -252,20 +252,6 @@ def test_build_dataset_renames_images_to_five_digits(tmp_path) -> None:
         assert list(d["names"]) == ["00000", "00001"]
 
 
-# ------------------------------------------------- SyncFix 输入的准备工作 --
-
-
-def test_to_uint8_range_and_shape() -> None:
-    import torch
-
-    m = load_script("make_syncfix_inputs.py")
-    x = torch.zeros(1, 3, 4, 5)
-    x[0, 0] = 1.0
-    img = m.to_uint8(x)
-    assert img.shape == (4, 5, 3) and img.dtype.name == "uint8"
-    assert img[..., 0].max() == 255 and img[..., 1].max() == 0
-
-
 # ------------------------------------------------------- 缺陷定位脚本 --
 
 
@@ -301,44 +287,3 @@ def test_find_defects_requires_model_and_dataset() -> None:
             m.main(["--subject", "crh_1", "--work-name", "nope",
                     "--dataset", "crh_1", "--dry-run"])
     assert "[error]" in str(err.value.code)
-
-
-# ------------------------------------------------- 缺陷加权微调（脚本） --
-
-
-def test_parse_label_handles_signs_and_expression_names() -> None:
-    m = load_script("finetune_refined.py")
-    d = m.parse_label("yaw+40_pitch-20_roll+0_frame00348")
-    assert (d["yaw"], d["pitch"], d["roll"], d["expr"]) == (40.0, -20.0, 0.0,
-                                                            "frame00348")
-    d = m.parse_label("yaw-40_pitch+20_roll+15_axis02-")
-    assert (d["yaw"], d["pitch"], d["roll"], d["expr"]) == (-40.0, 20.0, 15.0,
-                                                            "axis02-")
-    with pytest.raises(ValueError, match="无法解析"):
-        m.parse_label("garbage")
-
-
-def test_defect_finetune_plan_includes_scaling() -> None:
-    """极角缺陷多半是覆盖不足，只改颜色填不上 —— 计划里必须有 scaling。"""
-    from live3dgsavatar.training.plans import ParameterPlan
-
-    plan = ParameterPlan.defect_finetune()
-    assert set(plan.enabled) == {"f_dc", "opacity", "scaling"}
-    assert plan.lr_at("scaling", 0) < plan.lr_at("f_dc", 0) * 2
-
-
-def test_finetune_dry_run_plans_without_refined_dir() -> None:
-    import io
-    import contextlib
-
-    root = REPO_ROOT / "datasets" / "crh_1"
-    if not (root / "render_inputs.npz").is_file():
-        pytest.skip("缺少仓库内数据集")
-
-    m = load_script("finetune_refined.py")
-    buf = io.StringIO()
-    with contextlib.redirect_stdout(buf):
-        code = m.main(["--subject", "crh_1", "--work-name", "run", "--dry-run"])
-    out = buf.getvalue()
-    assert code == 0
-    assert "精修视角" in out and "微调" in out

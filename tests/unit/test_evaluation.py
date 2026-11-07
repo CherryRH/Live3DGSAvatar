@@ -500,48 +500,6 @@ def test_cluster_frames_returns_real_rows() -> None:
 # ------------------------------------------------- 精修后的监督权重图 --
 
 
-def test_refine_weight_map_is_zero_without_delta() -> None:
-    from live3dgsavatar.evaluation import refine_weight_map
-
-    img = np.full((8, 8, 3), 100, np.uint8)
-    mask = np.zeros((8, 8), bool)
-    mask[2:6, 2:6] = True
-    out = refine_weight_map(img, img.copy(), mask, floor=0.05)
-    assert out.shape == (8, 8)
-    assert float(out[mask].max()) == 0.0, "没有差分就不该有权重"
-    assert float(out[~mask].max()) == 0.0
-
-
-def test_refine_weight_map_floor_and_foreground_only() -> None:
-    """前景内至少给 floor，前景外恒为 0（背景不参与监督）。"""
-    from live3dgsavatar.evaluation import refine_weight_map
-
-    render = np.zeros((8, 8, 3), np.uint8)
-    refined = render.copy()
-    refined[:, 4:] = 120                      # 右半边有改动
-    mask = np.zeros((8, 8), bool)
-    mask[:, :6] = True                        # 前景覆盖到第 6 列
-
-    out = refine_weight_map(render, refined, mask, floor=0.1)
-    assert float(out[:, :4][mask[:, :4]].max()) == pytest.approx(0.1), "无差分处取下限"
-    assert float(out[mask][out[mask] > 0.5].size) > 0, "有差分处应显著更大"
-    assert float(out[~mask].max()) == 0.0
-
-
-def test_refine_weight_map_handles_shapes() -> None:
-    from live3dgsavatar.evaluation import refine_weight_map
-
-    with pytest.raises(ValueError, match="尺寸不一致"):
-        refine_weight_map(np.zeros((4, 4, 3), np.uint8),
-                          np.zeros((8, 8, 3), np.uint8))
-    out = refine_weight_map(np.zeros((4, 4, 3), np.uint8),
-                            np.zeros((4, 4, 3), np.uint8), None, floor=0.2)
-    assert out.shape == (4, 4)
-
-
-# ------------------------------------------------ 标签解析与缺陷对比汇总 --
-
-
 def test_parse_view_label_roundtrip() -> None:
     from live3dgsavatar.evaluation.views import parse_view_label
 
@@ -644,60 +602,3 @@ def test_subsample_is_deterministic_and_bounded() -> None:
     assert subsample(10, 3) == subsample(10, 3)
     assert subsample(5, 99) == [0, 1, 2, 3, 4]
     assert subsample(0, 3) == []
-
-
-# ------------------------------------------------ 评估管线敏感度检查 --
-
-
-def test_sensitivity_measure_and_summarise() -> None:
-    """敏感度脚本的度量函数：孔洞只由 alpha 决定，与颜色无关。"""
-    import numpy as np
-
-    m = load_script("check_eval_sensitivity.py")
-    alpha = np.ones((16, 16), np.float32)
-    alpha[0:8] = 0.0                      # 上半满洞
-    ids = np.zeros((16, 16), np.int32)    # 全是表面
-    img = np.full((16, 16, 3), 100, np.uint8)
-
-    hole, sharp, psnr, deficit, spike = m.measure(alpha, ids, img, refined=None)
-    assert hole == pytest.approx(0.5)
-    assert sharp >= 0.0 and psnr is None
-
-    # 颜色改变不影响孔洞
-    img2 = np.full((16, 16, 3), 200, np.uint8)
-    hole2, _, _, _, _ = m.measure(alpha, ids, img2, refined=None)
-    assert hole2 == pytest.approx(hole)
-
-    # 背景（ids=-1）不计入
-    ids_bg = np.full((16, 16), -1, np.int32)
-    hole3, _, _, _, _ = m.measure(alpha, ids_bg, img, refined=None)
-    assert hole3 == 0.0
-
-    rows = [{"hole": 0.2, "sharp": 4.0, "psnr": None},
-            {"hole": 0.4, "sharp": 5.0, "psnr": 20.0}]
-    s = m.summarise(rows)
-    assert s["hole"] == pytest.approx(0.3)
-    assert s["sharp"] == pytest.approx(4.5)
-    assert s["psnr"] == pytest.approx(20.0)
-
-
-def test_alpha_deficit_and_gradient() -> None:
-    """连续缺口比阈值口径更细：α 从 0.9 掉到 0.6 不该完全看不见。"""
-    import torch
-
-    from live3dgsavatar.evaluation import alpha_deficit, alpha_gradient
-
-    alpha = torch.full((8, 8), 0.9)
-    surface = torch.ones(8, 8, dtype=torch.bool)
-    near = alpha_deficit(alpha, surface)
-    alpha2 = torch.full((8, 8), 0.6)
-    lower = alpha_deficit(alpha2, surface)
-    assert near == pytest.approx(0.1, abs=1e-6)
-    assert lower == pytest.approx(0.4, abs=1e-6), "阈值口径这时完全不动"
-    assert alpha_deficit(torch.ones(4, 4), torch.zeros(4, 4, dtype=torch.bool)) == 0.0
-
-    flat = torch.ones(8, 8)
-    assert alpha_gradient(flat, surface) == pytest.approx(0.0, abs=1e-6)
-    spikes = torch.zeros(8, 8)
-    spikes[::2, ::2] = 1.0
-    assert alpha_gradient(spikes, surface) > 0.0

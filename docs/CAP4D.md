@@ -62,7 +62,7 @@ rot6d）对比：
 模型渲染出多视角：
 
 ```bash
-python scripts/make_syncfix_inputs.py --subject crh_1 --work-name run --frames 6
+（取数脚本已随该实验一并移除，结论保留。）
 ```
 
 产出 `output/syncfix_<对象>/{input_pose,input_novel,gt,ref_image}` 与清单，

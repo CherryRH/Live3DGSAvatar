@@ -114,79 +114,50 @@ train.pipeline:
 python scripts/train.py --subject crh_1 --work-name run --no-robust-eval   # 关掉
 ```
 
-指标含义与标定见 [`PIPELINE_ROBUSTNESS.md`](PIPELINE_ROBUSTNESS.md)。
+指标含义见 [`REDESIGN.md`](REDESIGN.md)。
 
 ## 大角度孔洞正则
 
 每隔 `hole_every` 步（默认 20），从当前 batch 取一帧，在 ±`hole_yaw`（默认 40°）内
-随机取一个视角渲染，把轮廓内 `relu(0.5 − α)` 的均值作为一项损失。目的是让模型在
-斜视角下"至少把表面填满"，而不是靠正脸数据学出来的稀疏覆盖。
+随机取一个视角渲染，把轮廓内 `relu(hole_threshold − α)` 的均值作为一项损失。
+目的是让模型在斜视角下"至少把表面填满"，而不是靠正脸数据学出来的稀疏覆盖。
 
 ```bash
-python scripts/train.py --subject crh_1 --work-name run --hole-weight 0.1   # 默认
+python scripts/train.py --subject crh_1 --work-name run                      # 默认（权重 0.03）
 python scripts/train.py --subject crh_1 --work-name run --hole-weight 0      # 关闭
+python scripts/train.py --subject crh_1 --work-name run \
+    --hole-mask output/defects/crh_1/run/crh_1/mass.npz                      # 只在缺陷区施压
 ```
 
 它与大角度验证（上面一节）是一对：验证负责**发现**，正则负责**压制**。
+实测权重 0.1 会把指标刷到"缺口 −89%、锐度 −51%"，属于用放大高斯糊住表面；
+默认值因此降到 0.03，并配合阈值 0.3 与可选缺陷掩码。
 
-## 缺陷修复微调（精修图）
+## UV 邻域平滑
 
-`find_defects.py` 找出极角缺陷并选出待精修视角，外部精修器（如 SyncFix）产出
-`<缺陷目录>/refined/*.png` 之后：
+`--smooth-weight 0.003` 打开：惩罚每个高斯的偏移与其 UV 邻域均值的相对差。
+基线模型的这个比值是 0.845（邻域之间几乎无关），目标压到 0.5 以下。它不改表示、
+不改格式，只是让偏移场不再是白噪声。
 
-```bash
-python scripts/finetune_refined.py --subject crh_1 --work-name run \
-    --defects output/defects/crh_1/run/crh_1 --steps 600
-```
+## 缺陷评估口径
 
-- 参数：`f_dc + opacity + scaling`（见 `ParameterPlan.defect_finetune`）——
-  极角缺陷多是覆盖不足，只改颜色填不上。实测对照：只改颜色、或颜色+不透明度，
-  留出集都比三者全开时低约 **0.15 dB**；未覆盖区域的表面本就不完整，
-  需要靠尺度把高斯"撑"过去；
-- 损失：L1 按 `|精修 − 渲染|` 的逐像素权重加权，只在前景内生效；
-- 每批固定混入真实帧做锚定，验收看**留出真值 PSNR**（掉了会告警）；
-- `--eval-frames -1`（默认）用**整个留出段**评估，口径与训练时的验证一致。
-
-加 `--promote` 会把结果装进 `models/<对象>/<版本>_refined/`：
+`find_defects.py` 选出问题视角，`compare_defects.py` 对比两个模型在这些视角上的
+结构性指标：
 
 ```bash
-python scripts/finetune_refined.py --subject crh_1 --work-name run \
-    --defects output/defects/crh_1/run/crh_1 --steps 600 --promote
-
-# 之后用同一段留出集对比两个模型
-python scripts/render_test.py --subject crh_1 --work-name run \
-    --dataset crh_1 --frame-offset 2577 --frames 286
-python scripts/render_test.py --subject crh_1 --work-name run_refined \
-    --dataset crh_1 --frame-offset 2577 --frames 286
-```
-
-与在线热更新的关系：共用同一条训练循环，但热更新是"颜色跟随光照"，这里是
-"补结构性缺陷"，参数与监督都不同。
-
-### 怎么判断"那些缺陷真的被修了"
-
-不能用"与精修图的 PSNR"当判据 —— 我们就是在拟合它，这个数必然涨。正确的做法是
-**回到同一批视角，比较结构性指标**：
-
-```bash
-python scripts/compare_defects.py --subject crh_1 --work-name run_refined \
+python scripts/find_defects.py --subject crh_1 --work-name run --dataset crh_1
+python scripts/compare_defects.py --subject crh_1 --work-name run2 \
     --base-work run --dataset crh_1
 ```
 
 | 指标 | 定义 | 说明 |
 |---|---|---|
-| `hole` | 面 id 图说有表面、但 `alpha < 0.5` 的比例 | **结构断裂/空洞**；只与几何覆盖有关，调颜色改不了 |
-| `sharpness` | `alpha > 0.5` 内的平均梯度 | 糊/涂抹 |
-| `psnr_refined` | 与该视角精修图的 PSNR | 拟合程度，仅作参考 |
+| `hole` | 面 id 图说有表面、但 `alpha < 0.5` 的比例 | 结构断裂/空洞 |
+| `spike` | 轮廓内 alpha 的梯度能量 | 表面碎裂/尖刺 |
+| `云外溢` | 渲染为实、但网格没有面的像素比例 | 点云与网格的错位程度 |
+| `psnr_refined` | 与该视角精修图的 PSNR | 拟合程度，**不是质量判据** |
 
-若 `hole` 基本不降，说明缺陷是"没东西可画"而不是"画得不好"：**需要新增高斯
-（加密），而不是继续调颜色或尺度**。
-
-表里的 `psnr_refined` 是**渲染 vs SyncFix 输出**，不是真值 —— 它涨只说明"更像增强器"。
-判据要把三件事一起看：缺口（结构）、锐度（细节）、真值 PSNR（准确性）。实测一次
-微调的结果是：缺口 −1.9%、锐度 −2.5%、拟合 +3.0 dB、留出真值 +0.9 dB（其中低频
-+1.9 dB、高频仅 +0.35 dB）—— 结论是"色调与平滑变准了，结构没补上"。`find_defects.py` 的报告里也把缺陷质量拆成
-"从未观测"与"看过但坏"两部分，前者占比高时同样指向这个结论。
+结论与路线分析见 [`REDESIGN.md`](REDESIGN.md)。
 
 ## 增强数据（可选）
 
