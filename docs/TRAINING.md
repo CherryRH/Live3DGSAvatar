@@ -136,6 +136,18 @@ python scripts/enhance_model.py --subject crh_1 --work-name run \
 - 每步都能单独重跑：`--skip-find` / `--skip-syncfix` / `--skip-train`；
 - 状态写在 `<缺陷目录>/enhance_pipeline.json`，重跑自动跳过已完成的步骤（`--force` 强制）；
 - 精修输出若文件名对不上视角标签，会按排序顺序对应并打印警告；
+- **搜索范围可调**：默认 ±40°/±20°、20 个表情、预算 16；调大即可覆盖更极端的情形：
+
+  ```bash
+  python scripts/enhance_model.py --subject crh_1 --work-name run \
+      --yaw-limit 60 --pitch-limit 30 --rolls -15 0 15 \
+      --clusters 12 --axes 10 --budget 32 \
+      --min-angle-sep 8 --per-base-max 2
+  ```
+
+  `--min-angle-sep` 限制已选视角之间的最小 (yaw, pitch) 距离，`--per-base-max`
+  限制同一基帧最多选几个——不加这两个，名额容易被"同一角度的不同表情"占满。
+  改了搜索参数后第 1 步会自动重跑（旧结果失效）。
 - `--dry-run` 只打印将执行的命令；
 - SyncFix 有独立环境时用 `--syncfix-env syncfix`（内部走 `conda run --no-capture-output`），
   或 `--syncfix-python <解释器路径>`；不指定时会自动检测名为 `syncfix` 的环境，

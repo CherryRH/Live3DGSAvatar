@@ -58,6 +58,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--work-name", default=None)
     p.add_argument("--dataset", default=None)
     p.add_argument("--budget", type=int, default=16, help="缺陷视角数量")
+    # ---- 搜索范围（调大即可覆盖更极端的视角/表情）----
+    p.add_argument("--yaw-limit", type=float, default=None)
+    p.add_argument("--pitch-limit", type=float, default=None)
+    p.add_argument("--rolls", type=float, nargs="+", default=None)
+    p.add_argument("--clusters", type=int, default=None, help="表情聚类数")
+    p.add_argument("--axes", type=int, default=None, help="主轴极值方向数")
+    p.add_argument("--min-angle-sep", type=float, default=None,
+                   help="已选视角的最小角度间隔（度）")
+    p.add_argument("--per-base-max", type=int, default=None,
+                   help="同一基帧最多选几个视角")
     p.add_argument("--defects", type=Path, default=None,
                    help="缺陷目录（默认 output/defects/<对象>/<版本>/<数据集>）")
 
@@ -277,8 +287,18 @@ def main(argv: list[str] | None = None) -> int:
     state_path = defects_dir / STATE_NAME
     state = load_state(state_path)
 
+    # 显式改了搜索范围时，旧的缺陷结果已失效 —— 必须重跑第 1 步
+    search_override = any(
+        v is not None for v in (args.yaw_limit, args.pitch_limit, args.clusters,
+                                args.axes, args.min_angle_sep,
+                                args.per_base_max)) or bool(args.rolls)
+
     def done(stage: str) -> bool:
-        return (not args.force and state.get(stage, {}).get("status") == "done")
+        if args.force:
+            return False
+        if stage == "find_defects" and search_override:
+            return False
+        return state.get(stage, {}).get("status") == "done"
 
     def mark(stage: str, **info) -> None:
         state[stage] = {"status": "done", **info}
@@ -299,10 +319,21 @@ def main(argv: list[str] | None = None) -> int:
               ("--skip-find" if args.skip_find else "已完成") + "）")
     else:
         print("\n[1/4] 找缺陷")
-        run([py, str(scripts / "find_defects.py"),
-             "--subject", subject, "--work-name", work,
-             "--dataset", dataset, "--budget", str(args.budget),
-             "--out", str(defects_dir)], dry_run=args.dry_run)
+        cmd = [py, str(scripts / "find_defects.py"),
+               "--subject", subject, "--work-name", work,
+               "--dataset", dataset, "--budget", str(args.budget),
+               "--out", str(defects_dir)]
+        for flag, value in (("--yaw-limit", args.yaw_limit),
+                            ("--pitch-limit", args.pitch_limit),
+                            ("--clusters", args.clusters),
+                            ("--axes", args.axes),
+                            ("--min-angle-sep", args.min_angle_sep),
+                            ("--per-base-max", args.per_base_max)):
+            if value is not None:
+                cmd += [flag, str(value)]
+        if args.rolls:
+            cmd += ["--rolls"] + [str(r) for r in args.rolls]
+        run(cmd, dry_run=args.dry_run)
         mark("find_defects", defects_dir=str(defects_dir))
 
     selected = defects_dir / "selected.json"
@@ -318,8 +349,13 @@ def main(argv: list[str] | None = None) -> int:
               ("--skip-syncfix" if args.skip_syncfix else "已完成") + "）")
     else:
         print(f"\n[2/4] 外部精修（{len(labels)} 个视角）")
-        prefix = syncfix_prefix(args)
-        print(f"  解释器：{' '.join(prefix)}", flush=True)
+        if args.dry_run and args.syncfix_dir is None:
+            print("  （dry-run：未提供 --syncfix-dir，跳过命令拼装）")
+            prefix = None
+        else:
+            prefix = syncfix_prefix(args)
+        if prefix is not None:
+            print(f"  解释器：{' '.join(prefix)}", flush=True)
         if not args.dry_run:
             probe = prefix + ["-c", "import imageio"]
             if subprocess.run(probe, capture_output=True).returncode != 0:
@@ -327,11 +363,12 @@ def main(argv: list[str] | None = None) -> int:
                     "[error] SyncFix 的 Python 无法 import imageio。\n"
                     "        请用 --syncfix-env <环境名> 或 --syncfix-python <解释器> "
                     "指定它的运行环境")
-        cmd = syncfix_command(args, views=len(labels))
-        cmd = [c.format(views=defects_dir / "views", refs=defects_dir / "refs",
-                        raw=syncfix_raw) for c in cmd]
-        run(cmd, cwd=Path(args.syncfix_dir) if args.syncfix_dir else None,
-            dry_run=args.dry_run)
+        if prefix is not None:
+            cmd = syncfix_command(args, views=len(labels))
+            cmd = [c.format(views=defects_dir / "views", refs=defects_dir / "refs",
+                            raw=syncfix_raw) for c in cmd]
+            run(cmd, cwd=Path(args.syncfix_dir) if args.syncfix_dir else None,
+                dry_run=args.dry_run)
         if not args.dry_run:
             got = collect_refined(syncfix_raw, refined_dir, labels)
             print(f"  整理出 {len(got)} 张精修图 → {refined_dir}")

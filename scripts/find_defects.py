@@ -47,6 +47,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--expr-count", type=int, default=None,
                    help="表情候选数；缺省 聚类 + 主轴极值")
     p.add_argument("--budget", type=int, default=16, help="选多少个待精修组合")
+    # ---- 搜索范围（默认与旧行为一致；调大就能覆盖更极端的情形）----
+    p.add_argument("--yaw-limit", type=float, default=40.0)
+    p.add_argument("--pitch-limit", type=float, default=20.0)
+    p.add_argument("--step", type=float, default=10.0)
+    p.add_argument("--dense-from", type=float, default=30.0,
+                   help="|yaw| 超过该值后按 dense-step 加密")
+    p.add_argument("--dense-step", type=float, default=5.0)
+    p.add_argument("--clusters", type=int, default=8, help="表情聚类数")
+    p.add_argument("--axes", type=int, default=6, help="主轴极值方向数")
+    # ---- 多样性约束 ----
+    p.add_argument("--min-angle-sep", type=float, default=None,
+                   help="已选视角之间的最小 (yaw,pitch) 距离（度）")
+    p.add_argument("--per-base-max", type=int, default=None,
+                   help="同一个基帧最多选几个视角")
     p.add_argument("--min-gain-ratio", type=float, default=0.002,
                    help="单次新增低于总质量的这个比例就停（太小会把预算花在长尾）")
     p.add_argument("--rolls", type=float, nargs="+", default=None,
@@ -91,7 +105,10 @@ def main(argv: list[str] | None = None) -> int:
                                            merge_specs)
 
     rolls = tuple(args.rolls) if args.rolls else (0.0,)
-    views = candidate_views(rolls=rolls)
+    views = candidate_views(yaw_limit=args.yaw_limit,
+                            pitch_limit=args.pitch_limit,
+                            step=args.step, dense_from=args.dense_from,
+                            dense_step=args.dense_step, rolls=rolls)
 
     with np.load(data_dir / "render_inputs.npz", allow_pickle=True) as d:
         weights = np.asarray(d["blend_weight"], dtype=np.float32)
@@ -104,8 +121,9 @@ def main(argv: list[str] | None = None) -> int:
 
     # 聚类取**真实帧**（姿态与表情自洽，且能回查原图）；主轴极值兜底没做过的方向
     specs = merge_specs(cluster_frames(X[:train_end],
-                                       k=min(8, max(4, train_end // 200))),
-                        axis_extremes(X[:train_end], k=6))
+                                       k=min(args.clusters,
+                                             max(4, train_end // 200))),
+                        axis_extremes(X[:train_end], k=args.axes))
     if args.expr_count:
         specs = specs[: int(args.expr_count)]
 
@@ -222,6 +240,7 @@ def main(argv: list[str] | None = None) -> int:
                     uvs=scene.uvs.to(device), uv_faces=scene.uv_faces.to(device))
 
     candidates = []
+    view_metrics: list[dict] = []
     hole_face_hits = np.zeros(n_faces, dtype=np.float64)
     hole_face_seen = np.zeros(n_faces, dtype=np.float64)
     floater_sum = np.zeros(n_gauss, dtype=np.float64)
@@ -254,12 +273,27 @@ def main(argv: list[str] | None = None) -> int:
             hole_face_seen += (np.bincount(ids_np[ids_np >= 0].reshape(-1),
                                            minlength=n_faces) > 0).astype(np.float64)
 
+            # 视图级缺陷：阈值孔洞率 + alpha 梯度（"碎"）
+            surface = ids_np >= 0
+            hole_ratio = (float((alpha[surface] < 0.5).mean())
+                          if bool(surface.any()) else 0.0)
+            gy, gx = np.gradient(alpha.astype(np.float64))
+            spike = (float(np.hypot(gx, gy)[surface].mean())
+                     if bool(surface.any()) else 0.0)
+            view_metrics.append({"label": f"{spec_view.label}_{expr.name}",
+                                 "hole": round(hole_ratio, 4),
+                                 "spike": round(spike, 5)})
+
             visible_faces = np.unique(ids_np[ids_np >= 0])
             covers = np.flatnonzero(np.isin(face_id_binding, visible_faces))
             candidates.append(Candidate(
                 label=f"{spec_view.label}_{expr.name}", covers=covers,
                 payload={"view": spec_view.to_dict(), "expr": expr.name,
-                         "base_frame": base_idx}))
+                         "base_frame": base_idx,
+                         "hole": round(hole_ratio, 4),
+                         "spike": round(spike, 5)},
+                position=(float(spec_view.yaw), float(spec_view.pitch)),
+                key=base_idx))
         if (vi + 1) % 10 == 0:
             print(f"  {vi + 1}/{len(views)} 个视角", flush=True)
 
@@ -284,8 +318,24 @@ def main(argv: list[str] | None = None) -> int:
         reachable[cand.covers] = True
     reachable_mass = float(mass[reachable].sum())
 
+    # 并列时的优先顺序：视图级缺陷（孔洞 + 尖刺）越高的越先考虑
+    z = {m["label"]: m for m in view_metrics}
+    if candidates:
+        spike_vals = np.array([m["spike"] for m in view_metrics], dtype=np.float64)
+        hole_vals = np.array([m["hole"] for m in view_metrics], dtype=np.float64)
+
+        def _z(v: np.ndarray) -> np.ndarray:
+            sd = float(v.std())
+            return (v - v.mean()) / sd if sd > 1e-9 else np.zeros_like(v)
+
+        score = _z(hole_vals) + 0.5 * _z(spike_vals)
+        order = np.argsort(-score)
+        candidates = [candidates[i] for i in order]
+
     result = greedy_cover(candidates, mass, budget=int(args.budget),
-                          min_gain_ratio=float(args.min_gain_ratio))
+                          min_gain_ratio=float(args.min_gain_ratio),
+                          min_sep=args.min_angle_sep,
+                          per_key_max=args.per_base_max)
 
     # 逐面汇总：覆盖次数、孔洞、飞点（都用同一套面索引，便于横向比较）
     off_face = np.zeros(n_faces, dtype=np.float64)
@@ -327,6 +377,7 @@ def main(argv: list[str] | None = None) -> int:
         "model": str(ply), "budget": int(args.budget),
         "candidate_count": len(candidates),
         "views": result.to_dict(),
+        "view_metrics": {m["label"]: m for m in view_metrics},
         "mass": mass_summary,
         "reachable_mass": round(reachable_mass, 1),
         "reachable_ratio": round(reachable_mass / max(1e-9, float(mass.sum())), 4),

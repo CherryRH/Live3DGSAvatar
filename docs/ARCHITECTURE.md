@@ -225,7 +225,7 @@ Live3DGSAvatar/
 │   ├── render_test.py           # 渲染测试：core vs 数据集原图（质量 + 性能）
 │   ├── train.py                 # 训练入口（参数计划 + 损失 + 钩子 + 落地）
 │   ├── cache_images.py          # 图像打包成 images.npy（训练直读，跳过解码）
-│   ├── find_defects.py          # 找瑕疵并选视角：覆盖统计 → 候选评估 → 贪心选择
+│   ├── find_defects.py          # 找瑕疵并选视角：搜索范围/表情池可调，贪心带多样性约束
 │   ├── enhance_model.py         # 顶层流程：找缺陷 → 精修 → 微调 → 落地 → 评测
 │   ├── refine_from_images.py    # 用外部精修图微调（缺陷加权 + SSIM + 留出选点）
 │   ├── compare_defects.py       # 逐视角对比两个模型：缺口 / 尖刺 / 云外溢

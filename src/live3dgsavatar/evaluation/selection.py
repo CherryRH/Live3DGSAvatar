@@ -35,11 +35,15 @@ class Candidate:
         label: 便于报告的名字，如 `yaw+30_pitch0_expr07`
         covers: 该组合**可见**的 texel 下标（`int` 数组，可重复可无序）
         payload: 调用方要用回的东西（`ViewSpec`、表情下标等），本模块不解释
+        position: `(yaw, pitch)`，用于**视角多样性**约束；`None` 表示不参与
+        key: 分组键（如基帧下标），用于限制**同组数量**；`None` 表示不参与
     """
 
     label: str
     covers: np.ndarray
     payload: object | None = None
+    position: tuple[float, float] | None = None
+    key: object | None = None
 
     def __post_init__(self) -> None:
         idx = np.asarray(self.covers, dtype=np.int64).reshape(-1)
@@ -73,7 +77,9 @@ class CoverageResult:
 
 
 def greedy_cover(candidates: list[Candidate], mass: np.ndarray, *,
-                 budget: int = 16, min_gain_ratio: float = 0.01) -> CoverageResult:
+                 budget: int = 16, min_gain_ratio: float = 0.01,
+                 min_sep: float | None = None,
+                 per_key_max: int | None = None) -> CoverageResult:
     """贪心选候选，最大化覆盖的缺陷质量。
 
     Args:
@@ -82,6 +88,9 @@ def greedy_cover(candidates: list[Candidate], mass: np.ndarray, *,
         budget: 最多选几个
         min_gain_ratio: 单次新增覆盖低于 `总质量的该比例` 就提前停止 ——
             避免为了一点点缺陷把预算花完
+        min_sep: 已选视角之间的最小 `(yaw, pitch)` 距离（度）；`None` 表示不限制。
+            没有它，16 个名额容易被"同一个角度的不同表情"占满
+        per_key_max: 同一个 `key`（如基帧）最多选几个；`None` 表示不限制
 
     Returns:
         `CoverageResult`；`gains` 是每一步**新增**的覆盖质量，可直接用于报告
@@ -104,6 +113,19 @@ def greedy_cover(candidates: list[Candidate], mass: np.ndarray, *,
     covered = np.zeros(mass.size, dtype=bool)
     remaining = list(range(len(candidates)))
     result = CoverageResult(total_mass=total)
+    key_counts: dict[object, int] = {}
+
+    def too_close(cand: Candidate) -> bool:
+        if min_sep is None or cand.position is None:
+            return False
+        for prev in result.chosen:
+            if prev.position is None:
+                continue
+            dy = cand.position[0] - prev.position[0]
+            dp = cand.position[1] - prev.position[1]
+            if (dy * dy + dp * dp) ** 0.5 < float(min_sep):
+                return True
+        return False
 
     while remaining and len(result.chosen) < budget:
         best_i = -1
@@ -111,6 +133,11 @@ def greedy_cover(candidates: list[Candidate], mass: np.ndarray, *,
         for i in remaining:
             idx = candidates[i].covers
             if idx.size == 0:
+                continue
+            if too_close(candidates[i]):
+                continue
+            if (per_key_max is not None and candidates[i].key is not None
+                    and key_counts.get(candidates[i].key, 0) >= per_key_max):
                 continue
             fresh = np.unique(idx[(idx >= 0) & (idx < mass.size)])
             if fresh.size == 0:
@@ -125,6 +152,9 @@ def greedy_cover(candidates: list[Candidate], mass: np.ndarray, *,
 
         result.chosen.append(candidates[best_i])
         result.gains.append(best_gain)
+        if candidates[best_i].key is not None:
+            key_counts[candidates[best_i].key] = \
+                key_counts.get(candidates[best_i].key, 0) + 1
         idx = candidates[best_i].covers
         covered[idx[(idx >= 0) & (idx < mass.size)]] = True
         remaining.remove(best_i)

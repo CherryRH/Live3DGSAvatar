@@ -627,3 +627,29 @@ def test_refine_weight_map_handles_empty_foreground() -> None:
                             np.zeros((4, 4, 3), np.uint8),
                             np.zeros((4, 4), bool), floor=0.2)
     assert float(out.max()) == 0.0
+
+
+def test_greedy_cover_respects_min_separation() -> None:
+    """视角太近的候选不该连续入选（否则名额被同一角度占满）。"""
+    from live3dgsavatar.evaluation import Candidate, greedy_cover
+
+    mass = np.ones(10)
+    near = [Candidate(f"a{i}", [i], position=(0.0, 0.0)) for i in range(3)]
+    far = [Candidate("b", [5], position=(30.0, 0.0)),
+           Candidate("c", [6], position=(-30.0, 0.0))]
+    res = greedy_cover(near + far, mass, budget=3, min_sep=10.0)
+    labels = [c.label for c in res.chosen]
+    assert labels.count("b") == 1 and labels.count("c") == 1
+    assert sum(1 for lab in labels if lab.startswith("a")) == 1
+
+
+def test_greedy_cover_respects_per_key_max() -> None:
+    """同一个基帧最多选几个。"""
+    from live3dgsavatar.evaluation import Candidate, greedy_cover
+
+    mass = np.ones(10)
+    cands = [Candidate(f"k{i}", [i], key="frame0") for i in range(4)]
+    cands += [Candidate("other", [7], key="frame1")]
+    res = greedy_cover(cands, mass, budget=4, per_key_max=1)
+    assert len(res.chosen) == 2
+    assert {c.key for c in res.chosen} == {"frame0", "frame1"}
