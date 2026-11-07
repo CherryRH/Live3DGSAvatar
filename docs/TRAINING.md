@@ -116,6 +116,28 @@ python scripts/train.py --subject crh_1 --work-name run --no-robust-eval   # 关
 
 指标含义见 [`REDESIGN.md`](REDESIGN.md)。
 
+## 模型增强流程（一条命令）
+
+从找缺陷到落地评测，四个阶段串成一条命令：
+
+```bash
+python scripts/enhance_model.py --subject crh_1 --work-name run \
+    --syncfix-dir ~/Projects/SyncFix --syncfix-model <权重> \
+    --promote-name run_refined
+```
+
+| 阶段 | 调用 | 产物 |
+|---|---|---|
+| 1 找缺陷 | `find_defects.py` | `<缺陷目录>/{selected.json, views/, refs/, mass.npz}` |
+| 2 外部精修 | SyncFix `inference.py` | `syncfix_raw/` → 整理成 `refined/` |
+| 3 微调 | `refine_from_images.py` | `<缺陷目录>/finetune/model.ply` + `models/<对象>/<名字>_refined/` |
+| 4 评测 | `render_test.py` ×2、`compare_defects.py` | 留出集 PSNR / 锐度比 / 结构缺口 |
+
+- 每步都能单独重跑：`--skip-find` / `--skip-syncfix` / `--skip-train`；
+- 状态写在 `<缺陷目录>/enhance_pipeline.json`，重跑自动跳过已完成的步骤（`--force` 强制）；
+- 精修输出若文件名对不上视角标签，会按排序顺序对应并打印警告；
+- `--dry-run` 只打印将执行的命令。
+
 ## 精修图微调
 
 `find_defects.py` 挑出待修视角并渲染，外部精修器（如 SyncFix）输出到

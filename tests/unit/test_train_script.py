@@ -327,3 +327,86 @@ def test_sharpness_ratio_of_same_image_is_one() -> None:
     img = np.random.default_rng(0).integers(0, 255, (16, 16, 3), dtype=np.uint8)
     mask = np.ones((16, 16), bool)
     assert m.sharpness_ratio(img, img, mask) == pytest.approx(1.0, abs=1e-6)
+
+
+# ------------------------------------------------ 增强流程（顶层脚本） --
+
+
+def test_syncfix_command_places_paths_and_extra_args() -> None:
+    m = load_script("enhance_model.py")
+    args = m.parse_args(["--subject", "a", "--work-name", "b",
+                         "--syncfix-dir", "/tmp/SyncFix",
+                         "--syncfix-model", "/tmp/w.pt",
+                         "--syncfix-arg=--foo=1"])
+    cmd = m.syncfix_command(args, views=7)
+    assert cmd[0] == "python" and cmd[1].endswith("SyncFix/inference.py")
+    assert cmd[cmd.index("--n_per_pass") + 1] == "7"
+    assert cmd[cmd.index("--model_path") + 1] == "/tmp/w.pt"
+    assert "--foo=1" in cmd
+    assert "{views}" in cmd and "{refs}" in cmd and "{raw}" in cmd
+
+
+def test_syncfix_command_requires_dir() -> None:
+    m = load_script("enhance_model.py")
+    args = m.parse_args(["--subject", "a", "--work-name", "b"])
+    with pytest.raises(RuntimeError, match="syncfix-dir"):
+        m.syncfix_command(args, views=1)
+
+
+def test_collect_refined_matches_by_stem(tmp_path) -> None:
+    from PIL import Image
+
+    m = load_script("enhance_model.py")
+    raw = tmp_path / "raw"
+    (raw / "sub").mkdir(parents=True)
+    labels = ["v1", "v2"]
+    for lab in labels:
+        Image.new("RGB", (4, 4), (10, 20, 30)).save(raw / "sub" / f"{lab}.png")
+    out = tmp_path / "refined"
+    got = m.collect_refined(raw, out, labels)
+    assert got == labels
+    assert (out / "v1.png").is_file() and (out / "v2.png").is_file()
+
+
+def test_collect_refined_falls_back_to_order(tmp_path) -> None:
+    from PIL import Image
+
+    m = load_script("enhance_model.py")
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    for i in range(2):
+        Image.new("RGB", (4, 4)).save(raw / f"result_{i}.png")
+    out = tmp_path / "refined"
+    got = m.collect_refined(raw, out, ["a", "b"])
+    assert got == ["a", "b"]
+    assert (out / "a.png").is_file() and (out / "b.png").is_file()
+
+
+def test_collect_refined_rejects_incomplete_output(tmp_path) -> None:
+    from PIL import Image
+
+    m = load_script("enhance_model.py")
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    Image.new("RGB", (4, 4)).save(raw / "x.png")
+    with pytest.raises(RuntimeError, match="少于"):
+        m.collect_refined(raw, tmp_path / "refined", ["a", "b"])
+
+
+def test_render_and_defect_metrics_extraction() -> None:
+    m = load_script("enhance_model.py")
+    report = {"quality": {"psnr_masked": {"median": 27.1, "min": 25.0,
+                                          "max": 30.0, "n": 286},
+                          "sharpness": {"ratio": 0.86}},
+              "summary": {"hole_base": {"mean": 0.17}, "hole_new": {"mean": 0.05},
+                          "hole_rel": -0.7,
+                          "outside_base": {"mean": 0.28},
+                          "outside_new": {"mean": 0.29},
+                          "sharp_rel": -0.02}}
+    rm = m.render_metrics(report)
+    assert rm["psnr"] == 27.1 and rm["sharp_ratio"] == 0.86
+    dm = m.defect_metrics(report)
+    assert dm["hole_before"] == 0.17 and dm["hole_after"] == 0.05
+    assert dm["outside_after"] == 0.29
+    assert m.render_metrics(None) == {}
+    assert m.defect_metrics(None) == {}
