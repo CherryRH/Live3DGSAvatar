@@ -105,6 +105,30 @@ train.pipeline:
 - `patience × eval_every` 才是"容忍多少步没有进步"；想更短就先减 patience
 - `min_delta` 太小会把噪声当提升，0.05 dB 一般合适
 
+## 大角度验证与早停
+
+默认开启：验证时在 24 帧上加渲染 ±20/30/40° 视角，统计轮廓内 `alpha < 0.5` 的面积
+比例，用 `PSNR − 10·缺口` 作为早停指标。只按正脸 PSNR 早停会选出"只在正脸好"的模型。
+
+```bash
+python scripts/train.py --subject crh_1 --work-name run --no-robust-eval   # 关掉
+```
+
+指标含义与标定见 [`PIPELINE_ROBUSTNESS.md`](PIPELINE_ROBUSTNESS.md)。
+
+## 大角度孔洞正则
+
+每隔 `hole_every` 步（默认 20），从当前 batch 取一帧，在 ±`hole_yaw`（默认 40°）内
+随机取一个视角渲染，把轮廓内 `relu(0.5 − α)` 的均值作为一项损失。目的是让模型在
+斜视角下"至少把表面填满"，而不是靠正脸数据学出来的稀疏覆盖。
+
+```bash
+python scripts/train.py --subject crh_1 --work-name run --hole-weight 0.1   # 默认
+python scripts/train.py --subject crh_1 --work-name run --hole-weight 0      # 关闭
+```
+
+它与大角度验证（上面一节）是一对：验证负责**发现**，正则负责**压制**。
+
 ## 缺陷修复微调（精修图）
 
 `find_defects.py` 找出极角缺陷并选出待精修视角，外部精修器（如 SyncFix）产出

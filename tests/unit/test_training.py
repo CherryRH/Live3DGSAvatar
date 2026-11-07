@@ -677,3 +677,46 @@ def test_manifest_source_batches_and_iterates(tmp_path) -> None:
     assert batch.image.shape[0] == 3 and batch.mesh.shape[0] == 3
     chunks = list(src.iter_batches(2))
     assert [c.image.shape[0] for c in chunks] == [2, 2, 1]
+
+
+# ------------------------------------------------- 孔洞正则（A3） --
+
+
+def test_objective_adds_hole_term_with_weight() -> None:
+    """`hole` 权重 × `hole_loss` 应进入总损失与分项。"""
+    import torch
+
+    from live3dgsavatar.training.objectives import Objective
+
+    pred = torch.zeros(1, 3, 4, 4)
+    target = torch.zeros(1, 3, 4, 4)
+    hole = torch.tensor(0.2)
+    _, p0 = Objective(l1=1.0)(pred=pred, target=target, mask=None,
+                             extras={"hole_loss": hole})
+    assert "hole_loss" not in p0, "权重为 0 时不应计入"
+
+    obj = Objective(l1=1.0, hole=0.5)
+    total, p1 = obj(pred=pred, target=target, mask=None,
+                    extras={"hole_loss": hole})
+    assert p1["hole_loss"] == pytest.approx(0.2)
+    assert float(total) == pytest.approx(0.1)
+
+
+def test_trainer_picks_tensor_extras_from_render_output() -> None:
+    """`render_fn` 以张量形式返回的正则应被 `_extras` 收进来。"""
+    import torch
+    from types import SimpleNamespace
+
+    from live3dgsavatar.training.trainer import Trainer
+
+    trainer = Trainer.__new__(Trainer)          # 只测 _extras，不构造优化器
+    out = SimpleNamespace(color=torch.zeros(1, 3, 2, 2),
+                          alpha=torch.zeros(1, 1, 2, 2),
+                          hole_loss=torch.tensor(0.3))
+    extras = trainer._extras(out)
+    assert set(extras) == {"hole_loss"}
+    assert float(extras["hole_loss"]) == pytest.approx(0.3)
+
+    out2 = SimpleNamespace(color=torch.zeros(1, 3, 2, 2),
+                           alpha=torch.zeros(1, 1, 2, 2))
+    assert trainer._extras(out2) == {}

@@ -735,3 +735,55 @@ def test_checker_detects_known_case() -> None:
     assert _use_before_assignment(src)
     ok = "def f():\n    x = 1\n    print(x)\n"
     assert not _use_before_assignment(ok)
+
+
+def test_avatar_attributes_used_in_scripts_exist() -> None:
+    """脚本里出现的 `avatar.<attr>` 必须在 `GaussianAvatar` 上真实存在。
+
+    这类错误只在 GPU 分支上触发（`avatar.f_dc` 实际叫 `avatar.color`），
+    本机跑不到，所以静态查一遍：属性来自 `self.x = ...`、`register_buffer`、
+    以及类方法。
+    """
+    import ast
+    import re
+
+    avatar_py = SRC / "core" / "avatar.py"
+    tree = ast.parse(avatar_py.read_text(encoding="utf-8"))
+    known: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if (isinstance(target, ast.Attribute)
+                        and isinstance(target.value, ast.Name)
+                        and target.value.id == "self"):
+                    known.add(target.attr)
+        elif isinstance(node, ast.Call):
+            fn = node.func
+            if (isinstance(fn, ast.Attribute) and fn.attr == "register_buffer"
+                    and node.args and isinstance(node.args[0], ast.Constant)):
+                known.add(str(node.args[0].value))
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            known.add(node.name)
+    known |= {"config", "num_gaussians", "num_basis", "num_basis_in"}
+
+    try:
+        import torch
+    except ImportError:                                  # pragma: no cover
+        torch = None
+
+    problems: list[str] = []
+    for path in sorted(list(SRC.rglob("*.py")) + list((REPO_ROOT / "scripts").glob("*.py"))):
+        if "__pycache__" in path.parts:
+            continue
+        text = path.read_text(encoding="utf-8")
+        for match in re.finditer(r"\bavatar\.([A-Za-z_][A-Za-z0-9_]*)", text):
+            name = match.group(1)
+            if name in known:
+                continue
+            # `nn.Module` 自带的成员（parameters / requires_grad_ 等）也算合法
+            if torch is not None and hasattr(torch.nn.Module, name):
+                continue
+            if name not in known:
+                line = text[:match.start()].count("\n") + 1
+                problems.append(f"{path.name}:{line} → avatar.{name}")
+    assert not problems, "脚本使用了 GaussianAvatar 上不存在的属性：\n  " + "\n  ".join(problems)

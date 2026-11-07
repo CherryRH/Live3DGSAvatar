@@ -95,6 +95,23 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="认为'有提升'的最小 dB 幅度")
     p.add_argument("--prefetch-workers", type=int, default=None,
                    help="后台预取线程数；0 表示不预取")
+    p.add_argument("--robust-eval", dest="robust_eval", action="store_true",
+                   default=None,
+                   help="验证时加入大角度视角，用 正脸PSNR − λ·缺口 早停")
+    p.add_argument("--no-robust-eval", dest="robust_eval", action="store_false",
+                   help="关闭大角度验证（只按正脸 PSNR 早停）")
+    p.add_argument("--hole-weight", type=float, default=None,
+                   help="大角度孔洞正则权重（0 关闭；默认取配置）")
+    p.add_argument("--hole-every", type=int, default=None,
+                   help="每隔多少步加一次孔洞正则（默认 20）")
+    p.add_argument("--hole-start", type=int, default=None,
+                   help="从第几步开始启用（默认与 blend_start 相同）")
+    p.add_argument("--hole-yaw", type=float, default=None,
+                   help="孔洞正则采样的最大水平角（默认 40°）")
+    p.add_argument("--robust-eval-frames", type=int, default=None,
+                   help="参与大角度统计的验证帧数（默认 24）")
+    p.add_argument("--robust-eval-weight", type=float, default=None,
+                   help="λ：缺口比例折算成 dB 的系数（默认 10，即 10%% 缺口 ≈ 1 dB）")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--model-config", type=Path, default=None,
                    help="模型结构配置（默认：模型目录里的 config.yaml，"
@@ -153,6 +170,21 @@ def main(argv: list[str] | None = None) -> int:
                       else cfg.get("train.pipeline.min_delta", 0.05))
     workers = int(args.prefetch_workers if args.prefetch_workers is not None
                   else cfg.get("train.pipeline.prefetch_workers", 2))
+    robust_enabled = (args.robust_eval if args.robust_eval is not None
+                      else bool(cfg.get("train.pipeline.robust_eval", True)))
+    robust_frames = int(args.robust_eval_frames if args.robust_eval_frames is not None
+                        else cfg.get("train.pipeline.robust_eval_frames", 24))
+    robust_weight = float(args.robust_eval_weight
+                          if args.robust_eval_weight is not None
+                          else cfg.get("train.pipeline.robust_eval_weight", 10.0))
+    hole_weight = float(args.hole_weight if args.hole_weight is not None
+                        else cfg.get("train.pipeline.hole_weight", 0.1))
+    hole_every = int(args.hole_every if args.hole_every is not None
+                     else cfg.get("train.pipeline.hole_every", 20))
+    hole_start = int(args.hole_start if args.hole_start is not None
+                     else cfg.get("train.pipeline.hole_start", blend_start))
+    hole_yaw = float(args.hole_yaw if args.hole_yaw is not None
+                     else cfg.get("train.pipeline.hole_yaw", 40.0))
 
     from live3dgsavatar.data.sources import ManifestSource
 
@@ -199,7 +231,13 @@ def main(argv: list[str] | None = None) -> int:
 
     from live3dgsavatar.core.avatar import GaussianAvatar
     from live3dgsavatar.core.deform.binding import build_binding
+    from live3dgsavatar.core.camera import orbit_w2c
     from live3dgsavatar.core.render import SimpleRasterizer
+    from live3dgsavatar.core.render.faceid import face_id_map
+    from live3dgsavatar.evaluation import (RobustConfig, alpha_deficit,
+                                           robust_score, robust_views,
+                                           subsample, summarise_coverage,
+                                           summarise_holes)
     from live3dgsavatar.core.types import Camera, Mesh
     from live3dgsavatar.data.scene import load_scene
     from live3dgsavatar.training.objectives import Objective
@@ -223,12 +261,26 @@ def main(argv: list[str] | None = None) -> int:
         width=scene.width, height=scene.height).to(str(device))
     print(f"  高斯数 : {avatar.num_gaussians}   基 K={avatar.num_basis}")
 
+    # 数据相机（world→camera）：大角度验证要绕它旋转
+    w2c_data = torch.eye(4, dtype=torch.float32)
+    w2c_data[:3, :3] = scene.R.detach().cpu()
+    w2c_data[:3, 3] = scene.T.detach().cpu()
+    robust_cfg = (RobustConfig(frames=robust_frames, weight=robust_weight)
+                  if robust_enabled else None)
+    if robust_cfg is not None:
+        print(f"  验证   : 额外视角 ±{', ±'.join(f'{y:g}' for y in robust_cfg.yaws)}°"
+              f"（{robust_cfg.frames} 帧，λ={robust_cfg.weight:g}）")
+
     plan = ParameterPlan.rgba_avatar_defaults(
         scene_extent=float(cfg.get("render.scene_extent", 1.0)))
     mask_weight = float(args.mask_weight if args.mask_weight is not None
                         else cfg.get("train.pipeline.mask_weight", 1.0))
     objective = Objective.rgba_avatar_defaults()
     objective.mask_weight = mask_weight
+    objective.hole = hole_weight
+    if hole_weight > 0:
+        print(f"  孔洞   : 权重 {hole_weight:g}，每 {hole_every} 步，"
+              f"第 {hole_start} 步起，±{hole_yaw:g}°")
     print(f"  损失   : L1（背景权重 {mask_weight:.2f}）")
 
     def render_fn(mesh_verts, weight, batch, iteration):
@@ -236,7 +288,35 @@ def main(argv: list[str] | None = None) -> int:
                     uvs=scene.uvs.to(device), uv_faces=scene.uv_faces.to(device))
         gs = avatar.deform(mesh, None if weight is None else weight.to(device))
         bg = torch.zeros(batch.image.shape[0], 3, 1, 1, device=device)
-        return rasterizer.render(gs, camera, bg, target_image=batch.image.to(device))
+        out = rasterizer.render(gs, camera, bg, target_image=batch.image.to(device))
+
+        # 孔洞正则：每隔若干步，在随机大角度视角下把"轮廓内 alpha 不足"变成损失。
+        # 只在网格覆盖的像素上算，避免鼓励背景发散；软版本 relu(0.5 - α) 可反传。
+        if (hole_weight > 0 and iteration >= hole_start
+                and iteration % max(1, hole_every) == 0):
+            with torch.no_grad():
+                first = mesh_verts[0:1]
+                center = first[0].mean(dim=0).detach().cpu()
+                yaw = float(torch.empty(1).uniform_(-hole_yaw, hole_yaw))
+                pitch = float(torch.empty(1).uniform_(-5.0, 5.0))
+                view = orbit_w2c(w2c_data, center, yaw, pitch)
+                hole_cam = Camera(K=scene.K, w2c=view.unsqueeze(0).to(device),
+                                  width=scene.width, height=scene.height).to(device)
+                ids = face_id_map(first, scene.faces, hole_cam, glctx)
+                surface = ids >= 0
+            if bool(surface.any()):
+                hole_mesh = Mesh(verts=first, faces=scene.faces.to(device),
+                                 uvs=scene.uvs.to(device),
+                                 uv_faces=scene.uv_faces.to(device))
+                hole_gs = avatar.deform(
+                    hole_mesh, None if weight is None else weight[0:1].to(device))
+                hole_out = rasterizer.render(
+                    hole_gs, hole_cam, torch.zeros(1, 3, 1, 1, device=device))
+                alpha = hole_out.alpha[0, 0]
+                out.hole_loss = torch.relu(0.5 - alpha[surface]).mean()
+        return out
+
+    last_eval: dict[str, float] = {}
 
     @torch.no_grad()
     def evaluate(source) -> dict[str, float]:
@@ -265,7 +345,55 @@ def main(argv: list[str] | None = None) -> int:
             mse = (((pred - tgt) ** 2) * mask).sum() / (mask.sum() * 3).clamp(min=1)
             total += float(10.0 * torch.log10(1.0 / mse.clamp(min=1e-10))) * len(batch)
             n += len(batch)
-        return {"psnr": total / max(1, n)}
+        metrics = {"psnr": total / max(1, n)}
+
+        if robust_cfg is not None:
+            # 只在部分验证帧上加大角度视角：全量会拖慢训练
+            picked = set(subsample(n, robust_cfg.frames))
+            holes: list[float] = []
+            deficits: list[float] = []
+            frame = 0
+            for batch in batches:
+                for i in range(batch.mesh.shape[0]):
+                    if frame not in picked:
+                        frame += 1
+                        continue
+                    verts = batch.mesh[i:i + 1].to(device)
+                    weight_i = batch.blend_weight[i:i + 1].to(device)
+                    mesh = Mesh(verts=verts, faces=scene.faces.to(device),
+                                uvs=scene.uvs.to(device),
+                                uv_faces=scene.uv_faces.to(device))
+                    with torch.no_grad():
+                        gs = avatar.deform(mesh, weight_i)
+                        center = verts[0].mean(dim=0).detach().cpu()
+                        for view in robust_views(robust_cfg):
+                            view_w2c = orbit_w2c(w2c_data, center, view.yaw,
+                                                 view.pitch)
+                            cam = Camera(K=scene.K,
+                                         w2c=view_w2c.unsqueeze(0).to(device),
+                                         width=scene.width,
+                                         height=scene.height).to(device)
+                            out = rasterizer.render(
+                                gs, cam, torch.zeros(1, 3, 1, 1, device=device))
+                            ids = face_id_map(verts, scene.faces, cam, glctx)
+                            surface = ids >= 0
+                            if bool(surface.any()):
+                                alpha = out.alpha[0, 0]
+                                holes.append(float((alpha[surface] < 0.5).float()
+                                                   .mean()))
+                                deficits.append(alpha_deficit(alpha, surface))
+                    frame += 1
+            summary = summarise_holes(holes)
+            metrics.update(summary)
+            metrics.update(summarise_coverage(deficits))
+            # 早停用阈值孔洞：与离线评估（compare_defects）同一口径。
+            # 连续缺口只作为诊断量记录 —— 实测它与阈值口径几乎同值。
+            metrics["robust"] = robust_score(metrics["psnr"],
+                                             metrics["hole_mean"],
+                                             weight=robust_cfg.weight)
+        last_eval.clear()
+        last_eval.update(metrics)
+        return metrics
 
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -274,17 +402,25 @@ def main(argv: list[str] | None = None) -> int:
     def save(iteration: int) -> None:
         save_ply(avatar, out_dir / f"model_{iteration:06d}.ply")
 
-    def save_best(iteration: int, psnr: float) -> None:
+    def save_best(iteration: int, metric: float) -> None:
         """验证指标刷新最好成绩时存一份 —— 后训变差也能拿回好的那份。"""
         save_ply(avatar, out_dir / "model_best.ply")
-        print(f"  [best] 第 {iteration} 步 验证 {psnr:.2f} dB → model_best.ply",
-              flush=True)
+        if robust_cfg is not None:
+            print(f"  [best] 第 {iteration} 步 robust {metric:.2f}"
+                  f"（PSNR {last_eval.get('psnr', float('nan')):.2f}，"
+                  f"缺口 {last_eval.get('deficit_mean', float('nan')):.3f}，"
+                  f"阈值孔洞 {last_eval.get('hole_mean', float('nan')):.1%}）"
+                  " → model_best.ply", flush=True)
+        else:
+            print(f"  [best] 第 {iteration} 步 验证 {metric:.2f} dB → model_best.ply",
+                  flush=True)
 
     hooks = (
         LogHook(every=100),
         ValidationHook(source=val_src, evaluate=evaluate, every=eval_every,
                        early_stop=EarlyStopping(patience=patience,
                                                 min_delta=min_delta),
+                       metric="robust" if robust_cfg is not None else "psnr",
                        on_improve=save_best),
         CheckpointHook(save=save, every=save_every),
     )

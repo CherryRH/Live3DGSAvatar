@@ -80,6 +80,7 @@ data/FLAME2020/                 # FLAME 资产（启动前必须就位）
 | [`docs/LIVE_DRIVING.md`](docs/LIVE_DRIVING.md) | 实时驱动链路与标定 |
 | [`docs/ONLINE_UPDATE.md`](docs/ONLINE_UPDATE.md) | 在线更新：方法、实验与判据 |
 | [`docs/TRAINING.md`](docs/TRAINING.md) | 训练管线：切分、早停、增广、速度 |
+| [`docs/PIPELINE_ROBUSTNESS.md`](docs/PIPELINE_ROBUSTNESS.md) | 训练侧鲁棒性优化：现状、可选方案与顺序 |
 | [`docs/CAP4D.md`](docs/CAP4D.md) | 生成式数据增广的评估结论（已停用）|
 | [`docs/ENVIRONMENT.md`](docs/ENVIRONMENT.md) | 环境搭建与排错 |
 

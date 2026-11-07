@@ -75,7 +75,8 @@ def summarize_rows(rows: list[dict]) -> dict:
 
     out: dict = {"n": len(rows)}
     for key in ("hole_base", "hole_new", "hole_in_base", "hole_in_new",
-                "sharp_base", "sharp_new", "psnr_base", "psnr_new"):
+                "sharp_base", "sharp_new", "psnr_base", "psnr_new",
+                "spike_base", "spike_new"):
         values = col(key)
         if values.size:
             out[key] = {"mean": round(float(values.mean()), 4),
@@ -223,6 +224,10 @@ def main(argv: list[str] | None = None) -> int:
         interior = _erode(surface, 2)
         hole_in = (float((alpha[interior] < 0.5).mean())
                    if bool(interior.any()) else 0.0)
+        # 尖刺：轮廓内 alpha 梯度能量，缩尺/碎裂时会上升
+        gy, gx = np.gradient(alpha.astype(np.float64))
+        spike = (float(np.hypot(gx, gy)[interior].mean())
+                 if bool(interior.any()) else 0.0)
         fg = alpha > 0.5
         if bool(fg.any()):
             grey = image.astype(np.float32).mean(axis=-1)
@@ -234,7 +239,7 @@ def main(argv: list[str] | None = None) -> int:
         if refined is not None:
             mask = refined.max(axis=-1) > 8
             psnr = psnr_masked(image, refined, mask)
-        return hole, hole_in, sharp, psnr
+        return hole, hole_in, sharp, psnr, spike
 
     rows: list[dict] = []
     for label in labels:
@@ -255,14 +260,16 @@ def main(argv: list[str] | None = None) -> int:
         if path.is_file():
             refined = np.asarray(Image.open(path).convert("RGB"), np.float32)
 
-        hb, ib, sb, pb = render_and_measure(models["base"], frame, cam, refined)
-        hn, inn, sn, pn = render_and_measure(models["new"], frame, cam, refined)
+        hb, ib, sb, pb, kb = render_and_measure(models["base"], frame, cam, refined)
+        hn, inn, sn, pn, kn = render_and_measure(models["new"], frame, cam, refined)
         rows.append({"label": label, "hole_base": hb, "hole_new": hn,
                      "hole_in_base": ib, "hole_in_new": inn,
                      "sharp_base": sb, "sharp_new": sn,
+                     "spike_base": kb, "spike_new": kn,
                      "psnr_base": pb, "psnr_new": pn})
         print(f"  {label[:38]:38s} 缺口 {hb:.3f}→{hn:.3f}"
-              f"（内部 {ib:.3f}→{inn:.3f}）  锐度 {sb:5.2f}→{sn:5.2f}  "
+              f"（内部 {ib:.3f}→{inn:.3f}）  尖刺 {kb:.4f}→{kn:.4f}  "
+              f"锐度 {sb:5.2f}→{sn:5.2f}  "
               f"拟合 {('—' if pb is None else f'{pb:.1f}')}→"
               f"{('—' if pn is None else f'{pn:.1f}')}")
 

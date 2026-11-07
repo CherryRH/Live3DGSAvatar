@@ -38,6 +38,23 @@ train:
     save_every: 5000
     # 后台预取线程数：0 关闭。取数（PNG 解码）常是 GPU 空转的主因。
     prefetch_workers: 2
+    # 大角度验证：早停时额外渲染 ±20/30/40° 视角，统计轮廓内的孔洞比例，
+    # 用 `PSNR − λ·缺口` 作为早停指标。只按正脸 PSNR 早停会选出"只在正脸好"
+    # 的模型（详见 docs/PIPELINE_ROBUSTNESS.md）。
+    robust_eval: true
+    # 参与大角度统计的验证帧数（等间隔抽样，保证不同检查点可比）
+    robust_eval_frames: 24
+    # λ：缺口比例折算成 dB。10 表示 10% 缺口约等于 1 dB。
+    robust_eval_weight: 10.0
+    # 大角度孔洞正则：每隔 hole_every 步，在 ±hole_yaw 内随机取一个视角渲染，
+    # 把轮廓内 alpha 不足（relu(0.5 − α)）作为一项损失。0 表示关闭。
+    # 权重不宜大：它只负责"别在斜视角塌掉"，不负责细节。
+    hole_weight: 0.1
+    hole_every: 20
+    # 从第几步开始（默认与 blend_start 相同，即形变基启用之后）
+    hole_start: 3000
+    # 采样的最大水平角（度）
+    hole_yaw: 40.0
     # 训练产物写到 <output_dir>/train/<subject>/<work_name>/
     max_frames: null
 

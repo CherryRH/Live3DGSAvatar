@@ -605,3 +605,99 @@ def test_per_face_texels_matches_binding_scale() -> None:
     assert counts[1] == 0.0
     row = m.summarise(counts, 2)
     assert row["zero_texel_faces"] == pytest.approx(0.5)
+
+
+# ------------------------------------------------ 训练期鲁棒性度量 --
+
+
+def test_robust_views_skip_frontal() -> None:
+    from live3dgsavatar.evaluation import RobustConfig, robust_views
+
+    views = robust_views(RobustConfig(yaws=(20, 30, 40), pitch=0.0))
+    assert [v.yaw for v in views] == [20.0, 30.0, 40.0]
+    assert all(v.pitch == 0.0 and v.roll == 0.0 for v in views)
+    assert all(v.yaw != 0.0 for v in views), "原相机应单独算，不在额外视角里"
+
+
+def test_robust_score_penalises_holes() -> None:
+    from live3dgsavatar.evaluation import robust_score
+
+    assert robust_score(27.0, 0.0, weight=10.0) == 27.0
+    assert robust_score(27.0, 0.1, weight=10.0) == pytest.approx(26.0)
+    assert robust_score(27.0, 0.1, weight=0.0) == 27.0
+
+
+def test_summarise_holes_handles_empty_and_values() -> None:
+    from live3dgsavatar.evaluation import summarise_holes
+
+    assert summarise_holes([]) == {"hole_mean": 0.0, "hole_p90": 0.0}
+    out = summarise_holes([0.0, 0.1, 0.2])
+    assert out["hole_mean"] == pytest.approx(0.1)
+    assert out["hole_p90"] > 0.1
+
+
+def test_subsample_is_deterministic_and_bounded() -> None:
+    """验证抽样必须等间隔：不同检查点之间要可比。"""
+    from live3dgsavatar.evaluation import subsample
+
+    assert subsample(10, 3) == [0, 4, 9]
+    assert subsample(10, 3) == subsample(10, 3)
+    assert subsample(5, 99) == [0, 1, 2, 3, 4]
+    assert subsample(0, 3) == []
+
+
+# ------------------------------------------------ 评估管线敏感度检查 --
+
+
+def test_sensitivity_measure_and_summarise() -> None:
+    """敏感度脚本的度量函数：孔洞只由 alpha 决定，与颜色无关。"""
+    import numpy as np
+
+    m = load_script("check_eval_sensitivity.py")
+    alpha = np.ones((16, 16), np.float32)
+    alpha[0:8] = 0.0                      # 上半满洞
+    ids = np.zeros((16, 16), np.int32)    # 全是表面
+    img = np.full((16, 16, 3), 100, np.uint8)
+
+    hole, sharp, psnr, deficit, spike = m.measure(alpha, ids, img, refined=None)
+    assert hole == pytest.approx(0.5)
+    assert sharp >= 0.0 and psnr is None
+
+    # 颜色改变不影响孔洞
+    img2 = np.full((16, 16, 3), 200, np.uint8)
+    hole2, _, _, _, _ = m.measure(alpha, ids, img2, refined=None)
+    assert hole2 == pytest.approx(hole)
+
+    # 背景（ids=-1）不计入
+    ids_bg = np.full((16, 16), -1, np.int32)
+    hole3, _, _, _, _ = m.measure(alpha, ids_bg, img, refined=None)
+    assert hole3 == 0.0
+
+    rows = [{"hole": 0.2, "sharp": 4.0, "psnr": None},
+            {"hole": 0.4, "sharp": 5.0, "psnr": 20.0}]
+    s = m.summarise(rows)
+    assert s["hole"] == pytest.approx(0.3)
+    assert s["sharp"] == pytest.approx(4.5)
+    assert s["psnr"] == pytest.approx(20.0)
+
+
+def test_alpha_deficit_and_gradient() -> None:
+    """连续缺口比阈值口径更细：α 从 0.9 掉到 0.6 不该完全看不见。"""
+    import torch
+
+    from live3dgsavatar.evaluation import alpha_deficit, alpha_gradient
+
+    alpha = torch.full((8, 8), 0.9)
+    surface = torch.ones(8, 8, dtype=torch.bool)
+    near = alpha_deficit(alpha, surface)
+    alpha2 = torch.full((8, 8), 0.6)
+    lower = alpha_deficit(alpha2, surface)
+    assert near == pytest.approx(0.1, abs=1e-6)
+    assert lower == pytest.approx(0.4, abs=1e-6), "阈值口径这时完全不动"
+    assert alpha_deficit(torch.ones(4, 4), torch.zeros(4, 4, dtype=torch.bool)) == 0.0
+
+    flat = torch.ones(8, 8)
+    assert alpha_gradient(flat, surface) == pytest.approx(0.0, abs=1e-6)
+    spikes = torch.zeros(8, 8)
+    spikes[::2, ::2] = 1.0
+    assert alpha_gradient(spikes, surface) > 0.0

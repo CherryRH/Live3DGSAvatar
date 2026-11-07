@@ -212,10 +212,12 @@ class Trainer:
         属性；没有就当 0（`Objective` 按权重跳过）。
         """
         extras = {}
-        for name in ("sparsity_loss", "orth_loss"):
-            fn = getattr(out, name, None)
-            if callable(fn):
-                extras[name] = fn()
+        for name in ("sparsity_loss", "orth_loss", "hole_loss"):
+            value = getattr(out, name, None)
+            if callable(value):
+                extras[name] = value()
+            elif isinstance(value, torch.Tensor):
+                extras[name] = value
         return extras
 
 

@@ -85,6 +85,8 @@ class Objective:
     lpips: float = 0.0
     alpha: float = 0.0
     mask_weight: float = 0.0
+    #: 大角度孔洞正则（`render_fn` 提供 `hole_loss` 时才生效）
+    hole: float = 0.0
     lpips_from: int = 20_000
     _lpips_model: object | None = field(default=None, repr=False)
 
@@ -144,8 +146,12 @@ class Objective:
             total = total + self.alpha * v
             parts["alpha"] = float(v.detach())
 
+        # 外部项名与字段名不一定相同（`hole_loss` 的权重字段是 `hole`）
+        alias = {"hole_loss": "hole"}
         for name, value in (extras or {}).items():
             weight = getattr(self, name, 0.0)
+            if weight == 0.0 and name in alias:
+                weight = getattr(self, alias[name], 0.0)
             if weight > 0:
                 total = total + weight * value
                 parts[name] = float(value.detach())
