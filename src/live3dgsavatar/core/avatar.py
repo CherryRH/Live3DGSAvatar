@@ -18,7 +18,6 @@ from __future__ import annotations
 
 from pathlib import Path as Path_type
 
-import dataclasses
 import math
 from dataclasses import dataclass, field
 from typing import Sequence
@@ -173,12 +172,6 @@ class GaussianAvatar(nn.Module):
 
         self.weight_module = config.build_weight_module()
 
-        #: 有效点掩码（v2 格式）。``None`` 表示全部有效（v1 的 texel 绑定）。
-        #: 渲染时乘进不透明度：未激活的点不贡献颜色，也不参与梯度。
-        self.register_buffer("active", None)
-        #: 容量分配元数据（v2），如 ``{"density": 2.0, "n_max": 125719}``
-        self.capacity: dict | None = None
-
     # ------------------------------------------------------------ 属性分组 --
     def parameter_groups(self) -> dict[str, nn.Parameter]:
         """按语义分组，供优化器分别设置学习率。"""
@@ -252,11 +245,6 @@ class GaussianAvatar(nn.Module):
         # blend_weight=None → 只用基态（对应参照 blend_start_iter 之前的行为）
         tangent = field(blend_weight, batch_size=mesh.batch_size)
         tangent = tangent.to(mesh.verts.device)
-        if self.active is not None:
-            # 未激活的点：不透明度置 0（等价于不参与合成，但保留参数形状）
-            mask = self.active.to(tangent.opacity.device).view(1, -1, 1)
-            tangent = dataclasses.replace(
-                tangent, opacity=tangent.opacity * mask.to(tangent.opacity.dtype))
         return self.build_binder().bind(tangent, mesh)
 
     # ------------------------------------------------------------ 纹理视图 --

@@ -1,7 +1,8 @@
-# 表现力边界与重构方向
+# 表现力边界与已试方案（结论记录）
 
-本文合并三件事：**问题归因**（实测数据）、**已试方案与结论**、**重构方向**。
-目标是回答一个问题：继续调参能走多远？如果换数据结构与训练模式，能解决什么？
+本文记录：**问题归因**（实测数据）、**已试方案与结论**、以及据此对方向的判断。
+对应代码中的尝试（孔洞正则、邻域平滑、尺度上限、v2 容量分配）**已回退**，
+此处保留结论与数据，供后续（尤其是换数据之后）参考。
 
 ## 一、问题归因
 
@@ -150,14 +151,14 @@ color）与 `Camera`；`deform` 只依赖 `Binding(face_id, bary)`。**新格式
 | 位置 | 现状假设 | 隔离方式 |
 |---|---|---|
 | `core/io/ply.py` | 每高斯一行；`n ≤ tex_size²`；MLP 压在前 P 行 | 按 `format_version` 分派；v2 用 sidecar 存 MLP |
-| `core/deform/binding.py` | UV 光栅化 → texel 中心 | 增加 `capacity_binding`（已实现），两条路径产出同一种 `Binding` |
+| `core/deform/binding.py` | UV 光栅化 → texel 中心 | 增加 `capacity_binding`（方案；代码已回退） |
 | `evaluation/defects.py` | `per_texel` / `build_defect_map` 需要 texel 索引 | v2 跳过"回填 UV 图"，只用逐高斯质量 |
 
 ### 版本标记
 
 PLY 头 `comment gaussian_config` 里的 JSON 增加 `format_version`（当前 `1`）；
 缺失视为 v1（兼容参照实现与旧文件），**未知版本直接报错**而不是猜。
-已实现：`FORMAT_VERSION` 与 `_check_format_version`。
+（方案；对应实现已回退到 v1，见 git 历史 `fa24fae` / `3f95836`。）
 
 v2 的元数据形如：
 
@@ -257,3 +258,20 @@ python scripts/compare_defects.py --subject crh_1 --work-name run_zero --base-wo
 参照，而网格本身在这些角度也没有被跟踪验证过。因此更靠得住的验证方式是：**用覆盖
 更广的数据重训后，直接用 `render_test` 在留出的宽角度真实帧上测 PSNR**——那时
 参照是真图，而不是未经验证的网格。
+
+## 十一、代码状态
+
+本轮为实现这些方案所做的改动**已全部回退**，仓库回到"v1 格式 + 无孔洞正则"的状态：
+
+| 尝试 | 提交 | 现状 |
+|---|---|---|
+| 按面分配采样（capacity） | `fa24fae` | 已删除 |
+| v2 格式（active 列、format_version、capacity 元数据） | `3f95836` | 已回退 |
+| 孔洞正则 / 尺度上限 / UV 邻域平滑 | `f84d4fb` 等 | 已移除 |
+| 偏移消融脚本 | `fa453e1` | 已删除 |
+
+保留的部分：大角度验证（`robust_eval`，只影响早停指标，不改模型）、缺陷评估与诊断
+脚本（`find_defects` / `compare_defects` / `compare_model_stats` /
+`analyze_failure_modes` / `analyze_uv_density`）。
+
+结论与数据留在本文，供换数据之后对照。

@@ -28,7 +28,6 @@ CUDA 扩展单独验证 —— 训练顺序、调度、早停这些逻辑不必�
 
 from __future__ import annotations
 
-import math
 import time
 from dataclasses import dataclass, field
 from typing import Callable, Protocol
@@ -213,52 +212,13 @@ class Trainer:
         属性；没有就当 0（`Objective` 按权重跳过）。
         """
         extras = {}
-        for name in ("sparsity_loss", "orth_loss", "hole_loss", "smooth_loss"):
+        for name in ("sparsity_loss", "orth_loss"):
             value = getattr(out, name, None)
             if callable(value):
                 extras[name] = value()
             elif isinstance(value, torch.Tensor):
                 extras[name] = value
         return extras
-
-
-class ScaleCapHook:
-    """把尺度限制在启动快照的若干倍以内（投影，不是损失）。
-
-    为什么需要：孔洞正则只有"把 α 推过阈值"一个目标，而提高 α 最省力的办法是把
-    高斯吹大。实测未加限制时，个别高斯的尺度从 90 mm 涨到 318 mm，一个高斯就盖住
-    半张脸，指标上的"缺口"归零、画面却整体糊掉。这里在每一步优化器更新之后做一次
-    硬投影，允许局部小幅长大，不允许整体膨胀。
-
-    Args:
-        module: 带 `scaling` 参数的对象（通常是 avatar）
-        factor: 相对快照的最大倍数；``0`` 或 ``None`` 表示不限制
-        start: 从第几步开始生效（与孔洞正则同步）
-    """
-
-    def __init__(self, module, *, factor: float = 1.5, start: int = 0) -> None:
-        self.module = module
-        self.factor = float(factor or 0.0)
-        self.start = int(start)
-        self._cap = None
-        self.clamped_last = 0
-
-    def on_start(self, trainer) -> None:
-        if self.factor <= 0:
-            return
-        with torch.no_grad():
-            self._cap = (self.module.scaling.detach()
-                         + math.log(self.factor))
-
-    def on_step(self, trainer, iteration: int, parts: dict) -> None:
-        if self._cap is None or iteration < self.start:
-            return
-        with torch.no_grad():
-            excess = (self.module.scaling > self._cap)
-            self.clamped_last = int(excess.sum())
-            if self.clamped_last:
-                self.module.scaling.copy_(
-                    torch.minimum(self.module.scaling, self._cap))
 
 
 class ValidationHook:

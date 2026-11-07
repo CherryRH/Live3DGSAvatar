@@ -116,46 +116,6 @@ python scripts/train.py --subject crh_1 --work-name run --no-robust-eval   # 关
 
 指标含义见 [`REDESIGN.md`](REDESIGN.md)。
 
-## 大角度孔洞正则
-
-每隔 `hole_every` 步（默认 20），从当前 batch 取一帧，在 ±`hole_yaw`（默认 40°）内
-随机取一个视角渲染，把轮廓内 `relu(hole_threshold − α)` 的均值作为一项损失。
-目的是让模型在斜视角下"至少把表面填满"，而不是靠正脸数据学出来的稀疏覆盖。
-
-```bash
-python scripts/train.py --subject crh_1 --work-name run                      # 默认（权重 0.03）
-python scripts/train.py --subject crh_1 --work-name run --hole-weight 0      # 关闭
-python scripts/train.py --subject crh_1 --work-name run \
-    --hole-mask output/defects/crh_1/run/crh_1/mass.npz                      # 只在缺陷区施压
-```
-
-它与大角度验证（上面一节）是一对：验证负责**发现**，正则负责**压制**。
-实测权重 0.1 会把指标刷到"缺口 −89%、锐度 −51%"，属于用放大高斯糊住表面；
-默认值因此降到 0.03，并配合阈值 0.3 与可选缺陷掩码。
-
-## UV 邻域平滑
-
-`--smooth-weight 0.003` 打开：惩罚每个高斯的偏移与其 UV 邻域均值的相对差。
-基线模型的这个比值是 0.845（邻域之间几乎无关），目标压到 0.5 以下。它不改表示、
-不改格式，只是让偏移场不再是白噪声。
-
-## 按面分配采样（v2 格式）
-
-默认仍是"每个有效 UV texel 一个高斯"（v1）。加上 `--capacity-density` 后改为
-按三角面面积分配采样点，采样密度不再由 `tex_size` 决定：
-
-```bash
-python scripts/train.py --subject crh_1 --work-name cap2 --capacity-density 2.0
-```
-
-- `density=1` ≈ 6.6 万、`2` ≈ 12.6 万、`3` ≈ 18.6 万；每个非退化面至少一个点；
-- 产物是 **v2 格式**：多一列 `active`（有效点掩码），头部记录 `capacity`；
-- v2 没有"texel 索引"，`extract_texture` 会显式报错，`find_defects` 只输出逐面汇总；
-- 其余工具（`render_test` / `compare_defects` / `compare_model_stats`）对新旧模型
-  一视同仁，可以直接对比；
-- **做容量对照时要把孔洞正则关掉**（`--hole-weight 0`），否则两个变量混在一起：
-  孔洞正则本身就会鼓励把点云铺大。
-
 ## 缺陷评估口径
 
 `find_defects.py` 选出问题视角，`compare_defects.py` 对比两个模型在这些视角上的

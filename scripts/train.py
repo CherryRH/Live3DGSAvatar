@@ -28,8 +28,6 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
-import numpy as np
-
 import live3dgsavatar  # noqa: F401
 
 
@@ -102,26 +100,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="验证时加入大角度视角，用 正脸PSNR − λ·缺口 早停")
     p.add_argument("--no-robust-eval", dest="robust_eval", action="store_false",
                    help="关闭大角度验证（只按正脸 PSNR 早停）")
-    p.add_argument("--hole-weight", type=float, default=None,
-                   help="大角度孔洞正则权重（0 关闭；默认取配置）")
-    p.add_argument("--hole-every", type=int, default=None,
-                   help="每隔多少步加一次孔洞正则（默认 20）")
-    p.add_argument("--hole-start", type=int, default=None,
-                   help="从第几步开始启用（默认与 blend_start 相同）")
-    p.add_argument("--hole-yaw", type=float, default=None,
-                   help="孔洞正则采样的最大水平角（默认 40°）")
-    p.add_argument("--capacity-density", type=float, default=None,
-                   help=">0 时按三角面面积分配采样（v2 格式），1≈每 texel 一个点；"
-                        "0 表示沿用 UV texel 绑定（v1）")
-    p.add_argument("--smooth-weight", type=float, default=None,
-                   help="UV 邻域平滑权重（0 关闭；建议 0.002–0.005）")
-    p.add_argument("--hole-threshold", type=float, default=None,
-                   help="α 低于该值才罚（默认 0.3；0.5 会把'略薄'也算缺陷）")
-    p.add_argument("--hole-scale-cap", type=float, default=None,
-                   help="尺度相对启动快照的最大倍数（默认 0 = 不限制；"
-                        "开上限会压缩尺度分布，逼模型用不透明度补偿）")
-    p.add_argument("--hole-mask", type=Path, default=None,
-                   help="缺陷质量 npz（find_defects 的 mass.npz）：只罚高缺陷区域")
     p.add_argument("--robust-eval-frames", type=int, default=None,
                    help="参与大角度统计的验证帧数（默认 24）")
     p.add_argument("--robust-eval-weight", type=float, default=None,
@@ -191,25 +169,6 @@ def main(argv: list[str] | None = None) -> int:
     robust_weight = float(args.robust_eval_weight
                           if args.robust_eval_weight is not None
                           else cfg.get("train.pipeline.robust_eval_weight", 10.0))
-    hole_weight = float(args.hole_weight if args.hole_weight is not None
-                        else cfg.get("train.pipeline.hole_weight", 0.1))
-    hole_every = int(args.hole_every if args.hole_every is not None
-                     else cfg.get("train.pipeline.hole_every", 20))
-    hole_start = int(args.hole_start if args.hole_start is not None
-                     else cfg.get("train.pipeline.hole_start", blend_start))
-    hole_yaw = float(args.hole_yaw if args.hole_yaw is not None
-                     else cfg.get("train.pipeline.hole_yaw", 40.0))
-    capacity_density = float(args.capacity_density
-                             if args.capacity_density is not None
-                             else cfg.get("train.pipeline.capacity_density", 0.0))
-    smooth_weight = float(args.smooth_weight if args.smooth_weight is not None
-                          else cfg.get("train.pipeline.smooth_weight", 0.0))
-    hole_threshold = float(args.hole_threshold
-                           if args.hole_threshold is not None
-                           else cfg.get("train.pipeline.hole_threshold", 0.3))
-    hole_scale_cap = float(args.hole_scale_cap
-                           if args.hole_scale_cap is not None
-                           else cfg.get("train.pipeline.hole_scale_cap", 0.0))
 
     from live3dgsavatar.data.sources import ManifestSource
 
@@ -276,25 +235,10 @@ def main(argv: list[str] | None = None) -> int:
     # ---- 几何与相机 ----
     scene = load_scene(cfg, frames=1, device=str(device))
     glctx = dr.RasterizeCudaContext()
-    if capacity_density > 0:
-        # v2：按三角面面积分配采样点，采样密度与 tex_size 解耦
-        from live3dgsavatar.core.deform.capacity import capacity_binding
-
-        binding = capacity_binding(scene.uvs, scene.uv_faces,
-                                   avatar_cfg.tex_size,
-                                   density=capacity_density, device=device)
-        print(f"  采样   : 按面分配 density={capacity_density:g}"
-              f" → {binding.num_gaussians} 个高斯（v2）")
-    else:
-        binding = build_binding(scene.uvs.to(device), scene.uv_faces.to(device),
-                                tex_size=avatar_cfg.tex_size, glctx=glctx,
-                                device=device)
+    binding = build_binding(scene.uvs.to(device), scene.uv_faces.to(device),
+                            tex_size=avatar_cfg.tex_size, glctx=glctx,
+                            device=device)
     avatar = GaussianAvatar(avatar_cfg, binding).to(device)
-    if capacity_density > 0:
-        avatar.active = torch.ones(avatar.num_gaussians, dtype=torch.bool,
-                                   device=device)
-        avatar.capacity = {"density": float(capacity_density),
-                           "n_max": int(avatar.num_gaussians)}
     rasterizer = SimpleRasterizer()
     camera = Camera.from_intrinsics_extrinsics(
         K=scene.K, R=scene.R, T=scene.T,
@@ -317,52 +261,7 @@ def main(argv: list[str] | None = None) -> int:
                         else cfg.get("train.pipeline.mask_weight", 1.0))
     objective = Objective.rgba_avatar_defaults()
     objective.mask_weight = mask_weight
-    objective.hole = hole_weight
-    objective.smooth = smooth_weight
-    # 可选：只在高缺陷区域施加孔洞惩罚（缺陷质量按 texel 存，转成逐面最大值）
-    hole_face_mass = None
-    if hole_weight > 0 and args.hole_mask is not None:
-        import numpy as _np
-
-        with _np.load(args.hole_mask) as _d:
-            if "mass" not in _d.files:
-                raise SystemExit(f"[error] {args.hole_mask} 里没有 mass")
-            _mass = _np.asarray(_d["mass"], dtype=_np.float32)
-        if _mass.size != avatar.num_gaussians:
-            raise SystemExit(
-                f"[error] 缺陷质量长度 {_mass.size} 与高斯数 "
-                f"{avatar.num_gaussians} 不一致")
-        _fid = avatar.binding_face_id.detach().cpu().numpy()
-        _face_max = _np.zeros(int(scene.faces.max()) + 1, dtype=_np.float32)
-        _np.maximum.at(_face_max, _fid, _mass)
-        hole_face_mass = torch.from_numpy(_face_max).to(device)
-        _thr = float(_np.percentile(_mass, 80))
-        print(f"  孔洞掩码: {args.hole_mask}（面阈值 {_thr:.3f}，"
-              f"命中面 {( _face_max > _thr).mean():.0%}）")
-
-    if hole_weight > 0:
-        print(f"  孔洞   : 权重 {hole_weight:g}，每 {hole_every} 步，"
-              f"第 {hole_start} 步起，±{hole_yaw:g}°，阈值 {hole_threshold:g}，"
-              f"尺度上限 ×{hole_scale_cap:g}")
     print(f"  损失   : L1（背景权重 {mask_weight:.2f}）")
-
-    # UV 邻域（供平滑正则用）：每个高斯的 UV = bary @ 面 UV
-    smooth_nb = None
-    if smooth_weight > 0:
-        from live3dgsavatar.training.regularizers import (laplacian_penalty,
-                                                          uv_adjacency)
-
-        _uv_faces = scene.uv_faces.detach().cpu().numpy()
-        _uvs = scene.uvs.detach().cpu().numpy()
-        _fid = avatar.binding_face_id.detach().cpu().numpy()
-        _bary = avatar.binding_face_bary.detach().cpu().numpy()
-        _uv = np.einsum("ni,nij->nj", _bary, _uvs[_uv_faces[_fid]])
-        smooth_nb = torch.from_numpy(
-            uv_adjacency(_uv, k=4, max_dist=1.5 / avatar.config.tex_size)
-        ).to(device)
-        with torch.no_grad():
-            _v = float(laplacian_penalty(avatar.xyz.detach(), smooth_nb))
-        print(f"  平滑   : 权重 {smooth_weight:g}（初始相对拉普拉斯 {_v:.3f}）")
 
     def render_fn(mesh_verts, weight, batch, iteration):
         mesh = Mesh(verts=mesh_verts.to(device), faces=scene.faces.to(device),
@@ -371,39 +270,6 @@ def main(argv: list[str] | None = None) -> int:
         bg = torch.zeros(batch.image.shape[0], 3, 1, 1, device=device)
         out = rasterizer.render(gs, camera, bg, target_image=batch.image.to(device))
 
-        if smooth_nb is not None:
-            out.smooth_loss = laplacian_penalty(avatar.xyz, smooth_nb)
-
-        # 孔洞正则：每隔若干步，在随机大角度视角下把"轮廓内 alpha 不足"变成损失。
-        # 只在网格覆盖的像素上算，避免鼓励背景发散；软版本 relu(0.5 - α) 可反传。
-        if (hole_weight > 0 and iteration >= hole_start
-                and iteration % max(1, hole_every) == 0):
-            with torch.no_grad():
-                first = mesh_verts[0:1]
-                center = first[0].mean(dim=0).detach().cpu()
-                yaw = float(torch.empty(1).uniform_(-hole_yaw, hole_yaw))
-                pitch = float(torch.empty(1).uniform_(-5.0, 5.0))
-                view = orbit_w2c(w2c_data, center, yaw, pitch)
-                hole_cam = Camera(K=scene.K, w2c=view.unsqueeze(0).to(device),
-                                  width=scene.width, height=scene.height).to(device)
-                ids = face_id_map(first, scene.faces, hole_cam, glctx)
-                surface = ids >= 0
-            if bool(surface.any()):
-                hole_mesh = Mesh(verts=first, faces=scene.faces.to(device),
-                                 uvs=scene.uvs.to(device),
-                                 uv_faces=scene.uv_faces.to(device))
-                hole_gs = avatar.deform(
-                    hole_mesh, None if weight is None else weight[0:1].to(device))
-                hole_out = rasterizer.render(
-                    hole_gs, hole_cam, torch.zeros(1, 3, 1, 1, device=device))
-                alpha = hole_out.alpha[0, 0]
-                sel = surface
-                if hole_face_mass is not None:
-                    # 只惩罚"高缺陷面"覆盖到的像素
-                    thr = float(torch.quantile(hole_face_mass, 0.8))
-                    sel = surface & (hole_face_mass[ids] > thr)
-                if bool(sel.any()):
-                    out.hole_loss = torch.relu(hole_threshold - alpha[sel]).mean()
         return out
 
     last_eval: dict[str, float] = {}
@@ -505,11 +371,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  [best] 第 {iteration} 步 验证 {metric:.2f} dB → model_best.ply",
                   flush=True)
 
-    from live3dgsavatar.training.trainer import ScaleCapHook
-
     hooks = (
         LogHook(every=100),
-        ScaleCapHook(avatar, factor=hole_scale_cap, start=hole_start),
         ValidationHook(source=val_src, evaluate=evaluate, every=eval_every,
                        early_stop=EarlyStopping(patience=patience,
                                                 min_delta=min_delta),

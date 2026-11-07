@@ -39,13 +39,6 @@ from ..deform import Binding
 F_REST_COLS = 45
 CONFIG_COMMENT_PREFIX = "gaussian_config "
 
-#: 当前写出的格式版本。
-#: v1 = 每个高斯一行 + 绑定列 + MLP 压在前 P 行，``num_gaussians`` 由 texel 决定；
-#: v2 = 同上 + ``active`` 列（容量分配的点可被屏蔽），``n`` 由容量决定，可超过 tex_size²。
-#: 读入时缺失该字段视为 v1（兼容参照实现与旧文件）；未知版本必须显式报错，
-#: 不能猜 —— 猜错会静默给出错误的参数布局。
-FORMAT_VERSION = 1
-
 
 def _flatten_module(module: torch.nn.Module) -> np.ndarray:
     parts = [p.detach().reshape(-1).cpu().numpy() for p in module.state_dict().values()]
@@ -66,17 +59,6 @@ def _load_flattened_module(flat: torch.Tensor, module: torch.nn.Module) -> None:
         state[key] = chunk.to(param.dtype)
         offset += numel
     module.load_state_dict(state)
-
-
-
-def _col(el, name: str, dtype) -> np.ndarray:
-    """读一列并**复制**成连续数组。
-
-    PLY 的 structured dtype 把字段紧密排在一起；一旦有 1 字节列（如 v2 的
-    `active`），记录长度可能不是 4 的倍数，某些浮点列的内存就不对齐，
-    `np.asarray` 会因 strides 非法而报错。这里直接 copy，代价是一次内存拷贝。
-    """
-    return np.array(el[name], dtype=dtype, copy=True)
 
 
 def save_ply(avatar: GaussianAvatar, path: str | Path) -> None:
@@ -122,8 +104,6 @@ def save_ply(avatar: GaussianAvatar, path: str | Path) -> None:
     names += ["weight_module"]
 
     has_binding = avatar.binding_face_id.numel() == n and avatar.binding_face_bary.numel() > 0
-    active = getattr(avatar, "active", None)
-    has_active = active is not None and int(active.numel()) == n
     face_id = bary = None
     if has_binding:
         face_id = avatar.binding_face_id.detach().cpu().numpy().astype(np.int32)[..., None]
@@ -134,8 +114,6 @@ def save_ply(avatar: GaussianAvatar, path: str | Path) -> None:
     if has_binding:
         dtype += [("face_id", "i4"),
                   ("face_bary_0", "f4"), ("face_bary_1", "f4"), ("face_bary_2", "f4")]
-    if has_active:
-        dtype += [("active", "u1")]
 
     attrs = np.concatenate(
         [xyz, normal, opacity, scaling, rotation, f_dc, f_rest, xyz_b, rot_b, f_dc_b, module_col],
@@ -143,27 +121,17 @@ def save_ply(avatar: GaussianAvatar, path: str | Path) -> None:
     if has_binding:
         attrs = np.concatenate([attrs, face_id, bary], axis=1)
 
-    # v2：可选的有效点掩码（容量分配时用；v1 没有）
-    if has_active:
-        attrs = np.concatenate(
-            [attrs, active.detach().cpu().numpy().astype(np.uint8)[:, None]], axis=1)
-
     elements = np.empty(n, dtype=dtype)
     elements[:] = list(map(tuple, attrs))
     el = PlyElement.describe(elements, "vertex")
 
-    capacity = getattr(avatar, "capacity", None)
-    version = 2 if has_active else FORMAT_VERSION
     config = {
-        "format_version": version,
         "tex_size": cfg.tex_size,
         "num_basis_in": cfg.num_basis_in,
         "num_basis_blend": cfg.num_basis_blend,
         "mlp_hidden": list(cfg.mlp_hidden),
         "use_weight_proj": cfg.use_weight_proj,
     }
-    if capacity is not None:
-        config["capacity"] = dict(capacity)
     path.parent.mkdir(parents=True, exist_ok=True)
     PlyData([el], text=False, comments=[CONFIG_COMMENT_PREFIX + json.dumps(config)]).write(str(path))
 
@@ -176,16 +144,6 @@ def _read_config_comment(plydata: PlyData) -> dict | None:
     return None
 
 
-def _check_format_version(meta: dict) -> int:
-    """解析并校验 `format_version`；缺失视为 1。"""
-    version = int(meta.get("format_version", 1))
-    if version not in (1, 2):
-        raise ValueError(
-            f"模型格式版本 {version} 不受支持（本代码支持 v1/v2）；"
-            "请用对应版本的代码加载，或转换文件")
-    return version
-
-
 def read_embedded_config(path: str | Path) -> "AvatarConfig | None":
     """读 PLY 头里内嵌的 `gaussian_config`；没有则返回 ``None``。
 
@@ -196,7 +154,6 @@ def read_embedded_config(path: str | Path) -> "AvatarConfig | None":
     meta = _read_config_comment(plydata)
     if meta is None:
         return None
-    _check_format_version(meta)
     return AvatarConfig(
         tex_size=int(meta["tex_size"]),
         num_basis_in=int(meta["num_basis_in"]),
@@ -245,15 +202,15 @@ def load_ply(
     el = plydata.elements[0]
     props = [p.name for p in el.properties]
 
-    xyz = np.stack([_col(el, c, np.float32) for c in ("x", "y", "z")], axis=1)
+    xyz = np.stack([np.asarray(el[c], dtype=np.float32) for c in ("x", "y", "z")], axis=1)
     n = xyz.shape[0]
 
-    opacity = _col(el, "opacity", np.float32)[:, None]
+    opacity = np.asarray(el["opacity"], dtype=np.float32)[:, None]
     scaling_names = sorted((p for p in props if p.startswith("scale_")),
                            key=lambda s: int(s.split("_")[-1]))
-    scaling = np.stack([_col(el, c, np.float32) for c in scaling_names], axis=1)
-    rotation = np.stack([_col(el, f"rot_{i}", np.float32) for i in range(4)], axis=1)
-    f_dc = np.stack([_col(el, f"f_dc_{i}", np.float32) for i in range(3)],
+    scaling = np.stack([np.asarray(el[c], dtype=np.float32) for c in scaling_names], axis=1)
+    rotation = np.stack([np.asarray(el[f"rot_{i}"], dtype=np.float32) for i in range(4)], axis=1)
+    f_dc = np.stack([np.asarray(el[f"f_dc_{i}"], dtype=np.float32) for i in range(3)],
                     axis=1).reshape(n, 3, 1)
 
     k_from_file = sum(1 for p in props if p.startswith("xyz_b_")) // 3
@@ -280,50 +237,42 @@ def load_ply(
     # tex_size 不参与存储（它只决定「一个 UV texel = 一个高斯」的容量上界），
     # 因此**无法**从文件内容反推。但若配置的 tex_size 连现有高斯数都装不下，
     # 说明配置写错了 —— 这类错误必须显式报出，否则会静默带进后续保存/重建。
-    version = _check_format_version(meta) if meta is not None else 1
     capacity = config.tex_size * config.tex_size
-    if version >= 2 and meta is not None and meta.get("capacity"):
-        # v2 的容量由分配决定，可以超过 tex_size²；tex_size 只表示纹理图分辨率
-        capacity = int(meta["capacity"].get("n_max", max(capacity, n)))
     if n > capacity:
         raise ValueError(
-            f"容量与文件不一致：上限 {capacity} 个高斯，而文件有 {n} 个。"
-            "请检查 tex_size（v1）或 capacity.n_max（v2）")
+            f"tex_size 与文件不一致：tex_size={config.tex_size} 最多容纳 "
+            f"{capacity} 个高斯，而文件有 {n} 个。"
+            "请修正 configs/render.yaml 的 model.network.tex_size")
 
-    xyz_b = np.stack([_col(el, f"xyz_b_{i}", np.float32)
+    xyz_b = np.stack([np.asarray(el[f"xyz_b_{i}"], dtype=np.float32)
                       for i in range(k_from_file * 3)], axis=1).reshape(n, k_from_file, 3)
-    rot_b = np.stack([_col(el, f"rot_b_{i}", np.float32)
+    rot_b = np.stack([np.asarray(el[f"rot_b_{i}"], dtype=np.float32)
                       for i in range(k_from_file * 4)], axis=1).reshape(n, k_from_file, 4)
-    f_dc_b = np.stack([_col(el, f"f_dc_b_{i}", np.float32)
+    f_dc_b = np.stack([np.asarray(el[f"f_dc_b_{i}"], dtype=np.float32)
                        for i in range(k_from_file * 3)], axis=1).reshape(n, k_from_file, 1, 3)
 
-    flat_module = torch.from_numpy(_col(el, "weight_module", np.float32))
+    flat_module = torch.from_numpy(np.asarray(el["weight_module"], dtype=np.float32))
 
     if "face_id" not in props:
         raise ValueError(
             f"{path} 缺少绑定信息（face_id / face_bary_*）。"
             "请确认保存时 avatar 已带有 Binding")
-    face_id = torch.from_numpy(_col(el, "face_id", np.int64))
+    face_id = torch.from_numpy(np.asarray(el["face_id"], dtype=np.int64))
     bary_names = sorted((p for p in props if p.startswith("face_bary_")),
                         key=lambda s: int(s.split("_")[-1]))
     if len(bary_names) != 3:
         raise ValueError(f"期望 3 个 face_bary_* 列，实际 {len(bary_names)}")
     face_bary = torch.from_numpy(
-        np.stack([_col(el, c, np.float32) for c in bary_names], axis=1))
+        np.stack([np.asarray(el[c], dtype=np.float32) for c in bary_names], axis=1))
 
     binding = Binding(face_id=face_id, face_bary=face_bary,
                       valid_mask=torch.ones(n, dtype=torch.bool))
     avatar = GaussianAvatar(config, binding)
-    flat = _col(el, "f_rest_0", np.float32) if "f_rest_0" in props else None
+    flat = np.asarray(el["f_rest_0"], dtype=np.float32) if "f_rest_0" in props else None
     if flat is not None and float(np.abs(flat).max()) > 0:
         # 占位列非零说明文件里其实有高阶 SH；本项目不支持，显式拒绝而非静默忽略
         raise ValueError(
             f"{path} 的 f_rest_* 非零，说明含高阶 SH；本项目 sh_degree=0，不支持")
-
-    if "active" in props:
-        avatar.active = torch.from_numpy(_col(el, "active", np.uint8)).bool()
-    if meta is not None and meta.get("capacity"):
-        avatar.capacity = dict(meta["capacity"])
 
     with torch.no_grad():
         avatar.xyz.copy_(torch.from_numpy(xyz))

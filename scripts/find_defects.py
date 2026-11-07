@@ -305,24 +305,15 @@ def main(argv: list[str] | None = None) -> int:
         "nonzero_share": round(float((mass > 1e-6).mean()), 4),
         "strong_share": round(float((mass > 0.3).mean()), 4),
     }
-    # v2（按面分配）没有 texel 索引，只保留逐面汇总，不生成 UV 图
-    if getattr(avatar, "active", None) is None:
-        defect = build_defect_map(
-            per_face={"coverage": cov_face.astype(np.float64),
-                      "hole_rate": hit_rate,
-                      "floater": off_face},
-            texel_face_id=avatar.binding_face_id,
-            tex_size=int(avatar.config.tex_size),
-            texel_index=texel_index,
-            # 总览分用"平均覆盖不足"，而不是 1-mean/max
-            score=float(cov_norm.mean()))
-    else:
-        from live3dgsavatar.evaluation import DefectMap
-
-        defect = DefectMap(per_face={"coverage": cov_face.astype(np.float64),
-                                     "hole_rate": hit_rate,
-                                     "floater": off_face},
-                           per_texel={}, score=float(cov_norm.mean()))
+    defect = build_defect_map(
+        per_face={"coverage": cov_face.astype(np.float64),
+                  "hole_rate": hit_rate,
+                  "floater": off_face},
+        texel_face_id=avatar.binding_face_id,
+        tex_size=int(avatar.config.tex_size),
+        texel_index=texel_index,
+        # 总览分用"平均覆盖不足"，而不是 1-mean/max（后者对长尾分布没有意义）
+        score=float(cov_norm.mean()))
 
     # ---- 落盘 ----
     out_dir.mkdir(parents=True, exist_ok=True)
