@@ -152,7 +152,9 @@ python scripts/train.py --subject crh_1 --work-name cap2 --capacity-density 2.0
 - 产物是 **v2 格式**：多一列 `active`（有效点掩码），头部记录 `capacity`；
 - v2 没有"texel 索引"，`extract_texture` 会显式报错，`find_defects` 只输出逐面汇总；
 - 其余工具（`render_test` / `compare_defects` / `compare_model_stats`）对新旧模型
-  一视同仁，可以直接对比。
+  一视同仁，可以直接对比；
+- **做容量对照时要把孔洞正则关掉**（`--hole-weight 0`），否则两个变量混在一起：
+  孔洞正则本身就会鼓励把点云铺大。
 
 ## 缺陷评估口径
 
