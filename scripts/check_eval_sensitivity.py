@@ -225,13 +225,22 @@ def main(argv: list[str] | None = None) -> int:
 
     results["clean"] = evaluate()
 
-    with torch.no_grad():
-        opacity[region] -= 4.0                 # 约 0.018 倍
+    def scale_opacity(mask, factor: float) -> None:
+        """把不透明度**乘**一个系数（在概率空间，而不是 logit 上相减）。
+
+        logit 上减 4 对"已经很实"的高斯几乎无效（0.999 → 0.967），只会打击
+        本来就不可见的那批 —— 之前的写法因此低估了不透明度的作用。
+        """
+        with torch.no_grad():
+            p = torch.sigmoid(opacity[mask]) * factor
+            p = p.clamp(1e-4, 1 - 1e-4)
+            opacity[mask] = torch.log(p / (1 - p))
+
+    scale_opacity(region, 0.05)                # 局部 ×0.05
     results["opacity_down(region)"] = evaluate()
     restore()
 
-    with torch.no_grad():
-        opacity -= 4.0                         # 全局：确认不透明度确实起作用
+    scale_opacity(slice(None), 0.05)           # 全局 ×0.05
     results["opacity_down(global)"] = evaluate()
     restore()
 
