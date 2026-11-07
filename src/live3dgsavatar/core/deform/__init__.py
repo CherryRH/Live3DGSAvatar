@@ -17,3 +17,5 @@ __all__ = [
     "matrix_to_quaternion",
     "quaternion_multiply",
 ]
+from .capacity import (allocate_bary, capacity_binding,  # noqa: F401
+                       capacity_summary, face_area_uv, face_capacity)
