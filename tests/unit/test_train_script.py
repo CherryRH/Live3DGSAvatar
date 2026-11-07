@@ -287,3 +287,24 @@ def test_find_defects_requires_model_and_dataset() -> None:
             m.main(["--subject", "crh_1", "--work-name", "nope",
                     "--dataset", "crh_1", "--dry-run"])
     assert "[error]" in str(err.value.code)
+
+
+# ------------------------------------------------- 偏移消融（诊断用） --
+
+
+def test_limit_offsets_modes() -> None:
+    import torch
+
+    m = load_script("ablate_offsets.py")
+    x = torch.tensor([[0.03, 0.0, 0.0], [0.001, 0.0, 0.0]])
+
+    assert float(m.limit_offsets(x, "zero").abs().max()) == 0.0
+    clipped = m.limit_offsets(x, "clip", clip_mm=2.0)
+    assert float(clipped[0].norm()) == pytest.approx(0.002)
+    assert float(clipped[1].norm()) == pytest.approx(0.001)
+    scaled = m.limit_offsets(x, "scale", scale=0.5)
+    assert float(scaled[0].norm()) == pytest.approx(0.015)
+    with pytest.raises(ValueError, match="未知模式"):
+        m.limit_offsets(x, "shrink")
+    with pytest.raises(ValueError, match="clip_mm"):
+        m.limit_offsets(x, "clip", clip_mm=0.0)
