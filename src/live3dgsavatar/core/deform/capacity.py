@@ -32,10 +32,17 @@ __all__ = ["face_area_uv", "face_capacity", "allocate_bary", "capacity_binding",
 _GOLDEN = 0.6180339887498949
 
 
+def _to_numpy(x) -> np.ndarray:
+    """张量（任意设备）或数组 → CPU numpy。"""
+    if hasattr(x, "detach"):
+        return x.detach().cpu().numpy()
+    return np.asarray(x)
+
+
 def face_area_uv(uvs, uv_faces) -> np.ndarray:
     """每个三角面的 UV 面积（`[F]`，归一化 UV 单位）。"""
-    uv = np.asarray(uvs, dtype=np.float64)
-    tri = uv[np.asarray(uv_faces, dtype=np.int64)]
+    uv = _to_numpy(uvs).astype(np.float64, copy=False)
+    tri = uv[_to_numpy(uv_faces).astype(np.int64, copy=False)]
     return 0.5 * np.abs(np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0]))
 
 

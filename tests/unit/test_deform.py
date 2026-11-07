@@ -706,3 +706,16 @@ def test_active_mask_zeroes_opacity() -> None:
     opacity = gs.opacity[0, :, 0]
     assert float(opacity[1]) == 0.0 and float(opacity[3]) == 0.0
     assert float(opacity[0]) > 0.0
+
+
+def test_capacity_accepts_torch_tensors() -> None:
+    """训练脚本传进来的是（可能位于 CUDA 的）张量，不能只接受 numpy。"""
+    import torch
+
+    from live3dgsavatar.core.deform.capacity import capacity_binding
+
+    uvs = torch.tensor([[0.0, 0.0], [0.2, 0.0], [0.0, 0.2]])
+    uv_faces = torch.tensor([[0, 1, 2]])
+    binding = capacity_binding(uvs, uv_faces, tex_size=8, density=1.0)
+    assert binding.num_gaussians >= 1
+    assert bool(binding.valid_mask.all())
