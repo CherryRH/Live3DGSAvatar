@@ -679,3 +679,30 @@ def test_capacity_binding_matches_counts() -> None:
     assert binding.num_gaussians == int(counts.sum())
     assert bool(binding.valid_mask.all())
     assert binding.face_id.dtype.is_floating_point is False
+
+
+def test_active_mask_zeroes_opacity() -> None:
+    """未激活的点：不透明度在 deform 之后被置 0，参数形状不变。"""
+    import torch
+
+    from live3dgsavatar.core.avatar import AvatarConfig, GaussianAvatar
+    from live3dgsavatar.core.deform.bind import Binding
+    from live3dgsavatar.core.types import Mesh
+
+    n, k = 8, 2
+    binding = Binding(face_id=torch.zeros(n, dtype=torch.long),
+                      face_bary=torch.tensor([[1.0, 0.0, 0.0]] * n),
+                      valid_mask=torch.ones(n, dtype=torch.bool))
+    avatar = GaussianAvatar(
+        AvatarConfig(tex_size=8, num_basis_in=4, num_basis_blend=k,
+                     mlp_hidden=()), binding)
+    avatar.active = torch.tensor([True, False] * (n // 2))
+
+    verts = torch.zeros(1, 5, 3)
+    faces = torch.tensor([[0, 1, 2], [1, 2, 3]])
+    mesh = Mesh(verts=verts, faces=faces,
+                uvs=torch.zeros(3, 2), uv_faces=torch.zeros(2, 3, dtype=torch.long))
+    gs = avatar.deform(mesh, None)
+    opacity = gs.opacity[0, :, 0]
+    assert float(opacity[1]) == 0.0 and float(opacity[3]) == 0.0
+    assert float(opacity[0]) > 0.0

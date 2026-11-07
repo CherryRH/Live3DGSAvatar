@@ -757,6 +757,12 @@ def test_avatar_attributes_used_in_scripts_exist() -> None:
                         and isinstance(target.value, ast.Name)
                         and target.value.id == "self"):
                     known.add(target.attr)
+        elif isinstance(node, ast.AnnAssign):
+            target = node.target
+            if (isinstance(target, ast.Attribute)
+                    and isinstance(target.value, ast.Name)
+                    and target.value.id == "self"):
+                known.add(target.attr)
         elif isinstance(node, ast.Call):
             fn = node.func
             if (isinstance(fn, ast.Attribute) and fn.attr == "register_buffer"

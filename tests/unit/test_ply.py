@@ -212,5 +212,42 @@ def test_unknown_format_version_is_rejected(tmp_path) -> None:
 
     assert _check_format_version({}) == 1
     assert _check_format_version({"format_version": 1}) == 1
+    assert _check_format_version({"format_version": 2}) == 2
     with pytest.raises(ValueError, match="不受支持"):
-        _check_format_version({"format_version": 2})
+        _check_format_version({"format_version": 3})
+
+
+def test_v2_roundtrip_preserves_active_and_capacity(tmp_path) -> None:
+    """v2：`active` 列与 capacity 元数据要能原样读回。"""
+    from live3dgsavatar.core.io.ply import (load_ply, read_embedded_config,
+                                           read_ply_metadata, save_ply)
+
+    avatar = _tiny_avatar()
+    avatar.active = torch.ones(avatar.num_gaussians, dtype=torch.bool)
+    avatar.active[::3] = False
+    avatar.capacity = {"density": 2.0, "n_max": avatar.num_gaussians}
+    path = tmp_path / "v2.ply"
+    save_ply(avatar, path)
+
+    meta = read_ply_metadata(path)
+    assert meta["config"]["format_version"] == 2
+    assert meta["config"]["capacity"]["density"] == 2.0
+
+    back = load_ply(path, config=read_embedded_config(path), device="cpu")
+    assert back.active is not None
+    assert torch.equal(back.active, avatar.active)
+    assert back.capacity == avatar.capacity
+    assert torch.allclose(back.color, avatar.color)
+
+
+def test_v1_files_stay_v1_without_active(tmp_path) -> None:
+    """不设 `active` 时仍写 v1，读回来 `active` 为 None。"""
+    from live3dgsavatar.core.io.ply import (load_ply, read_embedded_config,
+                                           read_ply_metadata, save_ply)
+
+    avatar = _tiny_avatar()
+    path = tmp_path / "v1.ply"
+    save_ply(avatar, path)
+    assert read_ply_metadata(path)["config"]["format_version"] == 1
+    back = load_ply(path, config=read_embedded_config(path), device="cpu")
+    assert back.active is None

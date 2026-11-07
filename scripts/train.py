@@ -110,6 +110,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="从第几步开始启用（默认与 blend_start 相同）")
     p.add_argument("--hole-yaw", type=float, default=None,
                    help="孔洞正则采样的最大水平角（默认 40°）")
+    p.add_argument("--capacity-density", type=float, default=None,
+                   help=">0 时按三角面面积分配采样（v2 格式），1≈每 texel 一个点；"
+                        "0 表示沿用 UV texel 绑定（v1）")
     p.add_argument("--smooth-weight", type=float, default=None,
                    help="UV 邻域平滑权重（0 关闭；建议 0.002–0.005）")
     p.add_argument("--hole-threshold", type=float, default=None,
@@ -196,6 +199,9 @@ def main(argv: list[str] | None = None) -> int:
                      else cfg.get("train.pipeline.hole_start", blend_start))
     hole_yaw = float(args.hole_yaw if args.hole_yaw is not None
                      else cfg.get("train.pipeline.hole_yaw", 40.0))
+    capacity_density = float(args.capacity_density
+                             if args.capacity_density is not None
+                             else cfg.get("train.pipeline.capacity_density", 0.0))
     smooth_weight = float(args.smooth_weight if args.smooth_weight is not None
                           else cfg.get("train.pipeline.smooth_weight", 0.0))
     hole_threshold = float(args.hole_threshold
@@ -270,10 +276,25 @@ def main(argv: list[str] | None = None) -> int:
     # ---- 几何与相机 ----
     scene = load_scene(cfg, frames=1, device=str(device))
     glctx = dr.RasterizeCudaContext()
-    binding = build_binding(scene.uvs.to(device), scene.uv_faces.to(device),
-                            tex_size=avatar_cfg.tex_size, glctx=glctx,
-                            device=device)
+    if capacity_density > 0:
+        # v2：按三角面面积分配采样点，采样密度与 tex_size 解耦
+        from live3dgsavatar.core.deform.capacity import capacity_binding
+
+        binding = capacity_binding(scene.uvs, scene.uv_faces,
+                                   avatar_cfg.tex_size,
+                                   density=capacity_density, device=device)
+        print(f"  采样   : 按面分配 density={capacity_density:g}"
+              f" → {binding.num_gaussians} 个高斯（v2）")
+    else:
+        binding = build_binding(scene.uvs.to(device), scene.uv_faces.to(device),
+                                tex_size=avatar_cfg.tex_size, glctx=glctx,
+                                device=device)
     avatar = GaussianAvatar(avatar_cfg, binding).to(device)
+    if capacity_density > 0:
+        avatar.active = torch.ones(avatar.num_gaussians, dtype=torch.bool,
+                                   device=device)
+        avatar.capacity = {"density": float(capacity_density),
+                           "n_max": int(avatar.num_gaussians)}
     rasterizer = SimpleRasterizer()
     camera = Camera.from_intrinsics_extrinsics(
         K=scene.K, R=scene.R, T=scene.T,
