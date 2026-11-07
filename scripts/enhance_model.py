@@ -65,8 +65,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--syncfix-dir", type=Path, default=None,
                    help="SyncFix 仓库目录（含 inference.py）")
     p.add_argument("--syncfix-model", default=None, help="SyncFix 权重路径")
-    p.add_argument("--syncfix-python", default="python",
-                   help="跑 SyncFix 的解释器（默认 python；可用其专用环境）")
+    p.add_argument("--syncfix-python", default=None,
+                   help="跑 SyncFix 的解释器路径（优先级最高）")
+    p.add_argument("--syncfix-env", default=None,
+                   help="用 conda 环境跑 SyncFix，如 `syncfix`；不指定时若存在同名"
+                        "环境则自动使用，否则用当前 python")
     p.add_argument("--syncfix-out", type=Path, default=None,
                    help="SyncFix 的原始输出目录（默认 <缺陷目录>/syncfix_raw）")
     p.add_argument("--syncfix-arg", action="append", default=[],
@@ -152,12 +155,48 @@ def collect_refined(raw_dir: Path, target_dir: Path, labels: list[str]) -> list[
     return done
 
 
+def syncfix_prefix(args) -> list[str]:
+    """SyncFix 的解释器前缀。
+
+    优先级：`--syncfix-python` > `--syncfix-env` > 自动检测名为 `syncfix` 的
+    conda 环境 > 当前 `python`。
+
+    为什么需要：SyncFix 通常有自己的环境（依赖 imageio 等），而本流程跑在
+    训练环境里。用 `conda run --no-capture-output` 保证输出能实时透传。
+    """
+    if args.syncfix_python:
+        return [str(args.syncfix_python)]
+    env = args.syncfix_env or _detect_conda_env("syncfix")
+    if env:
+        return ["conda", "run", "--no-capture-output", "-n", str(env), "python"]
+    return ["python"]
+
+
+def _detect_conda_env(name: str) -> str | None:
+    """若存在名为 `name` 的 conda 环境则返回它，否则 None。"""
+    import os
+
+    conda = os.environ.get("CONDA_EXE")
+    if not conda:
+        return None
+    try:
+        out = subprocess.run([conda, "env", "list"], capture_output=True,
+                             text=True, timeout=20).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    for line in out.splitlines():
+        parts = line.split()
+        if parts and parts[0] == name:
+            return name
+    return None
+
+
 def syncfix_command(args, *, views: int) -> list[str]:
-    """拼出 SyncFix 的推理命令。"""
+    """拼出 SyncFix 的推理命令（含解释器前缀）。"""
     if args.syncfix_dir is None:
         raise RuntimeError("需要 --syncfix-dir（或加 --skip-syncfix 复用已有精修图）")
     script = Path(args.syncfix_dir) / "inference.py"
-    cmd = [args.syncfix_python, str(script),
+    cmd = syncfix_prefix(args) + [str(script),
            "--input_image", "{views}", "--ref_image", "{refs}",
            "--output_dir", "{raw}",
            "--n_per_pass", str(max(1, views)), "--ref_size", "1",
@@ -277,6 +316,15 @@ def main(argv: list[str] | None = None) -> int:
               ("--skip-syncfix" if args.skip_syncfix else "已完成") + "）")
     else:
         print(f"\n[2/4] 外部精修（{len(labels)} 个视角）")
+        prefix = syncfix_prefix(args)
+        print(f"  解释器：{' '.join(prefix)}", flush=True)
+        if not args.dry_run:
+            probe = prefix + ["-c", "import imageio"]
+            if subprocess.run(probe, capture_output=True).returncode != 0:
+                raise SystemExit(
+                    "[error] SyncFix 的 Python 无法 import imageio。\n"
+                    "        请用 --syncfix-env <环境名> 或 --syncfix-python <解释器> "
+                    "指定它的运行环境")
         cmd = syncfix_command(args, views=len(labels))
         cmd = [c.format(views=defects_dir / "views", refs=defects_dir / "refs",
                         raw=syncfix_raw) for c in cmd]

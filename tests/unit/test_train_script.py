@@ -410,3 +410,19 @@ def test_render_and_defect_metrics_extraction() -> None:
     assert dm["outside_after"] == 0.29
     assert m.render_metrics(None) == {}
     assert m.defect_metrics(None) == {}
+
+
+def test_syncfix_prefix_selection() -> None:
+    """解释器优先级：显式路径 > 指定环境 > 自动检测 > 当前 python。"""
+    m = load_script("enhance_model.py")
+
+    base = ["--subject", "a", "--work-name", "b", "--syncfix-dir", "/tmp/S"]
+    assert m.syncfix_prefix(m.parse_args(base)) == ["python"]
+
+    env = m.parse_args(base + ["--syncfix-env", "syncfix"])
+    assert m.syncfix_prefix(env) == ["conda", "run", "--no-capture-output",
+                                     "-n", "syncfix", "python"]
+
+    both = m.parse_args(base + ["--syncfix-env", "syncfix",
+                                "--syncfix-python", "/x/python"])
+    assert m.syncfix_prefix(both) == ["/x/python"], "显式解释器优先级最高"

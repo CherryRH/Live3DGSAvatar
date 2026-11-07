@@ -136,7 +136,10 @@ python scripts/enhance_model.py --subject crh_1 --work-name run \
 - 每步都能单独重跑：`--skip-find` / `--skip-syncfix` / `--skip-train`；
 - 状态写在 `<缺陷目录>/enhance_pipeline.json`，重跑自动跳过已完成的步骤（`--force` 强制）；
 - 精修输出若文件名对不上视角标签，会按排序顺序对应并打印警告；
-- `--dry-run` 只打印将执行的命令。
+- `--dry-run` 只打印将执行的命令；
+- SyncFix 有独立环境时用 `--syncfix-env syncfix`（内部走 `conda run --no-capture-output`），
+  或 `--syncfix-python <解释器路径>`；不指定时会自动检测名为 `syncfix` 的环境，
+  并在执行前探测 `imageio`，缺依赖会直接提示。
 
 ## 精修图微调
 
