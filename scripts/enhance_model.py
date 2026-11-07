@@ -77,7 +77,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     # 微调
     p.add_argument("--steps", type=int, default=600)
-    p.add_argument("--ssim-weight", type=float, default=0.2)
+    p.add_argument("--ssim-weight", type=float, default=0.0,
+                   help="SSIM 项权重（默认 0）；fused-ssim 的 backward 在个别构建上"
+                        "会触发 CUDA illegal memory access，先关闭更稳")
     p.add_argument("--refined-per-batch", type=int, default=4)
     p.add_argument("--real-per-batch", type=int, default=4)
     p.add_argument("--promote-name", default=None,

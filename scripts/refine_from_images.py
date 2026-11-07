@@ -54,8 +54,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--lr-opacity", type=float, default=1e-2)
     p.add_argument("--lr-scaling", type=float, default=2e-3)
     p.add_argument("--weight-floor", type=float, default=0.05)
-    p.add_argument("--ssim-weight", type=float, default=0.2,
-                   help="SSIM 项权重；用于抑制 L1 造成的整体平滑")
+    p.add_argument("--ssim-weight", type=float, default=0.0,
+                   help="SSIM 项权重（默认 0 = 关闭）。开启需要 fused-ssim 的 CUDA "
+                        "算子；若 backward 报 illegal memory access 就保持 0")
     p.add_argument("--eval-every", type=int, default=100)
     p.add_argument("--eval-frames", type=int, default=32)
     p.add_argument("--sharp-guard", type=float, default=0.85,
@@ -168,6 +169,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"精修图  : {len(labels)} 个")
     print(f"微调    : {args.steps} 步，每批 {args.refined_per_batch} 精修 + "
           f"{args.real_per_batch} 真实")
+    print(f"SSIM    : {args.ssim_weight:g}" +
+          ("（关闭）" if args.ssim_weight <= 0 else ""))
     if args.dry_run:
         print("\n[dry-run] 未执行")
         return 0
