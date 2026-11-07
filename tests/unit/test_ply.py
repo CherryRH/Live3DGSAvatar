@@ -189,3 +189,28 @@ def test_read_embedded_config_returns_none_without_comment(tmp_path) -> None:
         assert read_embedded_config(real) is None
     else:
         pytest.skip("仓库里没有参照实现写出的模型")
+
+
+# --------------------------------------------------------- 格式版本 --
+
+
+def test_save_writes_format_version_and_loads_back(tmp_path) -> None:
+    """写出的文件带 `format_version`，读回时按 v1 处理。"""
+    from live3dgsavatar.core.io.ply import (FORMAT_VERSION, read_ply_metadata,
+                                           save_ply)
+
+    avatar = _tiny_avatar()
+    path = tmp_path / "m.ply"
+    save_ply(avatar, path)
+    meta = read_ply_metadata(path)
+    assert meta["config"]["format_version"] == FORMAT_VERSION
+
+
+def test_unknown_format_version_is_rejected(tmp_path) -> None:
+    """未知版本必须报错，不能猜 —— 猜错会静默给出错误布局。"""
+    from live3dgsavatar.core.io.ply import _check_format_version
+
+    assert _check_format_version({}) == 1
+    assert _check_format_version({"format_version": 1}) == 1
+    with pytest.raises(ValueError, match="不受支持"):
+        _check_format_version({"format_version": 2})

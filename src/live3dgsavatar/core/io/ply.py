@@ -39,6 +39,11 @@ from ..deform import Binding
 F_REST_COLS = 45
 CONFIG_COMMENT_PREFIX = "gaussian_config "
 
+#: 当前写出的格式版本。v1 = 每个高斯一行 + 绑定列 + MLP 压在前 P 行。
+#: 读入时缺失该字段视为 v1（兼容参照实现与旧文件）；未知版本必须显式报错，
+#: 不能猜 —— 猜错会静默给出错误的参数布局。
+FORMAT_VERSION = 1
+
 
 def _flatten_module(module: torch.nn.Module) -> np.ndarray:
     parts = [p.detach().reshape(-1).cpu().numpy() for p in module.state_dict().values()]
@@ -126,6 +131,7 @@ def save_ply(avatar: GaussianAvatar, path: str | Path) -> None:
     el = PlyElement.describe(elements, "vertex")
 
     config = {
+        "format_version": FORMAT_VERSION,
         "tex_size": cfg.tex_size,
         "num_basis_in": cfg.num_basis_in,
         "num_basis_blend": cfg.num_basis_blend,
@@ -144,6 +150,16 @@ def _read_config_comment(plydata: PlyData) -> dict | None:
     return None
 
 
+def _check_format_version(meta: dict) -> int:
+    """解析并校验 `format_version`；缺失视为 1。"""
+    version = int(meta.get("format_version", 1))
+    if version not in (1,):
+        raise ValueError(
+            f"模型格式版本 {version} 不受支持（本代码只读到 v1）；"
+            "请用对应版本的代码加载，或转换文件")
+    return version
+
+
 def read_embedded_config(path: str | Path) -> "AvatarConfig | None":
     """读 PLY 头里内嵌的 `gaussian_config`；没有则返回 ``None``。
 
@@ -154,6 +170,7 @@ def read_embedded_config(path: str | Path) -> "AvatarConfig | None":
     meta = _read_config_comment(plydata)
     if meta is None:
         return None
+    _check_format_version(meta)
     return AvatarConfig(
         tex_size=int(meta["tex_size"]),
         num_basis_in=int(meta["num_basis_in"]),

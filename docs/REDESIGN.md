@@ -139,7 +139,52 @@ for it in range(steps):
   并加 `active` 列；
 - 基的一致性：分裂出的两点共享父点基，需在生长后允许微调。
 
-## 九、第一步（可判定实验）
+## 九、格式版本与代码隔离
+
+改格式不影响渲染：渲染层只吃 `GaussianSet`（xyz / rotation / scaling / opacity /
+color）与 `Camera`；`deform` 只依赖 `Binding(face_id, bary)`。**新格式只要仍产出这两样，
+渲染、GUI、在线驱动都不用改。**
+
+需要隔离的只有三处：
+
+| 位置 | 现状假设 | 隔离方式 |
+|---|---|---|
+| `core/io/ply.py` | 每高斯一行；`n ≤ tex_size²`；MLP 压在前 P 行 | 按 `format_version` 分派；v2 用 sidecar 存 MLP |
+| `core/deform/binding.py` | UV 光栅化 → texel 中心 | 增加 `capacity_binding`（已实现），两条路径产出同一种 `Binding` |
+| `evaluation/defects.py` | `per_texel` / `build_defect_map` 需要 texel 索引 | v2 跳过"回填 UV 图"，只用逐高斯质量 |
+
+### 版本标记
+
+PLY 头 `comment gaussian_config` 里的 JSON 增加 `format_version`（当前 `1`）；
+缺失视为 v1（兼容参照实现与旧文件），**未知版本直接报错**而不是猜。
+已实现：`FORMAT_VERSION` 与 `_check_format_version`。
+
+v2 的元数据形如：
+
+```json
+{"format_version": 2, "tex_size": 256, "num_basis_in": 129,
+ "num_basis_blend": 20, "mlp_hidden": [128, 128], "use_weight_proj": true,
+ "capacity": {"density": 2.0, "n_max": 125719, "n_active": 125719},
+ "has_active": true, "has_texels": false}
+```
+
+- 每高斯列不变，**多一列 `active`**；
+- MLP 参数移到 sidecar `model.extra.npz`（N 与 MLP 参数量解耦，生长时不再冲突）；
+- `load_ply` 内部按版本分派，**返回同一个 `GaussianAvatar`**，所以下游全部复用。
+
+### 新旧模型对比
+
+两者都 load 成 `GaussianAvatar`，属性名一致，所以：
+
+| 工具 | 是否直接可用 |
+|---|---|
+| `render_test.py`（留出集质量） | ✅ |
+| `compare_defects.py`（缺口/尖刺/云外溢） | ✅ 只用 `binding_face_id` 与 alpha |
+| `compare_model_stats.py`（参数分布） | ✅ 只读属性 |
+| `analyze_failure_modes.py`（姿态暴露） | ✅ 偏移语义不变 |
+| `find_defects.py` 的 `mass.npz` | ⚠️ v2 的逐高斯顺序不同，需各自生成；逐 texel 图仅 v1 |
+
+## 十、第一步（可判定实验）
 
 不重写，先做档 A 的最小版本：
 
