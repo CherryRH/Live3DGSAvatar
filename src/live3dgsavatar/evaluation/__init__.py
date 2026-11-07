@@ -21,7 +21,7 @@ from .protocol import (EvaluationReport, summarize_no_reference,  # noqa: F401
 from .defects import (DefectMap, alpha_hole_ratio,  # noqa: F401
                       attribute_to_faces, build_defect_map, coverage_counts,
                       coverage_defect, floater_offsets, hole_rate, per_texel,
-                      refine_delta, sharpness_map)
+                      refine_delta, refine_weight_map, sharpness_map)
 from .expressions import (ExpressionSpec, axis_extremes,  # noqa: F401
                           cluster, cluster_frames, expression_matrix,
                           load_expressions, load_named, merge_specs)
@@ -60,6 +60,7 @@ __all__ = [
     "coverage_defect",
     "hole_rate",
     "refine_delta",
+    "refine_weight_map",
     "robust_score",
     "robust_views",
     "sharpness_map",

@@ -602,3 +602,28 @@ def test_subsample_is_deterministic_and_bounded() -> None:
     assert subsample(10, 3) == subsample(10, 3)
     assert subsample(5, 99) == [0, 1, 2, 3, 4]
     assert subsample(0, 3) == []
+
+
+def test_refine_weight_map_floor_and_foreground_only() -> None:
+    """精修权重：前景内至少给 floor，前景外恒为 0。"""
+    from live3dgsavatar.evaluation import refine_weight_map
+
+    render = np.zeros((8, 8, 3), np.uint8)
+    refined = render.copy()
+    refined[:, 4:] = 120
+    mask = np.zeros((8, 8), bool)
+    mask[:, :6] = True
+
+    out = refine_weight_map(render, refined, mask, floor=0.1)
+    assert float(out[~mask].max()) == 0.0
+    assert float(out[:, :4][mask[:, :4]].max()) == pytest.approx(0.1)
+    assert float(out[mask][out[mask] > 0.5].size) > 0
+
+
+def test_refine_weight_map_handles_empty_foreground() -> None:
+    from live3dgsavatar.evaluation import refine_weight_map
+
+    out = refine_weight_map(np.zeros((4, 4, 3), np.uint8),
+                            np.zeros((4, 4, 3), np.uint8),
+                            np.zeros((4, 4), bool), floor=0.2)
+    assert float(out.max()) == 0.0

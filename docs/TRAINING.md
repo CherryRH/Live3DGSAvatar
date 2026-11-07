@@ -116,6 +116,28 @@ python scripts/train.py --subject crh_1 --work-name run --no-robust-eval   # 关
 
 指标含义见 [`REDESIGN.md`](REDESIGN.md)。
 
+## 精修图微调
+
+`find_defects.py` 挑出待修视角并渲染，外部精修器（如 SyncFix）输出到
+`<缺陷目录>/refined/` 之后：
+
+```bash
+python scripts/refine_from_images.py --subject crh_1 --work-name run \
+    --steps 600 --promote --promote-name run_refined --force
+```
+
+与上一版相比收紧了三处：
+
+| 项 | 做法 | 原因 |
+|---|---|---|
+| 精修图体检 | 前景 IoU < 0.5 或色差 > 60 的视角直接跳过 | 避免把坏样本当目标 |
+| 高频保持 | 额外加 SSIM 项（默认 0.2） | 上一版 +0.9 dB 但高频能量 −13% |
+| 检查点选择 | 每 100 步算留出 PSNR 与锐度比，`score = PSNR − 20·max(0, 0.85 − 锐度比)` | 锐度掉太多会被扣分，自动拒绝"用模糊换 PSNR" |
+
+参数范围是颜色 + 不透明度 + 尺度（尺度是补洞的必要项，前一轮已对照验证）。
+每批混入 4 帧真实数据锚定；产物写到 `<缺陷目录>/finetune/`，`report.json` 记录
+留出指标与逐次评估历史。
+
 ## 缺陷评估口径
 
 `find_defects.py` 选出问题视角，`compare_defects.py` 对比两个模型在这些视角上的

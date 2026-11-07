@@ -287,3 +287,43 @@ def test_find_defects_requires_model_and_dataset() -> None:
             m.main(["--subject", "crh_1", "--work-name", "nope",
                     "--dataset", "crh_1", "--dry-run"])
     assert "[error]" in str(err.value.code)
+
+
+# ------------------------------------------------ 精修图微调（脚本工具） --
+
+
+def test_foreground_iou_and_color_shift() -> None:
+    import numpy as np
+
+    m = load_script("refine_from_images.py")
+    a = np.zeros((4, 4), bool)
+    a[:2] = True
+    b = np.zeros((4, 4), bool)
+    b[1:3] = True
+    assert m.foreground_iou(a, a) == pytest.approx(1.0)
+    assert m.foreground_iou(a, b) == pytest.approx(1 / 3)
+    assert m.foreground_iou(np.zeros((2, 2), bool), np.zeros((2, 2), bool)) == 1.0
+
+    render = np.zeros((4, 4, 3), np.uint8)
+    refined = np.full((4, 4, 3), 10, np.uint8)
+    mask = np.ones((4, 4), bool)
+    assert m.color_shift(render, refined, mask) == pytest.approx(10.0)
+
+
+def test_composite_score_penalises_sharpness_loss() -> None:
+    m = load_script("refine_from_images.py")
+    assert m.composite_score(28.0, 0.90, guard=0.85, penalty=20) == 28.0
+    # 锐度比 0.80，比 guard 低 0.05 → 扣 1 dB
+    assert m.composite_score(28.0, 0.80, guard=0.85,
+                             penalty=20) == pytest.approx(27.0)
+    assert m.composite_score(28.0, 0.60, guard=0.85,
+                             penalty=20) == pytest.approx(23.0)
+
+
+def test_sharpness_ratio_of_same_image_is_one() -> None:
+    import numpy as np
+
+    m = load_script("refine_from_images.py")
+    img = np.random.default_rng(0).integers(0, 255, (16, 16, 3), dtype=np.uint8)
+    mask = np.ones((16, 16), bool)
+    assert m.sharpness_ratio(img, img, mask) == pytest.approx(1.0, abs=1e-6)
