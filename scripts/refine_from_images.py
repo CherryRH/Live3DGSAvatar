@@ -58,9 +58,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="SSIM 项权重（默认 0 = 关闭）。开启需要 fused-ssim 的 CUDA "
                         "算子；若 backward 报 illegal memory access 就保持 0")
     p.add_argument("--eval-every", type=int, default=100)
-    p.add_argument("--eval-frames", type=int, default=32)
-    p.add_argument("--sharp-guard", type=float, default=0.85,
-                   help="锐度比低于该值时开始扣分")
+    p.add_argument("--eval-frames", type=int, default=64,
+                   help="选点用的帧数（从训练段随机取，且这些帧不参与锚定）")
+    p.add_argument("--eval-seed", type=int, default=0)
+    p.add_argument("--eval-mode", choices=("random", "holdout", "both"),
+                   default="random",
+                   help="random=训练段随机抽样（默认，覆盖更全）；"
+                        "holdout=预训练时的末尾 10%%；both=选点用 random、"
+                        "另外报告 holdout")
+    p.add_argument("--sharp-guard", type=float, default=None,
+                   help="锐度比的绝对下限；默认按'训练前锐度 − 容差'自适应")
+    p.add_argument("--sharp-tolerance", type=float, default=0.03,
+                   help="允许的锐度比下降幅度（相对训练前，默认 0.03）")
     p.add_argument("--sharp-penalty", type=float, default=20.0,
                    help="锐度比每低 1.0 扣多少 dB")
     p.add_argument("--min-fg-iou", type=float, default=0.5,
@@ -99,7 +108,11 @@ def color_shift(render, refined, mask) -> float:
 
 def composite_score(psnr: float, sharp_ratio: float, *, guard: float = 0.85,
                     penalty: float = 20.0) -> float:
-    """`psnr − penalty·max(0, guard − 锐度比)`：锐度掉太多会被扣分。"""
+    """`psnr − penalty·max(0, guard − 锐度比)`：锐度掉太多会被扣分。
+
+    `guard` 可以按"训练前的锐度 − 容差"自适应传入（见 main），
+    这样不同模型/数据集不必共用同一个绝对值。
+    """
     drop = max(0.0, float(guard) - float(sharp_ratio))
     return float(psnr) - float(penalty) * drop
 
@@ -265,15 +278,40 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("[error] 没有可用的精修视角")
 
     # ---- 留出段评估 ----
-    eval_idx = np.linspace(0, hold_scene.num_frames - 1,
-                           min(args.eval_frames, hold_scene.num_frames)).astype(int)
-    cam_hold = Camera(K=hold_scene.K, w2c=w2c_data.unsqueeze(0).to(device),
+    # 选点用哪批帧：
+    #   random  = 训练段里随机抽（默认）——覆盖更全，且这些帧不参与锚定
+    #   holdout = 预训练时的末尾 10%（与预训练数字可比，但姿态偏小）
+    #   both    = 选点用 random，另外报告一次 holdout
+    rng_eval = np.random.default_rng(args.eval_seed)
+    if args.eval_mode in ("random", "both"):
+        n_eval = int(min(args.eval_frames, train_end))
+        eval_ids = set(int(i) for i in
+                       rng_eval.choice(train_end, size=n_eval, replace=False))
+        print(f"  选点集：训练段随机 {len(eval_ids)} 帧（已从锚定中剔除）")
+    else:
+        eval_ids = set()
+
+    def _frame_for(i: int) -> dict:
+        """按全局帧号取网格（训练段用 scene，留出段用 hold_scene）。"""
+        if i < train_end:
+            return scene.frames[i]
+        return hold_scene.frames[i - train_end]
+
+    def _camera_for(i: int):
+        if i < train_end:
+            return Camera(K=scene.K, w2c=w2c_data.unsqueeze(0).to(device),
+                          width=scene.width, height=scene.height).to(device)
+        return Camera(K=hold_scene.K, w2c=w2c_data.unsqueeze(0).to(device),
                       width=hold_scene.width, height=hold_scene.height).to(device)
 
-    def evaluate_holdout() -> dict:
+    holdout_ids = list(range(train_end, total))
+    eval_ids_final = (sorted(eval_ids) if eval_ids
+                      else list(np.linspace(train_end, total - 1,
+                                            min(args.eval_frames, held)).astype(int)))
+
+    def evaluate_frames(ids: list[int] | set[int]) -> dict:
         psnrs, ratios = [], []
-        for local in eval_idx:
-            i = train_end + int(local)
+        for i in sorted(ids):
             path = data_dir / "images" / f"{i:05d}.png"
             if not path.is_file():
                 continue
@@ -281,8 +319,8 @@ def main(argv: list[str] | None = None) -> int:
             gt = rgba[..., :3].copy()
             gt[rgba[..., 3] <= 127] = 0
             mask = rgba[..., 3] > 127
-            frame = hold_scene.frames[int(local)]
-            out = render_frame(frame, cam_hold,
+            frame = _frame_for(i)
+            out = render_frame(frame, _camera_for(i),
                                frame["blend_weight"].unsqueeze(0).to(device))
             pred = (out.color[0].clamp(0, 1).permute(1, 2, 0).cpu().numpy()
                     * 255.0).astype(np.uint8)
@@ -295,9 +333,17 @@ def main(argv: list[str] | None = None) -> int:
         return {"psnr": float(np.mean(psnrs)), "sharp": float(np.mean(ratios)),
                 "n": len(psnrs)}
 
-    before = evaluate_holdout()
+    before = evaluate_frames(eval_ids_final)
+    before_holdout = (evaluate_frames(holdout_ids[:args.eval_frames])
+                      if args.eval_mode in ("holdout", "both") else None)
     print(f"  微调前：PSNR {before['psnr']:.2f} dB，锐度比 "
           f"{before['sharp']:.3f}（n={before['n']}）")
+    if before_holdout:
+        print(f"          留出段参照：PSNR {before_holdout['psnr']:.2f} dB，"
+              f"锐度比 {before_holdout['sharp']:.3f}（n={before_holdout['n']}）")
+    guard = (float(args.sharp_guard) if args.sharp_guard is not None
+             else float(before["sharp"]) - float(args.sharp_tolerance))
+    print(f"  锐度守卫：{guard:.3f}（{'绝对' if args.sharp_guard is not None else '相对容差'}）")
 
     class _Mixed:
         def __len__(self):
@@ -342,7 +388,8 @@ def main(argv: list[str] | None = None) -> int:
                 yield self.random_batch(batch_size)
 
     real = ManifestSource(data_dir, split="train", test_ratio=ratio,
-                          device="cpu", seed=args.seed)
+                          device="cpu", seed=args.seed,
+                          exclude=eval_ids or None)
     source = _Mixed()
 
     def render_fn(mesh_verts, weight, batch, iteration):
@@ -376,9 +423,9 @@ def main(argv: list[str] | None = None) -> int:
         def on_step(self, trainer, iteration, parts) -> None:
             if args.eval_every <= 0 or (iteration + 1) % args.eval_every != 0:
                 return
-            m = evaluate_holdout()
+            m = evaluate_frames(eval_ids_final)
             score = composite_score(m["psnr"], m["sharp"],
-                                    guard=args.sharp_guard,
+                                    guard=guard,
                                     penalty=args.sharp_penalty)
             self.history.append({"iteration": iteration, "score": round(score, 3),
                                  "psnr": round(m["psnr"], 3),
@@ -411,7 +458,9 @@ def main(argv: list[str] | None = None) -> int:
     report = trainer.run()
 
     save_ply(avatar, out_dir / "model.ply")
-    after = evaluate_holdout()
+    after = evaluate_frames(eval_ids_final)
+    after_holdout = (evaluate_frames(holdout_ids[:args.eval_frames])
+                     if before_holdout is not None else None)
     if (out_dir / "model_best.ply").is_file():
         # 用最佳检查点覆盖最终产物（若有）
         best = load_ply(out_dir / "model_best.ply",
@@ -422,7 +471,10 @@ def main(argv: list[str] | None = None) -> int:
         "model": str(ply), "steps": int(args.steps),
         "seconds": round(report.seconds, 1),
         "refined_views": len(obs), "skipped": skipped,
-        "holdout_before": before, "holdout_after": after,
+        "eval_mode": args.eval_mode,
+        "eval_frames": len(eval_ids_final),
+        "before": before, "after": after,
+        "holdout_before": before_holdout, "holdout_after": after_holdout,
         "score_history": evaluator.history,
         "ssim_weight": args.ssim_weight, "sharp_guard": args.sharp_guard,
     }
@@ -430,8 +482,11 @@ def main(argv: list[str] | None = None) -> int:
         json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
 
     print(f"\n完成：{report.iterations} 步，{report.seconds:.1f} s")
-    print(f"  留出 PSNR：{before['psnr']:.2f} → {after['psnr']:.2f} dB")
-    print(f"  留出锐度比：{before['sharp']:.3f} → {after['sharp']:.3f}")
+    print(f"  选点集 PSNR：{before['psnr']:.2f} → {after['psnr']:.2f} dB")
+    print(f"  选点集锐度比：{before['sharp']:.3f} → {after['sharp']:.3f}")
+    if after_holdout:
+        print(f"  留出段 PSNR：{before_holdout['psnr']:.2f} → "
+              f"{after_holdout['psnr']:.2f} dB（参照，不参与选点）")
     print(f"  产物：{out_dir}/model.ply")
 
     if args.promote:

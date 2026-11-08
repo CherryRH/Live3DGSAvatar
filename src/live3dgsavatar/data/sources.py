@@ -100,7 +100,8 @@ class ManifestSource:
                  background=(0.0, 0.0, 0.0),
                  seed: int = 0,
                  use_cache: bool = True,
-                 preload: bool = True) -> None:
+                 preload: bool = True,
+                 exclude: set[int] | None = None) -> None:
         if split not in ("train", "test", "all"):
             raise ValueError(f"split 只能是 train/test/all，实际 {split!r}")
         self.root = Path(data_dir)
@@ -139,6 +140,10 @@ class ManifestSource:
                 torch.from_numpy(self._weight).to(self.device),
             )
         self._index = self._select_split(split, test_ratio)
+        if exclude:
+            # 把用于评估的帧从训练切分里剔掉，避免"自己考自己"
+            dropped = set(int(i) for i in exclude)
+            self._index = [i for i in self._index if i not in dropped]
         if not self._index:
             raise ValueError(f"{self.root} 的 {split} 切分为空")
 

@@ -677,3 +677,30 @@ def test_manifest_source_batches_and_iterates(tmp_path) -> None:
     assert batch.image.shape[0] == 3 and batch.mesh.shape[0] == 3
     chunks = list(src.iter_batches(2))
     assert [c.image.shape[0] for c in chunks] == [2, 2, 1]
+
+
+# ------------------------------------------------- 数据源：排除评估帧 --
+
+
+def test_manifest_source_excludes_frames() -> None:
+    """评估用的帧必须从训练切分里剔除，否则等于"自己考自己"。"""
+    from pathlib import Path
+
+    import numpy as np
+    import torch
+
+    from live3dgsavatar.data.sources import ManifestSource
+
+    root = Path(__file__).resolve().parent.parent.parent
+    data = root / "datasets" / "crh_1"
+    if not (data / "render_inputs.npz").is_file():
+        pytest.skip("缺少仓库内数据集")
+
+    src = ManifestSource(data, split="train", preload=True, use_cache=False)
+    all_idx = set(src.random_indices(len(src)))
+    drop = sorted(all_idx)[:5]
+    src2 = ManifestSource(data, split="train", preload=True, use_cache=False,
+                          exclude=set(drop))
+    assert len(src2) == len(src) - len(drop)
+    got = set(src2.random_indices(len(src2)))
+    assert not (got & set(drop)), "被排除的帧不应再出现"

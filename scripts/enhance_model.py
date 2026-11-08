@@ -96,10 +96,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="落地目录名（默认 <版本>_refined）")
 
     # 评测
-    p.add_argument("--eval-frames", type=int, default=-1,
-                   help="留出集评测帧数；-1 表示全部")
+    p.add_argument("--eval-frames", type=int, default=64,
+                   help="渲染测试与选点用多少帧（默认 64；-1 表示全部，很慢）")
     p.add_argument("--no-render-test", action="store_true",
                    help="跳过留出集渲染测试")
+    p.add_argument("--skip-base-render", action="store_true",
+                   help="跳过基线模型的渲染测试（已有报告时省时间）")
 
     # 控制
     p.add_argument("--skip-find", action="store_true")
@@ -385,6 +387,7 @@ def main(argv: list[str] | None = None) -> int:
              "--subject", subject, "--work-name", work, "--dataset", dataset,
              "--defects", str(defects_dir),
              "--steps", str(args.steps), "--ssim-weight", str(args.ssim_weight),
+             "--eval-frames", str(args.eval_frames),
              "--refined-per-batch", str(args.refined_per_batch),
              "--real-per-batch", str(args.real_per_batch),
              "--promote", "--promote-name", new_work,
@@ -409,18 +412,23 @@ def main(argv: list[str] | None = None) -> int:
         except Exception:                                  # noqa: BLE001
             print("  [warn] 无法推算留出段起点，渲染全部帧")
         for name in (work, new_work):
-            cmd = [py, str(scripts / "render_test.py"),
-                   "--subject", subject, "--work-name", name, "--dataset", dataset,
-                   "--frames", str(args.eval_frames)]
-            if offset is not None:
-                cmd += ["--frame-offset", str(offset)]
-            try:
-                run(cmd, dry_run=args.dry_run)
-            except RuntimeError as e:
-                print(f"  [warn] {name} 渲染测试失败：{e}")
             report_path = (Path(str(cfg.get("paths.output_dir", "output")))
                            / "render_test" / subject / name / dataset
                            / "report.json")
+            if (args.skip_base_render and name == work and report_path.is_file()
+                    and not args.force):
+                print(f"  基线 {name}：复用已有报告（--skip-base-render）")
+            else:
+                cmd = [py, str(scripts / "render_test.py"),
+                       "--subject", subject, "--work-name", name,
+                       "--dataset", dataset,
+                       "--frames", str(args.eval_frames)]
+                if offset is not None:
+                    cmd += ["--frame-offset", str(offset)]
+                try:
+                    run(cmd, dry_run=args.dry_run)
+                except RuntimeError as e:
+                    print(f"  [warn] {name} 渲染测试失败：{e}")
             results.setdefault("render_test", {})[name] = render_metrics(
                 read_report(report_path))
     if not args.dry_run:
