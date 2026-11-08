@@ -653,3 +653,24 @@ def test_greedy_cover_respects_per_key_max() -> None:
     res = greedy_cover(cands, mass, budget=4, per_key_max=1)
     assert len(res.chosen) == 2
     assert {c.key for c in res.chosen} == {"frame0", "frame1"}
+
+
+def test_summarize_rows_tolerates_missing_psnr() -> None:
+    """没有精修图时 psnr 为 None，汇总不能崩。"""
+    from script_loader import load_script
+
+    m = load_script("compare_defects.py")
+    rows = [
+        {"hole_base": 0.10, "hole_new": 0.08, "sharp_base": 4.0,
+         "sharp_new": 3.9, "spike_base": 0.01, "spike_new": 0.009,
+         "outside_base": 0.2, "outside_new": 0.21,
+         "psnr_base": None, "psnr_new": None},
+        {"hole_base": 0.20, "hole_new": 0.19, "sharp_base": 4.5,
+         "sharp_new": 4.4, "spike_base": 0.02, "spike_new": 0.018,
+         "outside_base": 0.3, "outside_new": 0.3,
+         "psnr_base": None, "psnr_new": None},
+    ]
+    s = m.summarize_rows(rows)
+    assert s["n"] == 2
+    assert s["hole_delta"] == pytest.approx(-0.015)
+    assert "psnr_delta" not in s

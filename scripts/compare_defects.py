@@ -71,7 +71,9 @@ def summarize_rows(rows: list[dict]) -> dict:
     if not rows:
         return {}
     def col(key: str) -> np.ndarray:
-        return np.asarray([float(r[key]) for r in rows if key in r], dtype=np.float64)
+        # 值为 None 的行要跳过（例如没有精修图时 psnr 为空），否则 float(None) 会崩
+        vals = [r[key] for r in rows if r.get(key) is not None]
+        return np.asarray(vals, dtype=np.float64)
 
     out: dict = {"n": len(rows)}
     for key in ("hole_base", "hole_new", "hole_in_base", "hole_in_new",
