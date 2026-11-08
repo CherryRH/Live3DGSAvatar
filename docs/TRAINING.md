@@ -116,94 +116,19 @@ python scripts/train.py --subject crh_1 --work-name run --no-robust-eval   # 关
 
 指标含义见 [`REDESIGN.md`](REDESIGN.md)。
 
-## 模型增强流程（一条命令）
+## 模型增强流程
 
-从找缺陷到落地评测，四个阶段串成一条命令：
+一条命令跑完"找缺陷 → 外部精修 → 微调 → 落地 → 评测"。规格、默认参数与实测结果
+见 [`ENHANCE.md`](ENHANCE.md)，这里只留入口：
 
 ```bash
 python scripts/enhance_model.py --subject crh_1 --work-name run \
     --syncfix-dir ~/Projects/SyncFix --syncfix-model <权重> \
-    --promote-name run_refined
+    --syncfix-env syncfix --promote-name run_refined
 ```
 
-| 阶段 | 调用 | 产物 |
-|---|---|---|
-| 1 找缺陷 | `find_defects.py` | `<缺陷目录>/{selected.json, views/, refs/, mass.npz}` |
-| 2 外部精修 | SyncFix `inference.py` | `syncfix_raw/` → 整理成 `refined/` |
-| 3 微调 | `refine_from_images.py` | `<缺陷目录>/finetune/model.ply` + `models/<对象>/<名字>_refined/` |
-| 4 评测 | `render_test.py` ×2、`compare_defects.py` | 留出集 PSNR / 锐度比 / 结构缺口 |
-
-- 每步都能单独重跑：`--skip-find` / `--skip-syncfix` / `--skip-train`；
-- 状态写在 `<缺陷目录>/enhance_pipeline.json`，重跑自动跳过已完成的步骤（`--force` 强制）；
-  **换 `--promote-name` 会自动重跑微调**（旧目标名的结果不适用）；
-- 重跑会**覆盖**旧产物：`views/`、`refs/`、`refined/`、`syncfix_raw/`、`finetune/`
-  里的旧文件先清掉再写，避免新旧混在一起（曾出现"17 个视角 = 13 旧 + 4 新"）；
-- 改了搜索参数（yaw/pitch/clusters/axes/rolls/间隔/单基帧上限）会自动重跑第 1 步；
-- 精修输出若文件名对不上视角标签，会按排序顺序对应并打印警告；
-- **搜索范围可调**：默认 ±40°/±20°、20 个表情、预算 16；调大即可覆盖更极端的情形：
-
-  ```bash
-  python scripts/enhance_model.py --subject crh_1 --work-name run \
-      --yaw-limit 60 --pitch-limit 30 --rolls -15 0 15 \
-      --clusters 12 --axes 10 --budget 32 \
-      --min-angle-sep 8 --per-base-max 2
-  ```
-
-  `--min-angle-sep` 限制已选视角之间的最小 (yaw, pitch) 距离，`--per-base-max`
-  限制同一基帧最多选几个——不加这两个，名额容易被"同一角度的不同表情"占满。
-  改了搜索参数后第 1 步会自动重跑（旧结果失效）。
-- `--dry-run` 只打印将执行的命令；
-- SyncFix 有独立环境时用 `--syncfix-env syncfix`（内部走 `conda run --no-capture-output`），
-  或 `--syncfix-python <解释器路径>`；不指定时会自动检测名为 `syncfix` 的环境，
-  并在执行前探测 `imageio`，缺依赖会直接提示。
-
-## 精修图微调
-
-`find_defects.py` 挑出待修视角并渲染，外部精修器（如 SyncFix）输出到
-`<缺陷目录>/refined/` 之后：
-
-```bash
-python scripts/refine_from_images.py --subject crh_1 --work-name run \
-    --steps 600 --promote --promote-name run_refined --force
-```
-
-与上一版相比收紧了三处：
-
-| 项 | 做法 | 原因 |
-|---|---|---|
-| 精修图体检 | 前景 IoU < 0.5 或色差 > 60 的视角直接跳过 | 避免把坏样本当目标 |
-| 高频保持 | 可选 SSIM 项（默认 0） | 上一版 +0.9 dB 但高频能量 −13%；SSIM 的 backward 在个别构建上会触发 CUDA illegal memory access，默认关闭 |
-| 检查点选择 | 每 100 步算留出 PSNR 与锐度比，`score = PSNR − 20·max(0, 0.85 − 锐度比)` | 锐度掉太多会被扣分，自动拒绝"用模糊换 PSNR" |
-
-参数范围是颜色 + 不透明度 + 尺度（尺度是补洞的必要项，前一轮已对照验证）。
-每批混入 4 帧真实数据锚定。**锚定帧也从整个数据集取**（`--anchor-mode angle` 按
-\|yaw\| 加权，`uniform` 均匀），不依赖预训练的切分；选点帧会从锚定里剔除。
-
-产物写到 `<缺陷目录>/finetune/`。
-
-**选点与评测用的帧**（`--eval-mode`，默认 `random`）：
-
-| 模式 | 选点用哪些帧 | 说明 |
-|---|---|---|
-| `angle`（默认） | 全数据集里 \|yaw\| ≥ `--angle-percentile`（60%）的帧中随机抽 | 增强阶段**不沿用预训练的切片**；偏大角度更接近缺陷区 |
-| `random` | 全数据集随机抽 | 无姿态偏好 |
-| `holdout` | 预训练末尾 10% | 仅用于与历史数字对照，姿态偏小 |
-| `both` | 选点用 random | 另外报告一次 holdout 作参照 |
-
-实测对照（同一份数据、同一批精修视角规模）：
-
-| 版本 | 选点帧 | 全量 286 帧 PSNR | 锐度比 |
-|---|---|---|---|
-| `run`（基线） | — | 27.42 | 0.834 |
-| `run_refined3` | 训练段随机 64 帧 | **28.16** | 0.87 |
-| `run_refined4` | 大角度帧 | 28.17 | 0.87 |
-
-两种选点方式的结果几乎相同（PSNR 差 0.01、锐度一致、同视角指标在三位小数上相同），
-说明**这条路的收益对"选哪些帧"不敏感**——它主要来自整体的色调/外观对齐，
-而不是某个特定视角的信息量。取 `run_refined3` 作为标准结果即可。
-
-锐度守卫默认是**相对**的：`训练前锐度 − --sharp-tolerance`（默认 0.03），
-不再写死 0.85；`--sharp-guard` 可显式指定绝对下限。
+每步都可单独重跑（`--skip-find` / `--skip-syncfix` / `--skip-train`），状态写在
+`<缺陷目录>/enhance_pipeline.json`；重跑会覆盖旧产物。`--dry-run` 只打印命令。
 
 ## 缺陷评估口径
 

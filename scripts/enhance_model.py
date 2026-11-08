@@ -57,16 +57,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--subject", default=None)
     p.add_argument("--work-name", default=None)
     p.add_argument("--dataset", default=None)
-    p.add_argument("--budget", type=int, default=16, help="缺陷视角数量")
+    p.add_argument("--budget", type=int, default=24, help="缺陷视角数量")
     # ---- 搜索范围（调大即可覆盖更极端的视角/表情）----
-    p.add_argument("--yaw-limit", type=float, default=None)
-    p.add_argument("--pitch-limit", type=float, default=None)
-    p.add_argument("--rolls", type=float, nargs="+", default=None)
-    p.add_argument("--clusters", type=int, default=None, help="表情聚类数")
-    p.add_argument("--axes", type=int, default=None, help="主轴极值方向数")
-    p.add_argument("--min-angle-sep", type=float, default=None,
+    p.add_argument("--yaw-limit", type=float, default=40.0)
+    p.add_argument("--pitch-limit", type=float, default=20.0)
+    p.add_argument("--rolls", type=float, nargs="+", default=[0.0])
+    p.add_argument("--clusters", type=int, default=12, help="表情聚类数")
+    p.add_argument("--axes", type=int, default=10, help="主轴极值方向数")
+    p.add_argument("--min-angle-sep", type=float, default=6.0,
                    help="已选视角的最小角度间隔（度）")
-    p.add_argument("--per-base-max", type=int, default=None,
+    p.add_argument("--per-base-max", type=int, default=3,
                    help="同一基帧最多选几个视角")
     p.add_argument("--defects", type=Path, default=None,
                    help="缺陷目录（默认 output/defects/<对象>/<版本>/<数据集>）")
