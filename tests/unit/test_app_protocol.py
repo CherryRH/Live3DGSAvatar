@@ -497,3 +497,25 @@ def test_load_model_restores_config_on_failure() -> None:
         Session.load_model(fake, "new", "newwork")
     assert cfg.get("subject") == "old"
     assert cfg.get("work_name") == "oldwork"
+
+
+# ------------------------------------------------- 视角偏移（yaw/pitch） --
+
+
+def test_merge_params_accepts_view_angles() -> None:
+    from live3dgsavatar.app.protocol import merge_params
+
+    out = merge_params({"yaw": 0.0, "pitch": 0.0},
+                       {"view": {"yaw": -40.0, "pitch": 20.0}})
+    assert out["yaw"] == -40.0 and out["pitch"] == 20.0
+
+
+def test_merge_params_rejects_out_of_range_view() -> None:
+    import pytest
+
+    from live3dgsavatar.app.protocol import merge_params
+
+    with pytest.raises(ValueError, match="view.yaw"):
+        merge_params({}, {"view": {"yaw": 80.0}})
+    with pytest.raises(ValueError, match="view.pitch"):
+        merge_params({}, {"view": {"pitch": -45.0}})

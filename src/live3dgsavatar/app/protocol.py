@@ -121,6 +121,12 @@ class LatestSlot:
         return self._item is None
 
 
+#: 前端可拖的视角范围（度）。与缺陷定位默认搜索范围一致：±40°/±20°，
+#: 再留一点余量方便观察边界外的崩坏。
+VIEW_YAW_LIMIT = (-50.0, 50.0)
+VIEW_PITCH_LIMIT = (-30.0, 30.0)
+
+
 def merge_params(current: dict, msg: dict) -> dict:
     """把一条 `params` 消息合并进当前参数字典，返回**新的**字典。
 
@@ -161,6 +167,23 @@ def merge_params(current: dict, msg: dict) -> dict:
 
     if "compare" in msg:
         out["compare"] = bool(msg["compare"])
+
+    # 视角（绕头心旋转相机）：与缺陷定位用同一个 `orbit_w2c` 语义，
+    # 所以前端拖出来的角度和 `find_defects` 里的 yaw/pitch 是同一套坐标。
+    view = msg.get("view") or {}
+    if "yaw" in view:
+        v = float(view["yaw"])
+        if not (VIEW_YAW_LIMIT[0] <= v <= VIEW_YAW_LIMIT[1]):
+            raise ValueError(
+                f"view.yaw 应在 [{VIEW_YAW_LIMIT[0]}, {VIEW_YAW_LIMIT[1]}]，实际 {v}")
+        out["yaw"] = v
+    if "pitch" in view:
+        v = float(view["pitch"])
+        if not (VIEW_PITCH_LIMIT[0] <= v <= VIEW_PITCH_LIMIT[1]):
+            raise ValueError(
+                f"view.pitch 应在 [{VIEW_PITCH_LIMIT[0]}, {VIEW_PITCH_LIMIT[1]}]，"
+                f"实际 {v}")
+        out["pitch"] = v
 
     source = msg.get("source") or {}
     if "kind" in source:

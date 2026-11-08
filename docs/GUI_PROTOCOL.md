@@ -300,9 +300,14 @@ PSNR 放在帧头而不是 `status` 里：`status` 是周期推送，与画面�
 {
   "type": "params",
   "render": {"background": [1.0, 1.0, 1.0], "scale": 0.75},
+  "view": {"yaw": -30, "pitch": 10},
   "drive": {"mode": "dataset", "frame": 42}
 }
 ```
+
+`view` 与 `find_defects` / `compare_defects` 里的角度是**同一套坐标**：绕当前帧
+的头心旋转相机，`yaw>0` / `pitch>0` 的含义与缺陷评估报告里的标签一致。切换模型会把
+视角归零（`config.render.yaw/pitch` 回填界面）。
 
 `params` 分两层：**数据源**（驱动参数从哪来）与**驱动方式**（同一数据源下怎么用）。
 
@@ -316,6 +321,8 @@ PSNR 放在帧头而不是 `status` 里：`status` 是周期推送，与画面�
 | 层级 | 取值 | 含义 |
 |---|---|---|
 | `compare` | `true/false` | **运行期**开关：并排显示数据集原图并计算 PSNR（不持久化）|
+| `view.yaw` | −50…50 | **运行期**视角偏移（度）：绕头心水平旋转，语义同 `core.camera.orbit_w2c`；有偏移时不计算 PSNR |
+| `view.pitch` | −30…30 | 同上，俯仰方向 |
 | `source.kind` | `checkpoint` | 用数据集中**已算好的**网格与参数 |
 | | `live` | 把画面送给**追踪服务**，用返回的参数驱动 |
 | `source.dataset` | — | **已移除**：切数据集走 `POST /api/dataset`（慢操作，需要明确的请求/响应）|

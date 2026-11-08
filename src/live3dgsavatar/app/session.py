@@ -43,6 +43,9 @@ class RenderParams:
     """
 
     background: list[float] = field(default_factory=lambda: [0.0, 0.0, 0.0])
+    #: 视角偏移（度）：绕头心旋转相机，语义同 `core.camera.orbit_w2c`
+    yaw: float = 0.0
+    pitch: float = 0.0
     scaling_modifier: float = 1.0
     scale: float = 1.0          # 输出分辨率比例（1.0 = 原生）
     target_fps: float = 60.0    # **帧数上限**；0 表示不限
@@ -65,6 +68,8 @@ class RenderParams:
     def as_dict(self) -> dict:
         return {
             "background": list(self.background),
+            "yaw": self.yaw,
+            "pitch": self.pitch,
             "scaling_modifier": self.scaling_modifier,
             "scale": self.scale,
             "target_fps": self.target_fps,
@@ -95,6 +100,8 @@ class RenderParams:
             "source_kind": self.source_kind,
             "drive_dataset": self.drive_dataset,
             "compare": self.compare,
+            "yaw": self.yaw,
+            "pitch": self.pitch,
         }
 
     def to_drive_dict(self) -> dict:
@@ -172,6 +179,8 @@ class Session:
         self.frames_served = 0
         self.frames_dropped = 0
         self.model_path: Path | None = None
+        #: 数据集的 world→camera（CPU），视角偏移时绕它旋转
+        self._w2c_cpu = None
         #: 已加载模型的对象/版本（未加载时为空串）。
         #: 不从 `cfg.subject` 反推：配置里可能还没选，或刚被改过。
         self.model_subject: str = ""
@@ -263,6 +272,11 @@ class Session:
                                     int(scene.faces.shape[0]))
         self.camera = Camera.from_intrinsics_extrinsics(
             scene.K, scene.R, scene.T, scene.width, scene.height).to(self.device)
+        # 视角偏移要在 CPU 上做（与 find_defects 一致），这里存一份
+        _w2c = torch.eye(4, dtype=torch.float32)
+        _w2c[:3, :3] = scene.R.detach().cpu()
+        _w2c[:3, 3] = scene.T.detach().cpu()
+        self._w2c_cpu = _w2c
         self._rasterizer = SimpleRasterizer(
             sh_degree=int(cfg.get("render.sh_degree", 0)),
             scaling_modifier=self.params.scaling_modifier)
@@ -275,6 +289,8 @@ class Session:
         self.timeline = FrameTimeline(scene.num_frames)
         self.params.frame = 0
         self.params.drive_dataset = ""
+        self.params.yaw = 0.0
+        self.params.pitch = 0.0
         # ↓ 最后一步：`ready` 从这一刻起为真
         self.scene = scene
         self._reset_counters()
@@ -505,6 +521,25 @@ class Session:
             return (0, 0)
         return output_size(self.scene.width, self.scene.height, self.params.scale)
 
+    @property
+    def _view_shifted(self) -> bool:
+        return abs(self.params.yaw) > 1e-6 or abs(self.params.pitch) > 1e-6
+
+    def _view_camera(self, mesh):
+        """当前帧的相机：有 yaw/pitch 时绕**头心**旋转，与缺陷定位同一语义。"""
+        if not self._view_shifted or self._w2c_cpu is None:
+            return self.camera
+        from ..core.camera import orbit_w2c
+        from ..core.types import Camera
+
+        center = mesh[0].mean(dim=0).detach().cpu()
+        w2c = orbit_w2c(self._w2c_cpu, center,
+                        float(self.params.yaw), float(self.params.pitch))
+        return Camera(K=self.scene.K,
+                      w2c=w2c.unsqueeze(0).to(self.device),
+                      width=self.scene.width,
+                      height=self.scene.height).to(self.device)
+
     def render(self) -> tuple[torch.Tensor, "torch.Tensor | None", dict]:
         """按当前参数渲染一帧。
 
@@ -538,8 +573,9 @@ class Session:
 
             # 相机与缩放系数可能在运行期改过
             self._rasterizer.scaling_modifier = self.params.scaling_modifier
+            cam = self._view_camera(mesh)
             t0 = time.perf_counter()
-            out = self._rasterizer.render(gs, self.camera, bg)
+            out = self._rasterizer.render(gs, cam, bg)
             torch.cuda.synchronize()
             timings["rasterize"] = (time.perf_counter() - t0) * 1000.0
 
@@ -550,8 +586,9 @@ class Session:
             rgb = self._downscale(rgb, w, h)
 
         # ---- 对比图与 PSNR（只在开启时做）----
+        # ⚠️ 有视角偏移时数据集原图对不上这个视角，PSNR 没有意义 → 跳过
         target = None
-        if self.params.compare:
+        if self.params.compare and not self._view_shifted:
             target, psnr = self._compare_target(rgb)
             if psnr is not None:
                 timings["psnr"] = psnr

@@ -133,6 +133,9 @@ function makeRoot() {
     "#f-dataset": el("select"),
     "#dataset-info": el("p"),
     "#f-amp": el("input", { value: "0.1" }), "#o-amp": el("output"),
+    "#f-yaw": el("input", { value: "0" }), "#o-yaw": el("output"),
+    "#f-pitch": el("input", { value: "0" }), "#o-pitch": el("output"),
+    "#btn-view-reset": el("button"),
     "#f-perturb": el("input", { checked: false }),
     "#f-compare": el("input", { checked: false }),
     "#psnr-out": el("span"),
@@ -195,6 +198,36 @@ t("applyModels 填对象/版本下拉，换对象重填版本", () => {
   subj._fire("change");
   eq(work.options.length, 1);
   eq(work.value, "test");
+  c.destroy();
+});
+
+t("视角滑条：拖动即发 view.{yaw,pitch}，复位归零", () => {
+  const root = makeRoot(); let sent = null;
+  const c = makeControls(root, { onParams: (m) => { sent = m; } });
+
+  root._map["#f-yaw"].value = "-35";
+  root._map["#f-yaw"]._fire("input");
+  eq(sent.view.yaw, -35, "水平角应发给后端");
+  eq(root._map["#o-yaw"].textContent, "-35°", "数值应回显");
+
+  root._map["#f-pitch"].value = "20";
+  root._map["#f-pitch"]._fire("input");
+  eq(sent.view.pitch, 20);
+
+  root._map["#btn-view-reset"]._fire("click");
+  eq(sent.view.yaw, 0, "复位应把水平角归零");
+  eq(sent.view.pitch, 0);
+  eq(root._map["#f-yaw"].value, "0");
+  c.destroy();
+});
+
+t("applyView 用后端下发值回填滑条（换模型归零）", () => {
+  const root = makeRoot();
+  const c = makeControls(root);
+  root._map["#f-yaw"].value = "30";
+  c.applyView({ yaw: 0, pitch: 0 });
+  eq(root._map["#f-yaw"].value, "0");
+  eq(root._map["#f-pitch"].value, "0");
   c.destroy();
 });
 

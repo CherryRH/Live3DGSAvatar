@@ -292,6 +292,8 @@ function wireSource(src, { isMock }) {
     if (Array.isArray(g.background)) {
       controls.applyState({ render: { background: g.background } });
     }
+    // 视角偏移由后端权威（换模型会归零），回填滑条
+    controls.applyView?.(g.render);
     showOverlay(null);
     el.mockNote.hidden = !isMock;
   });

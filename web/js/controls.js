@@ -19,6 +19,8 @@ export const DEFAULTS = {
   playing: false,
   perturb: false,
   amplitude: 0.1,
+  yaw: 0,
+  pitch: 0,
 };
 
 export class Controls {
@@ -50,6 +52,11 @@ export class Controls {
       liveStatus: root.querySelector("#live-status"),
       amp: root.querySelector("#f-amp"),
       ampOut: root.querySelector("#o-amp"),
+      yaw: root.querySelector("#f-yaw"),
+      pitch: root.querySelector("#f-pitch"),
+      yawOut: root.querySelector("#o-yaw"),
+      pitchOut: root.querySelector("#o-pitch"),
+      viewReset: root.querySelector("#btn-view-reset"),
       perturb: root.querySelector("#f-perturb"),
       compare: root.querySelector("#f-compare"),
       psnr: root.querySelector("#psnr-out"),
@@ -110,6 +117,18 @@ export class Controls {
    * 测试桩里没有 HTML 解析器，拼字符串就只能在真实浏览器里验证；
    * 用 DOM API 后同一段逻辑在桩里也能测。
    */
+  /** 用后端下发的 render 子集回填视角滑条（换模型时后端会归零）。 */
+  applyView(render) {
+    if (!render) return;
+    if (typeof render.yaw === "number" && this.el.yaw) {
+      this.el.yaw.value = String(Math.round(render.yaw));
+    }
+    if (typeof render.pitch === "number" && this.el.pitch) {
+      this.el.pitch.value = String(Math.round(render.pitch));
+    }
+    this._renderOutputs();
+  }
+
   applyDatasets(payload) {
     if (!payload) return;
     this._datasets = payload.datasets ?? [];
@@ -302,6 +321,22 @@ export class Controls {
       this._renderOutputs();
       this._emitParams();
     });
+    // 视角滑条：拖动即发（后端每帧重算相机，无需重载模型）
+    for (const key of ["yaw", "pitch"]) {
+      const node = el[key];
+      if (!node) continue;
+      node.addEventListener("input", () => {
+        this._renderOutputs();
+        this._emitParams();
+      });
+    }
+    el.viewReset?.addEventListener("click", () => {
+      if (el.yaw) el.yaw.value = "0";
+      if (el.pitch) el.pitch.value = "0";
+      this._renderOutputs();
+      this._emitParams();
+    });
+
     el.perturb.addEventListener("change", () => {
       this._renderOutputs();
       this._emitParams();
@@ -394,6 +429,11 @@ export class Controls {
       type: "params",
       // 运行期开关：是否并排显示数据集原图（不持久化）
       compare: Boolean(this.el.compare?.checked),
+      // 视角偏移（度）：绕头心旋转相机，后端用与 find_defects 相同的 orbit_w2c
+      view: {
+        yaw: Number(this.el.yaw?.value ?? 0),
+        pitch: Number(this.el.pitch?.value ?? 0),
+      },
       source: {
         kind: this.el.source.value,
         // 空串 = 跟随模型自带的数据集（列表还没加载时保持这个语义）
@@ -413,6 +453,8 @@ export class Controls {
     if (el.psnr) el.psnr.hidden = !el.compare?.checked;
     el.frameOut.textContent = el.frame.value;
     el.ampOut.textContent = Number(el.amp.value).toFixed(2);
+    if (el.yawOut) el.yawOut.textContent = `${Number(el.yaw.value)}°`;
+    if (el.pitchOut) el.pitchOut.textContent = `${Number(el.pitch.value)}°`;
 
     const live = el.source.value === "live";
     el.player.classList.toggle("is-live", live);
