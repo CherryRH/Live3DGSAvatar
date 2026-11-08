@@ -29,6 +29,9 @@ python scripts/build_dataset.py --from <目录> --into <对象>
 ```
 
 通常不直接调用本脚本，而是用根目录的 `build_dataset.sh`：它会先把 RDF 跑好。
+
+**来源就是目标目录时**（跟踪结果直接落在 `datasets/<对象>/`）：npz 已是训练格式就
+直接跳过；还是 RDF 原始格式就**原地烘焙**，原文件备份为 `render_inputs.rdf.npz`。
 """
 
 from __future__ import annotations
@@ -113,6 +116,29 @@ def place_image(src: Path, dst: Path, *, keep_images: bool = False) -> str:
     return "move"
 
 
+def check_destination(out_dir: Path, source: Path, *,
+                      force: bool = False) -> str:
+    """检查目标目录，返回动作：`proceed` / `bake_in_place` / `already_ready`。
+
+    - 目标与来源是同一目录、且 npz 已是 baked：`already_ready`（不必重做）；
+    - 目标与来源是同一目录、npz 是 rdf：`bake_in_place`（允许原地烘焙）；
+    - 目标已有 npz 但来源是别处：抛 `FileExistsError`（覆盖需 `--force`）。
+
+    Raises:
+        FileExistsError: 会覆盖别的数据集
+    """
+    from live3dgsavatar.data.tracked import frames_schema
+
+    out_dir, source = Path(out_dir), Path(source)
+    npz = out_dir / "render_inputs.npz"
+    if force or not npz.is_file():
+        return "proceed"
+    if out_dir.resolve() == source.resolve():
+        return ("already_ready" if frames_schema(npz) == "baked"
+                else "bake_in_place")
+    raise FileExistsError(f"{out_dir} 已有数据集；确认覆盖请加 --force")
+
+
 def build(*, source: Path, out_dir: Path, flame_dir: Path,
           base_dataset: Path | None = None, limit: int = 0,
           force: bool = False, images_dir: Path | None = None,
@@ -125,8 +151,16 @@ def build(*, source: Path, out_dir: Path, flame_dir: Path,
                                             load_frames_dir)
 
     source = Path(source)
-    if (out_dir / "render_inputs.npz").exists() and not force:
-        raise FileExistsError(f"{out_dir} 已有数据集；确认覆盖请加 --force")
+    action = check_destination(out_dir, source, force=force)
+    if action == "already_ready":
+        print(f"{out_dir} 已是标准数据集，跳过")
+        return out_dir
+    if action == "bake_in_place":
+        # 原地烘焙：先把原始 RDF 结果备份一份，再覆盖成训练格式
+        backup = out_dir / "render_inputs.rdf.npz"
+        if not backup.is_file():
+            shutil.copyfile(out_dir / "render_inputs.npz", backup)
+        print(f"原地烘焙：原始结果已备份为 {backup.name}")
 
     dump_path = find_frames_file(source)
     schema = frames_schema(dump_path)

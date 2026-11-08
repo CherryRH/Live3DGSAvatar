@@ -276,3 +276,30 @@ def test_sources_reports_unbaked_manifest(tmp_path) -> None:
                         verts=np.zeros((2, 5023, 3), np.float32))
     with pytest.raises(ValueError, match="build_dataset"):
         ManifestSource(d, split="train", preload=False, use_cache=False)
+
+
+def test_check_destination_handles_in_place_baking(tmp_path) -> None:
+    """来源就是目标目录时：已 baked 就跳过，是 rdf 就允许原地烘焙。"""
+    import numpy as np
+
+    m = load_script("build_dataset.py")
+    d = tmp_path / "ds"
+    d.mkdir()
+
+    # rdf 原始格式 → 原地烘焙
+    np.savez_compressed(d / "render_inputs.npz",
+                        x=np.zeros((1, 118), np.float32),
+                        verts=np.zeros((1, 5023, 3), np.float32))
+    assert m.check_destination(d, d) == "bake_in_place"
+
+    # baked 格式 → 已就绪
+    np.savez_compressed(d / "render_inputs.npz",
+                        mesh=np.zeros((1, 3, 3), np.float32),
+                        blend_weight=np.zeros((1, 129), np.float32))
+    assert m.check_destination(d, d) == "already_ready"
+
+    # 目标是别处且已有文件 → 拒绝
+    other = tmp_path / "other"
+    with pytest.raises(FileExistsError, match="--force"):
+        m.check_destination(d, other)
+    assert m.check_destination(d, other, force=True) == "proceed"
