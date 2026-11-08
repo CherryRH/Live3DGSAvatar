@@ -48,6 +48,26 @@ python scripts/enhance_model.py --subject crh_1 --work-name run \
 
 **评测**：留出集 286 帧 PSNR + 锐度比；同一批缺陷视角的缺口 / 尖刺 / 云外溢。
 
+## 二·补、激进模式（`--mode sweep`）
+
+跳过缺陷评分与加权，直接问"哪些点数据看不够"，把它们当成必须覆盖的集合：
+
+```bash
+python scripts/enhance_model.py --subject crh_1 --work-name run \
+    --mode sweep --budget 40 --sweep-coverage-max 4 \
+    --syncfix-dir ~/Projects/SyncFix --syncfix-env syncfix \
+    --promote-name run_sweep
+```
+
+| 项 | 缺陷模式（默认） | sweep 模式 |
+|---|---|---|
+| 目标 | 按缺陷质量加权（覆盖 + 孔洞 + 离面） | 观测次数 ≤ `--sweep-coverage-max` 的点，**权重一律为 1** |
+| 约束 | 视角间隔 `--min-angle-sep`、单帧上限 `--per-base-max` | 都不加，优先铺开覆盖面 |
+| 预算 | 16–24 | 建议 40+（目标点通常上千个，覆盖不完是正常的） |
+
+适用场景：想验证"把能修的地方都修一遍"能否再涨，而不是挑最差的几处。
+代价是精修张数上升（SyncFix 约 0.1 s/张，40 张仍是一分钟内）。
+
 ## 三、验收标准
 
 | 指标 | 期望 |

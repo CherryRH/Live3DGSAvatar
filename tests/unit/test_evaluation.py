@@ -674,3 +674,39 @@ def test_summarize_rows_tolerates_missing_psnr() -> None:
     assert s["n"] == 2
     assert s["hole_delta"] == pytest.approx(-0.015)
     assert "psnr_delta" not in s
+
+
+# ------------------------------------------------- sweep 模式的目标集合 --
+
+
+def test_sweep_targets_are_unweighted_poor_points() -> None:
+    import numpy as np
+
+    from script_loader import load_script
+
+    m = load_script("find_defects.py")
+    cov = np.array([0, 1, 2, 3, 4, 5, 10])
+    got = m.sweep_targets(cov, 4)
+    assert list(got) == [0, 1, 2, 3, 4]
+
+
+def test_sweep_greedy_covers_all_targets_before_spending_budget() -> None:
+    """每个目标权重为 1 时，贪心应优先铺开覆盖面，而不是扎堆。"""
+    import numpy as np
+
+    from live3dgsavatar.evaluation import Candidate, greedy_cover
+
+    mass = np.zeros(6)
+    mass[[0, 1, 2, 3, 4]] = 1.0            # 5 个目标，第 5 个已覆盖
+    cands = [
+        Candidate("a", [0, 1]),
+        Candidate("b", [2, 3]),
+        Candidate("c", [4]),
+        Candidate("d", [0]),               # 冗余
+    ]
+    res = greedy_cover(cands, mass, budget=4, min_gain_ratio=0.0)
+    covered = set()
+    for c in res.chosen:
+        covered.update(int(i) for i in c.covers)
+    assert covered >= {0, 1, 2, 3, 4}
+    assert len(res.chosen) == 3, f"3 个视角就够，实际选了 {len(res.chosen)}"

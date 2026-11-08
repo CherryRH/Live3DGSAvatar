@@ -58,6 +58,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--work-name", default=None)
     p.add_argument("--dataset", default=None)
     p.add_argument("--budget", type=int, default=24, help="缺陷视角数量")
+    p.add_argument("--mode", choices=("defect", "sweep"), default="defect",
+                   help="sweep=激进模式：跳过缺陷评分，尽量覆盖所有数据看不够的点")
+    p.add_argument("--sweep-coverage-max", type=int, default=4,
+                   help="sweep 模式下'观测次数 ≤ 该值'算覆盖不足")
     # ---- 搜索范围（调大即可覆盖更极端的视角/表情）----
     p.add_argument("--yaw-limit", type=float, default=40.0)
     p.add_argument("--pitch-limit", type=float, default=20.0)
@@ -308,10 +312,10 @@ def main(argv: list[str] | None = None) -> int:
     state = load_state(state_path)
 
     # 显式改了搜索范围时，旧的缺陷结果已失效 —— 必须重跑第 1 步
-    search_override = any(
+    search_override = (args.mode != "defect" or any(
         v is not None for v in (args.yaw_limit, args.pitch_limit, args.clusters,
                                 args.axes, args.min_angle_sep,
-                                args.per_base_max)) or bool(args.rolls)
+                                args.per_base_max)) or bool(args.rolls))
 
     def done(stage: str, *, work_match: str | None = None) -> bool:
         if args.force:
@@ -348,6 +352,8 @@ def main(argv: list[str] | None = None) -> int:
         cmd = [py, str(scripts / "find_defects.py"),
                "--subject", subject, "--work-name", work,
                "--dataset", dataset, "--budget", str(args.budget),
+               "--mode", args.mode,
+               "--sweep-coverage-max", str(args.sweep_coverage_max),
                "--out", str(defects_dir)]
         for flag, value in (("--yaw-limit", args.yaw_limit),
                             ("--pitch-limit", args.pitch_limit),

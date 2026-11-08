@@ -47,6 +47,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--expr-count", type=int, default=None,
                    help="表情候选数；缺省 聚类 + 主轴极值")
     p.add_argument("--budget", type=int, default=16, help="选多少个待精修组合")
+    p.add_argument("--mode", choices=("defect", "sweep"), default="defect",
+                   help="defect=按缺陷质量加权（默认）；"
+                        "sweep=不看评分，尽量覆盖所有被数据覆盖不足的点")
+    p.add_argument("--sweep-coverage-max", type=int, default=4,
+                   help="sweep 模式下把'观测次数 ≤ 该值'的点视为覆盖不足")
     # ---- 搜索范围（默认与旧行为一致；调大就能覆盖更极端的情形）----
     p.add_argument("--yaw-limit", type=float, default=40.0)
     p.add_argument("--pitch-limit", type=float, default=20.0)
@@ -71,6 +76,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--dry-run", action="store_true")
     return p.parse_args(argv)
+
+
+def sweep_targets(coverage: np.ndarray, max_obs: int) -> np.ndarray:
+    """sweep 模式的覆盖目标：观测次数 ≤ `max_obs` 的点（权重一律为 1）。
+
+    与缺陷模式的区别：这里**不按质量加权**，只问"这个点有没有被某个视角看到"。
+    目的是把精修预算铺到所有数据看不够的地方，而不是集中在最差的几处。
+    """
+    import numpy as np
+
+    cov = np.asarray(coverage)
+    return np.flatnonzero(cov <= int(max_obs))
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -332,10 +349,27 @@ def main(argv: list[str] | None = None) -> int:
         order = np.argsort(-score)
         candidates = [candidates[i] for i in order]
 
-    result = greedy_cover(candidates, mass, budget=int(args.budget),
-                          min_gain_ratio=float(args.min_gain_ratio),
-                          min_sep=args.min_angle_sep,
-                          per_key_max=args.per_base_max)
+    if args.mode == "sweep":
+        # 激进模式：**不看缺陷评分**，把"数据看不够的点"当成必须覆盖的集合。
+        # 每个目标权重都是 1（而不是按质量加权），所以贪心会优先铺开覆盖面。
+        targets = sweep_targets(cov_gauss, int(args.sweep_coverage_max))
+        sweep_mass = np.zeros_like(mass)
+        sweep_mass[targets] = 1.0
+        result = greedy_cover(candidates, sweep_mass, budget=int(args.budget),
+                              min_gain_ratio=0.0, min_sep=None,
+                              per_key_max=None)
+        covered = np.zeros(sweep_mass.size, dtype=bool)
+        for cand in result.chosen:
+            covered[cand.covers] = True
+        print(f"  sweep：覆盖不足的点 {len(targets)} 个"
+              f"（观测次数 ≤ {args.sweep_coverage_max}），"
+              f"选出 {len(result.chosen)} 个视角覆盖 {int(covered[targets].sum())} 个"
+              f"（{100.0 * covered[targets].sum() / max(1, len(targets)):.1f}%）")
+    else:
+        result = greedy_cover(candidates, mass, budget=int(args.budget),
+                              min_gain_ratio=float(args.min_gain_ratio),
+                              min_sep=args.min_angle_sep,
+                              per_key_max=args.per_base_max)
 
     # 逐面汇总：覆盖次数、孔洞、飞点（都用同一套面索引，便于横向比较）
     off_face = np.zeros(n_faces, dtype=np.float64)
@@ -376,6 +410,8 @@ def main(argv: list[str] | None = None) -> int:
         "subject": subject, "work_name": work, "dataset": dataset,
         "model": str(ply), "budget": int(args.budget),
         "candidate_count": len(candidates),
+        "mode": args.mode,
+        "sweep_coverage_max": int(args.sweep_coverage_max),
         "views": result.to_dict(),
         "view_metrics": {m["label"]: m for m in view_metrics},
         "mass": mass_summary,
