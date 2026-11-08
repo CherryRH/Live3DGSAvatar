@@ -58,6 +58,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="已有数据集名（写到 datasets/<该对象>/augmented/）")
     p.add_argument("--out", type=Path, default=None,
                    help="直接指定输出目录（优先于 --name/--into）")
+    p.add_argument("--images", type=Path, default=None,
+                   help="图像目录（默认 <来源>/images；可以直接给图像目录本身）")
+    p.add_argument("--keep-images", action="store_true",
+                   help="图像用复制而不是移动（默认移动，源目录里的图像会被搬走）")
     p.add_argument("--limit", type=int, default=0, help="最多用多少帧；0 全部")
     p.add_argument("--force", action="store_true", help="目标已存在时覆盖")
     return p.parse_args(argv)
@@ -88,9 +92,31 @@ def camera_from_dump(dump_path: Path) -> tuple:
     return K, w2v, width, height
 
 
+def place_image(src: Path, dst: Path, *, keep_images: bool = False) -> str:
+    """把一张图放到数据集里，返回动作：`skip` / `copy` / `move`。
+
+    - 源与目标是同一个文件 → `skip`（重复运行不会报错）；
+    - `keep_images` → 复制；否则**移动**（源目录里的图像被搬走，省一份空间）。
+    """
+    src, dst = Path(src), Path(dst)
+    if src.resolve() == dst.resolve():
+        return "skip"
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if keep_images:
+        shutil.copyfile(src, dst)
+        return "copy"
+    try:
+        shutil.move(str(src), str(dst))
+    except OSError:            # 跨设备等：退回复制 + 删除
+        shutil.copyfile(src, dst)
+        src.unlink()
+    return "move"
+
+
 def build(*, source: Path, out_dir: Path, flame_dir: Path,
           base_dataset: Path | None = None, limit: int = 0,
-          force: bool = False) -> Path:
+          force: bool = False, images_dir: Path | None = None,
+          keep_images: bool = False) -> Path:
     """把 `source` 整理进 `out_dir`（images/ + render_inputs.npz）。"""
     import numpy as np
     from PIL import Image
@@ -137,7 +163,7 @@ def build(*, source: Path, out_dir: Path, flame_dir: Path,
     images_out.mkdir(parents=True, exist_ok=True)
     names: list[str] = []
     meshes, weights = [], []
-    src_images = source / "images"
+    src_images = Path(images_dir) if images_dir is not None else (source / "images")
     for i, frame in enumerate(frames):
         name = f"{i:05d}"
         src = src_images / f"{frame.get('name', name)}.png"
@@ -149,7 +175,7 @@ def build(*, source: Path, out_dir: Path, flame_dir: Path,
                 f"缺少第 {i} 帧的图像：{src}（source/images 与帧数据必须对齐）")
         dst = images_out / f"{name}.png"
         if not dst.exists() or force:
-            shutil.copyfile(src, dst)
+            place_image(src, dst, keep_images=keep_images)
         names.append(name)
         meshes.append(frame["mesh"].numpy())
         weights.append(frame["blend_weight"].numpy())
@@ -219,7 +245,10 @@ def main(argv: list[str] | None = None) -> int:
     try:
         build(source=args.source.expanduser().resolve(), out_dir=out_dir,
               flame_dir=flame_dir, base_dataset=base_dataset, limit=args.limit,
-              force=args.force)
+              force=args.force,
+              images_dir=(args.images.expanduser().resolve()
+                          if args.images is not None else None),
+              keep_images=bool(args.keep_images))
     except (FileExistsError, FileNotFoundError, ValueError) as e:
         print(f"[error] {e}", file=sys.stderr)
         return 1

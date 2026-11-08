@@ -14,6 +14,9 @@
 # 已经跟踪过的目录（含 images/ 与 render_inputs.npz）会跳过 RDF，直接整理：
 #   ./build_dataset.sh <已跟踪的目录> --name <数据集名>
 #
+# 图像默认**移动**进数据集（省空间）；想保留原图加 --keep-images：
+#   ./build_dataset.sh <图像目录> --name crh_4 --keep-images
+#
 # 环境变量：
 #   RDF_ENV     跑 RDF 的 conda 环境（默认 realdenseface）
 #   MAIN_ENV    跑本项目脚本的 conda 环境（默认 live3dgs）
@@ -40,6 +43,7 @@ INTO=""
 LIMIT=0
 STRIDE=1
 FORCE=""
+KEEP_IMAGES=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -48,6 +52,7 @@ while [[ $# -gt 0 ]]; do
     --into)    INTO="${2:-}"; shift 2 ;;
     --limit)   LIMIT="${2:-0}"; shift 2 ;;
     --stride)  STRIDE="${2:-1}"; shift 2 ;;
+    --keep-images) KEEP_IMAGES="--keep-images"; shift ;;
     --force)   FORCE="--force"; shift ;;
     -h|--help) usage ;;
     -*)        die "未知参数：$1（--help 查看用法）" ;;
@@ -96,7 +101,8 @@ fi
 
 # --------------------------------------------------------- 整理进 datasets --
 info "整理为标准数据集（环境：$MAIN_ENV）"
-ARGS=(--from "$SOURCE" --limit "$LIMIT")
+ARGS=(--from "$SOURCE" --limit "$LIMIT" --images "$IMAGES_DIR")
+if [[ -n "$KEEP_IMAGES" ]]; then ARGS+=("$KEEP_IMAGES"); fi
 if [[ -n "$INTO" ]]; then
   ARGS+=(--into "$INTO")
 else

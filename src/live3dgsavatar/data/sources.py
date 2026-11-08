@@ -119,6 +119,12 @@ class ManifestSource:
         if not manifest.is_file():
             raise FileNotFoundError(f"找不到 {manifest}")
         with np.load(manifest, allow_pickle=True) as d:
+            if "mesh" not in d.files or "blend_weight" not in d.files:
+                raise ValueError(
+                    f"{manifest} 不是训练用的烘焙格式（缺少 mesh/blend_weight）。\n"
+                    f"        实际字段：{sorted(d.files)}\n"
+                    "        如果是 RDF 原始结果（x/verts），先整理成数据集：\n"
+                    f"        ./build_dataset.sh {self.root} --name <对象名>")
             self._mesh = np.asarray(d["mesh"], dtype=np.float32)
             self._weight = np.asarray(d["blend_weight"], dtype=np.float32)
             self._names = [str(n) for n in d["names"]] if "names" in d.files else [

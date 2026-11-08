@@ -29,6 +29,9 @@ bash run_gui.sh            # 启动服务，浏览器打开 http://localhost:800
 （`images/` + `render_inputs.npz`）。已有跟踪结果的目录会跳过 RDF。
 结构与约定见 [`docs/CONVENTIONS.md`](docs/CONVENTIONS.md) §6。
 
+构建时图像默认会**移动**进 `datasets/<对象>/images/`（源目录若已在目标位置则跳过）；
+想保留原图加 `--keep-images`。目录里没有 `render_inputs.npz` 时会自动先跑 RDF。
+
 > 视频入口已预留（`--video`），当前会提示先用 ffmpeg 抽帧。
 
 ## 实时驱动（可选）

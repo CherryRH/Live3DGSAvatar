@@ -15,6 +15,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from script_loader import load_script
+
 from live3dgsavatar.config import load_config, resolve_data_dir
 from live3dgsavatar.data import datasets as D
 
@@ -235,3 +237,42 @@ def test_models_endpoint_lists_models_and_current() -> None:
     payload = asyncio.run(endpoint())
     assert "models" in payload and "current" in payload
     assert {"subject", "work_name"} <= set(payload["current"])
+
+
+# ------------------------------------------------ 构建数据集：图像搬运 --
+
+
+def test_place_image_moves_and_skips(tmp_path) -> None:
+    from PIL import Image
+
+    m = load_script("build_dataset.py")
+    src = tmp_path / "src" / "a.png"
+    src.parent.mkdir()
+    Image.new("RGB", (4, 4)).save(src)
+    dst = tmp_path / "out" / "images" / "a.png"
+
+    assert m.place_image(src, dst) == "move"
+    assert dst.is_file() and not src.exists(), "默认移动，源文件被搬走"
+
+    # 源与目标相同：跳过
+    assert m.place_image(dst, dst) == "skip"
+
+    # 保留源文件
+    src2 = tmp_path / "src" / "b.png"
+    Image.new("RGB", (4, 4)).save(src2)
+    dst2 = tmp_path / "out" / "images" / "b.png"
+    assert m.place_image(src2, dst2, keep_images=True) == "copy"
+    assert src2.is_file() and dst2.is_file()
+
+
+def test_sources_reports_unbaked_manifest(tmp_path) -> None:
+    """RDF 原始格式（x/verts）不能直接训练，要给出可执行的提示。"""
+    from live3dgsavatar.data.sources import ManifestSource
+
+    d = tmp_path / "ds"
+    d.mkdir()
+    np.savez_compressed(d / "render_inputs.npz",
+                        x=np.zeros((2, 118), np.float32),
+                        verts=np.zeros((2, 5023, 3), np.float32))
+    with pytest.raises(ValueError, match="build_dataset"):
+        ManifestSource(d, split="train", preload=False, use_cache=False)
