@@ -704,3 +704,43 @@ def test_manifest_source_excludes_frames() -> None:
     assert len(src2) == len(src) - len(drop)
     got = set(src2.random_indices(len(src2)))
     assert not (got & set(drop)), "被排除的帧不应再出现"
+
+
+# ------------------------------------------------- 姿态统计（增强挑帧） --
+
+
+def test_head_yaw_of_identity_is_zero() -> None:
+    import numpy as np
+
+    from live3dgsavatar.data.pose import head_yaw
+
+    w = np.zeros((1, 129))
+    w[0, 100:106] = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0]      # 单位阵前两行
+    assert abs(float(head_yaw(w)[0])) < 1e-6
+
+
+def test_head_yaw_detects_rotation() -> None:
+    import numpy as np
+
+    from live3dgsavatar.data.pose import head_yaw, rot6d_to_matrix
+
+    theta = np.radians(30.0)
+    # 绕 y 轴的旋转对应"左右转头"
+    R = np.array([[np.cos(theta), 0, np.sin(theta)],
+                  [0, 1, 0],
+                  [-np.sin(theta), 0, np.cos(theta)]])
+    w = np.zeros((1, 129))
+    w[0, 100:106] = R[:2].reshape(-1)
+    got = float(head_yaw(w)[0])
+    assert abs(got - 30.0) < 1e-6
+    assert np.allclose(rot6d_to_matrix(w[0, 100:106]), R, atol=1e-9)
+
+
+def test_angle_weights_favours_large_yaw() -> None:
+    import numpy as np
+
+    from live3dgsavatar.data.pose import angle_weights
+
+    w = angle_weights(np.array([0.0, 10.0, 40.0]), scale=20.0, floor=1.0)
+    assert w[0] == 1.0
+    assert w[2] > w[1] > w[0]

@@ -96,6 +96,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="落地目录名（默认 <版本>_refined）")
 
     # 评测
+    p.add_argument("--eval-mode", choices=("angle", "random", "holdout", "both"),
+                   default="angle",
+                   help="微调选点用哪些帧（angle=偏大角度，默认）")
+    p.add_argument("--anchor-mode", choices=("angle", "uniform"), default="angle",
+                   help="锚定帧采样（angle=按角度加权，默认）")
+    p.add_argument("--angle-percentile", type=float, default=60.0)
     p.add_argument("--eval-frames", type=int, default=64,
                    help="渲染测试与选点用多少帧（默认 64；-1 表示全部，很慢）")
     p.add_argument("--no-render-test", action="store_true",
@@ -411,6 +417,9 @@ def main(argv: list[str] | None = None) -> int:
              "--defects", str(defects_dir),
              "--steps", str(args.steps), "--ssim-weight", str(args.ssim_weight),
              "--eval-frames", str(args.eval_frames),
+             "--eval-mode", args.eval_mode,
+             "--anchor-mode", args.anchor_mode,
+             "--angle-percentile", str(args.angle_percentile),
              "--refined-per-batch", str(args.refined_per_batch),
              "--real-per-batch", str(args.real_per_batch),
              "--promote", "--promote-name", new_work,

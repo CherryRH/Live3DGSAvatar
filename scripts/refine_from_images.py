@@ -61,11 +61,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--eval-frames", type=int, default=64,
                    help="选点用的帧数（从训练段随机取，且这些帧不参与锚定）")
     p.add_argument("--eval-seed", type=int, default=0)
-    p.add_argument("--eval-mode", choices=("random", "holdout", "both"),
-                   default="random",
-                   help="random=训练段随机抽样（默认，覆盖更全）；"
-                        "holdout=预训练时的末尾 10%%；both=选点用 random、"
-                        "另外报告 holdout")
+    p.add_argument("--eval-mode", choices=("angle", "random", "holdout", "both"),
+                   default="angle",
+                   help="angle=全数据集里挑大角度帧（默认，适合增强阶段）；"
+                        "random=全数据集随机；holdout=预训练末尾 10%%（仅供对照）；"
+                        "both=选点用 angle、另外报告 holdout")
+    p.add_argument("--anchor-mode", choices=("angle", "uniform"), default="angle",
+                   help="锚定帧采样：angle=按角度加权（默认），uniform=均匀；"
+                        "两者都从整个数据集里取，且排除选点帧")
+    p.add_argument("--angle-percentile", type=float, default=60.0,
+                   help="angle 模式下选点帧的 |yaw| 分位下限（默认 60%%）")
     p.add_argument("--sharp-guard", type=float, default=None,
                    help="锐度比的绝对下限；默认按'训练前锐度 − 容差'自适应")
     p.add_argument("--sharp-tolerance", type=float, default=0.03,
@@ -172,6 +177,7 @@ def main(argv: list[str] | None = None) -> int:
 
     with np.load(data_dir / "render_inputs.npz", allow_pickle=True) as d:
         total = int(d["mesh"].shape[0])
+        weights_all = np.asarray(d["blend_weight"], dtype=np.float32)
     ratio = float(cfg.get("train.pipeline.test_ratio", 0.1))
     held = max(1, int(round(total * ratio)))
     train_end = total - held
@@ -277,19 +283,34 @@ def main(argv: list[str] | None = None) -> int:
     if not obs:
         raise SystemExit("[error] 没有可用的精修视角")
 
-    # ---- 留出段评估 ----
-    # 选点用哪批帧：
-    #   random  = 训练段里随机抽（默认）——覆盖更全，且这些帧不参与锚定
-    #   holdout = 预训练时的末尾 10%（与预训练数字可比，但姿态偏小）
-    #   both    = 选点用 random，另外报告一次 holdout
+    # ---- 选点帧：不依赖预训练的切片方式 ----
+    # 增强阶段不知道预训练是怎么切分的，也没必要沿用；这里按"姿态"挑帧：
+    #   angle  = 全数据集里 |yaw| 较大的那部分（默认）
+    #   random = 全数据集随机
+    #   holdout= 预训练末尾 10%（保留，仅用于与历史数字对照）
+    from live3dgsavatar.data.pose import angle_weights, head_yaw
+
+
+    yaw_all = head_yaw(weights_all)
     rng_eval = np.random.default_rng(args.eval_seed)
-    if args.eval_mode in ("random", "both"):
-        n_eval = int(min(args.eval_frames, train_end))
-        eval_ids = set(int(i) for i in
-                       rng_eval.choice(train_end, size=n_eval, replace=False))
-        print(f"  选点集：训练段随机 {len(eval_ids)} 帧（已从锚定中剔除）")
-    else:
-        eval_ids = set()
+    n_eval = int(min(args.eval_frames, total))
+
+    if args.eval_mode in ("angle", "both"):
+        cut = float(np.percentile(np.abs(yaw_all), args.angle_percentile))
+        pool = np.flatnonzero(np.abs(yaw_all) >= cut)
+        pick = rng_eval.choice(pool, size=min(n_eval, len(pool)), replace=False)
+        eval_ids_final = sorted(int(i) for i in pick)
+        print(f"  选点集：|yaw| ≥ {cut:.1f}° 的帧中随机取 {len(eval_ids_final)} 帧"
+              "（不参与锚定）")
+    elif args.eval_mode == "random":
+        pick = rng_eval.choice(total, size=n_eval, replace=False)
+        eval_ids_final = sorted(int(i) for i in pick)
+        print(f"  选点集：全数据集随机 {len(eval_ids_final)} 帧（不参与锚定）")
+    else:  # holdout
+        eval_ids_final = list(np.linspace(train_end, total - 1,
+                                          min(n_eval, held)).astype(int))
+        print(f"  选点集：预训练末尾 10% 的 {len(eval_ids_final)} 帧（仅对照）")
+    eval_ids = set(eval_ids_final)
 
     def _frame_for(i: int) -> dict:
         """按全局帧号取网格（训练段用 scene，留出段用 hold_scene）。"""
@@ -305,9 +326,6 @@ def main(argv: list[str] | None = None) -> int:
                       width=hold_scene.width, height=hold_scene.height).to(device)
 
     holdout_ids = list(range(train_end, total))
-    eval_ids_final = (sorted(eval_ids) if eval_ids
-                      else list(np.linspace(train_end, total - 1,
-                                            min(args.eval_frames, held)).astype(int)))
 
     def evaluate_frames(ids: list[int] | set[int]) -> dict:
         psnrs, ratios = [], []
@@ -366,7 +384,10 @@ def main(argv: list[str] | None = None) -> int:
                     K=it["K"].unsqueeze(0).to(device),
                     w2c=it["w2c"].unsqueeze(0).to(device)))
             if n_real:
-                b = real.random_batch(n_real)
+                # 按姿态权重从整个数据集取锚定帧（angle 模式）
+                idx = np.random.choice(anchor_ids, size=n_real,
+                                       replace=True, p=anchor_probs)
+                b = real.batch([int(i) for i in idx])
                 m = b.mask.to(device=device, dtype=torch.float32)
                 parts.append(Batch(
                     mesh=b.mesh.to(device), blend_weight=b.blend_weight.to(device),
@@ -387,9 +408,15 @@ def main(argv: list[str] | None = None) -> int:
             for _ in range(4):
                 yield self.random_batch(batch_size)
 
-    real = ManifestSource(data_dir, split="train", test_ratio=ratio,
-                          device="cpu", seed=args.seed,
+    # 锚定帧来自**整个数据集**（不看预训练切片），并排除选点帧
+    real = ManifestSource(data_dir, split="all", device="cpu", seed=args.seed,
                           exclude=eval_ids or None)
+    anchor_ids = np.array([i for i in range(total) if i not in eval_ids])
+    if args.anchor_mode == "angle":
+        w = angle_weights(yaw_all[anchor_ids])
+        anchor_probs = w / w.sum()
+    else:
+        anchor_probs = None
     source = _Mixed()
 
     def render_fn(mesh_verts, weight, batch, iteration):
