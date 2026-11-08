@@ -135,6 +135,10 @@ python scripts/enhance_model.py --subject crh_1 --work-name run \
 
 - 每步都能单独重跑：`--skip-find` / `--skip-syncfix` / `--skip-train`；
 - 状态写在 `<缺陷目录>/enhance_pipeline.json`，重跑自动跳过已完成的步骤（`--force` 强制）；
+  **换 `--promote-name` 会自动重跑微调**（旧目标名的结果不适用）；
+- 重跑会**覆盖**旧产物：`views/`、`refs/`、`refined/`、`syncfix_raw/`、`finetune/`
+  里的旧文件先清掉再写，避免新旧混在一起（曾出现"17 个视角 = 13 旧 + 4 新"）；
+- 改了搜索参数（yaw/pitch/clusters/axes/rolls/间隔/单基帧上限）会自动重跑第 1 步；
 - 精修输出若文件名对不上视角标签，会按排序顺序对应并打印警告；
 - **搜索范围可调**：默认 ±40°/±20°、20 个表情、预算 16；调大即可覆盖更极端的情形：
 

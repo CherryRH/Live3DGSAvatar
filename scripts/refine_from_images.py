@@ -442,6 +442,10 @@ def main(argv: list[str] | None = None) -> int:
 
     out_dir = defects_dir / "finetune"
     out_dir.mkdir(parents=True, exist_ok=True)
+    # 旧的最佳检查点必须清掉：否则本次若从未刷新，最后会把**上一轮**的模型当结果
+    for stale in (out_dir / "model_best.ply", out_dir / "model.ply"):
+        if stale.is_file():
+            stale.unlink()
     plan = ParameterPlan(groups={
         "f_dc": GroupPlan(lr=args.lr_color, max_steps=args.steps),
         "opacity": GroupPlan(lr=args.lr_opacity, max_steps=args.steps),

@@ -125,6 +125,18 @@ def run(cmd: list[str], *, cwd: Path | None = None, dry_run: bool = False) -> No
         raise RuntimeError(f"命令失败（退出码 {proc.returncode}）：{text}")
 
 
+def clear_images(directory: Path, patterns=("*.png",)) -> int:
+    """删掉目录下的图片（保留其他文件），返回删除数量。"""
+    if not directory.is_dir():
+        return 0
+    removed = 0
+    for pat in patterns:
+        for p in directory.glob(pat):
+            p.unlink()
+            removed += 1
+    return removed
+
+
 def load_state(path: Path) -> dict:
     if path.is_file():
         try:
@@ -295,12 +307,18 @@ def main(argv: list[str] | None = None) -> int:
                                 args.axes, args.min_angle_sep,
                                 args.per_base_max)) or bool(args.rolls)
 
-    def done(stage: str) -> bool:
+    def done(stage: str, *, work_match: str | None = None) -> bool:
         if args.force:
             return False
         if stage == "find_defects" and search_override:
             return False
-        return state.get(stage, {}).get("status") == "done"
+        info = state.get(stage, {})
+        if info.get("status") != "done":
+            return False
+        # 换目标名后旧结果不再适用（否则会跳过训练、直接去评测一个不存在的模型）
+        if work_match is not None and info.get("work") != work_match:
+            return False
+        return True
 
     def mark(stage: str, **info) -> None:
         state[stage] = {"status": "done", **info}
@@ -365,6 +383,11 @@ def main(argv: list[str] | None = None) -> int:
                     "[error] SyncFix 的 Python 无法 import imageio。\n"
                     "        请用 --syncfix-env <环境名> 或 --syncfix-python <解释器> "
                     "指定它的运行环境")
+        if not args.dry_run:
+            # 旧输出会和新结果混在一起（视角数、标签都不同），直接清掉
+            n_old = clear_images(refined_dir) + clear_images(syncfix_raw, ("*",))
+            if n_old:
+                print(f"  清理旧精修产物 {n_old} 个文件")
         if prefix is not None:
             cmd = syncfix_command(args, views=len(labels))
             cmd = [c.format(views=defects_dir / "views", refs=defects_dir / "refs",
@@ -378,7 +401,7 @@ def main(argv: list[str] | None = None) -> int:
                  count=len(got))
 
     # ---- 3. 微调 + 落地 ----
-    if args.skip_train or done("refine"):
+    if args.skip_train or done("refine", work_match=new_work):
         print("\n[3/4] 微调：跳过（" +
               ("--skip-train" if args.skip_train else "已完成") + "）")
     else:

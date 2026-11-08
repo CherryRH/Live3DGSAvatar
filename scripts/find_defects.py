@@ -393,6 +393,11 @@ def main(argv: list[str] | None = None) -> int:
         vis_dir = out_dir / "views"
         vis_dir.mkdir(exist_ok=True)
         refs_dir = out_dir / "refs"
+        # 视角集合变了以后旧图会残留，和新结果混在一起 → 先清掉
+        for _d in (vis_dir, refs_dir):
+            if _d.is_dir():
+                for _p in _d.glob("*.png"):
+                    _p.unlink()
         for cand in result.chosen:
             spec_view = cand.payload["view"]
             base_verts = mesh_of(scene.frames[int(cand.payload["base_frame"])])

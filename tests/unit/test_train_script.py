@@ -426,3 +426,20 @@ def test_syncfix_prefix_selection() -> None:
     both = m.parse_args(base + ["--syncfix-env", "syncfix",
                                 "--syncfix-python", "/x/python"])
     assert m.syncfix_prefix(both) == ["/x/python"], "显式解释器优先级最高"
+
+
+def test_clear_images_removes_pngs_keeps_others(tmp_path) -> None:
+    """清理旧产物：只删图片，保留 json 等。"""
+    from PIL import Image
+
+    m = load_script("enhance_model.py")
+    d = tmp_path / "refined"
+    d.mkdir()
+    Image.new("RGB", (2, 2)).save(d / "a.png")
+    Image.new("RGB", (2, 2)).save(d / "b.png")
+    (d / "keep.json").write_text("{}", encoding="utf-8")
+
+    assert m.clear_images(d) == 2
+    assert not list(d.glob("*.png"))
+    assert (d / "keep.json").is_file()
+    assert m.clear_images(tmp_path / "nope") == 0
