@@ -284,6 +284,7 @@ async def _serve_client(app: FastAPI, ws: WebSocket, session: Session) -> None:
     # 后端自己的吞吐统计（**与前端解耦**：前端算它看到的，后端记它渲染的）。
     # 前端 FPS 由 web/js 自己按帧到达间隔计算；后端指标走 stdout 周期日志。
     live_warn = IntervalLogger(interval_s=5.0)
+    err_log = IntervalLogger(interval_s=5.0)
     window = RollingWindow(window_s=stats_window_s)
     logger_ = IntervalLogger(interval_s=stats_log_interval_s)
     status_logger = IntervalLogger(interval_s=status_interval_s)
@@ -338,10 +339,18 @@ async def _serve_client(app: FastAPI, ws: WebSocket, session: Session) -> None:
                 await asyncio.sleep(0.1)
                 continue
             except Exception as e:  # noqa: BLE001
-                logger.exception("渲染失败")
-                await sender.json({"type": "error",
-                                   "message": f"渲染失败：{type(e).__name__}: {e}"})
-                break
+                # ⚠️ 曾经这里是 `break`：一次渲染异常就永久结束这个连接的渲染循环，
+                #    前端画面停在最后一帧，而此后"切换模型成功"也不会有任何新帧
+                #    —— 表现为"加载成功了但画面还卡在旧模型"。
+                #    正确做法是报错但不退出：短暂等待后继续重试。
+                now = loop.time()
+                if err_log.due(now):
+                    logger.exception("渲染失败（将重试）")
+                    await sender.json({"type": "error",
+                                       "message": f"渲染失败：{type(e).__name__}: {e}",
+                                       "transient": True})
+                await asyncio.sleep(0.2)
+                continue
 
             # 分辨率可能因 scale 变化而变；总帧数也可能因切换数据集而变。
             # 两者任一变化都要补发 config，否则前端帧号条会错。

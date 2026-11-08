@@ -464,3 +464,36 @@ def test_perturb_is_independent_of_playing() -> None:
     assert out["perturb"] is True and out["playing"] is False
     out = P.merge_params(_base(), {"drive": {"perturb": False, "playing": True}})
     assert out["perturb"] is False and out["playing"] is True
+
+
+# ------------------------------------------------ 切换模型失败要回滚配置 --
+
+
+def test_load_model_restores_config_on_failure() -> None:
+    """加载失败时不能把配置留在新模型上（否则 UI 显示新、实际渲染旧）。"""
+    from types import SimpleNamespace
+
+    import pytest
+
+    from live3dgsavatar.app.session import Session
+
+    class _Cfg:
+        def __init__(self):
+            self.data = {"subject": "old", "work_name": "oldwork"}
+
+        def get(self, key, default=None):
+            return self.data.get(key.split(".")[-1], default)
+
+        def set(self, key, value):
+            self.data[key.split(".")[-1]] = value
+
+    cfg = _Cfg()
+
+    def boom(*_a, **_k):
+        raise ValueError("模型加载失败")
+
+    fake = SimpleNamespace(cfg=cfg, _load_model_locked=boom)
+    with pytest.raises(ValueError, match="加载失败"):
+        Session.load_model(fake, "new", "newwork")
+    assert cfg.get("subject") == "old"
+    assert cfg.get("work_name") == "oldwork"

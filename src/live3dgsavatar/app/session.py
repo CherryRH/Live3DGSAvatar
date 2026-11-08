@@ -193,9 +193,20 @@ class Session:
             raise ValueError(
                 "还没有选择模型。请在右侧「模型」里选对象与版本，"
                 "或用 POST /api/model 指定 subject 与 work_name。")
+
+        # 记住旧选择：加载失败时恢复，否则输入框显示新模型、实际渲染旧模型
+        prev = (self.cfg.get("subject"), self.cfg.get("work_name"))
         self.cfg.set("subject", subject)
         self.cfg.set("work_name", work_name)
+        try:
+            return self._load_model_locked(subject, work_name)
+        except Exception:
+            self.cfg.set("subject", prev[0])
+            self.cfg.set("work_name", prev[1])
+            raise
 
+    def _load_model_locked(self, subject: str, work_name: str) -> dict:
+        """真正加载；失败时由 `load_model` 负责把配置恢复成旧值。"""
         if not torch.cuda.is_available():
             raise RuntimeError(
                 "GUI 后端需要可用的 NVIDIA GPU（渲染无法降级到 CPU）。"
@@ -226,7 +237,15 @@ class Session:
             mlp_hidden=tuple(cfg.get("model.network.mlp_hidden") or ()),
             use_weight_proj=bool(cfg.get("model.network.use_weight_proj", True)),
         )
-        avatar = load_ply(model_ply, config=av_cfg, device=self.device)
+        try:
+            avatar = load_ply(model_ply, config=av_cfg, device=self.device)
+        except ValueError as e:
+            # 早期"双倍高斯"实验（capacity/v2）留下的模型无法用当前格式加载
+            hint = ""
+            if "容量" in str(e) or "高斯" in str(e):
+                hint = ("\n        该模型可能是早期容量实验（如 cap2）的产物；"
+                        "当前版本只支持 v1 格式，请删除该目录或重新训练。")
+            raise ValueError(f"{model_ply} 加载失败：{e}{hint}") from e
 
         # 状态一致性：先算完再替换，避免中途失败留下半初始化状态
         # ⚠️ **赋值顺序决定并发安全**：`ready` 由 `avatar` / `scene` / `timeline`
