@@ -86,6 +86,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         "环境则自动使用，否则用当前 python")
     p.add_argument("--syncfix-out", type=Path, default=None,
                    help="SyncFix 的原始输出目录（默认 <缺陷目录>/syncfix_raw）")
+    p.add_argument("--syncfix-batch", type=int, default=8,
+                   help="SyncFix 每次前向处理多少张（显存不够就调小；"
+                        "84 张一次过约需 11 GiB）")
     p.add_argument("--syncfix-arg", action="append", default=[],
                    help="额外透传给推理脚本的参数（可重复，如 --syncfix-arg=--n_per_pass=1）")
 
@@ -191,6 +194,16 @@ def collect_refined(raw_dir: Path, target_dir: Path, labels: list[str]) -> list[
     return done
 
 
+def _pass_size(views: int, batch: int) -> int:
+    """一次前向处理多少张：不超总数，也不超用户给的批大小。
+
+    SyncFix 的 `--n_per_pass` 是"每批张数"；一次性塞 84 张会 OOM
+    （实测 512² 下约 130 MiB/张），所以要显式限批。
+    """
+    n = int(batch) if batch and batch > 0 else views
+    return max(1, min(int(views), n))
+
+
 def syncfix_prefix(args) -> list[str]:
     """SyncFix 的解释器前缀。
 
@@ -227,7 +240,8 @@ def _detect_conda_env(name: str) -> str | None:
     return None
 
 
-def syncfix_command(args, *, views: int) -> list[str]:
+def syncfix_command(args, *, views: int,
+                    batch: int | None = None) -> list[str]:
     """拼出 SyncFix 的推理命令（含解释器前缀）。"""
     if args.syncfix_dir is None:
         raise RuntimeError("需要 --syncfix-dir（或加 --skip-syncfix 复用已有精修图）")
@@ -235,7 +249,9 @@ def syncfix_command(args, *, views: int) -> list[str]:
     cmd = syncfix_prefix(args) + [str(script),
            "--input_image", "{views}", "--ref_image", "{refs}",
            "--output_dir", "{raw}",
-           "--n_per_pass", str(max(1, views)), "--ref_size", "1",
+           "--n_per_pass",
+           str(_pass_size(views, args.syncfix_batch if batch is None else batch)),
+           "--ref_size", "1",
            "--height", "512", "--width", "512"]
     if args.syncfix_model:
         cmd += ["--model_path", str(args.syncfix_model)]
@@ -401,11 +417,23 @@ def main(argv: list[str] | None = None) -> int:
             if n_old:
                 print(f"  清理旧精修产物 {n_old} 个文件")
         if prefix is not None:
-            cmd = syncfix_command(args, views=len(labels))
-            cmd = [c.format(views=defects_dir / "views", refs=defects_dir / "refs",
-                            raw=syncfix_raw) for c in cmd]
-            run(cmd, cwd=Path(args.syncfix_dir) if args.syncfix_dir else None,
-                dry_run=args.dry_run)
+            # 显存不够时把批大小减半重试（典型：一次塞 84 张要 11 GiB）
+            attempt = int(args.syncfix_batch) or len(labels)
+            for tries in range(3):
+                cmd = syncfix_command(args, views=len(labels), batch=attempt)
+                cmd = [c.format(views=defects_dir / "views",
+                                refs=defects_dir / "refs",
+                                raw=syncfix_raw) for c in cmd]
+                try:
+                    run(cmd, cwd=Path(args.syncfix_dir) if args.syncfix_dir else None,
+                        dry_run=args.dry_run)
+                    break
+                except RuntimeError:
+                    if args.dry_run or attempt <= 2 or tries == 2:
+                        raise
+                    attempt = max(1, attempt // 2)
+                    print(f"  [warn] SyncFix 失败，按批大小 {attempt} 重试"
+                          "（可能是显存不足）")
         if not args.dry_run:
             got = collect_refined(syncfix_raw, refined_dir, labels)
             print(f"  整理出 {len(got)} 张精修图 → {refined_dir}")

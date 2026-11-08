@@ -443,3 +443,19 @@ def test_clear_images_removes_pngs_keeps_others(tmp_path) -> None:
     assert not list(d.glob("*.png"))
     assert (d / "keep.json").is_file()
     assert m.clear_images(tmp_path / "nope") == 0
+
+
+def test_syncfix_pass_size_limits_batch() -> None:
+    """一次前向不能塞全部视角：84 张会 OOM，必须按批切。"""
+    m = load_script("enhance_model.py")
+    assert m._pass_size(84, 8) == 8
+    assert m._pass_size(4, 8) == 4
+    assert m._pass_size(84, 0) == 84, "0 表示不限（保持旧行为）"
+
+    args = m.parse_args(["--subject", "a", "--work-name", "b",
+                         "--syncfix-dir", "/tmp/S", "--syncfix-batch", "8"])
+    cmd = m.syncfix_command(args, views=84)
+    assert cmd[cmd.index("--n_per_pass") + 1] == "8"
+    # 显式覆盖（重试时用）
+    cmd2 = m.syncfix_command(args, views=84, batch=2)
+    assert cmd2[cmd2.index("--n_per_pass") + 1] == "2"

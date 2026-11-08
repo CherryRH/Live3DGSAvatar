@@ -66,7 +66,8 @@ python scripts/enhance_model.py --subject crh_1 --work-name run \
 | 预算 | 16–24 | 建议 40+（目标点通常上千个，覆盖不完是正常的） |
 
 适用场景：想验证"把能修的地方都修一遍"能否再涨，而不是挑最差的几处。
-代价是精修张数上升（SyncFix 约 0.1 s/张，40 张仍是一分钟内）。
+代价是精修张数上升（SyncFix 约 0.1 s/张）。张数到几十张时要控制每批大小：
+`--syncfix-batch 8`（默认），显存不足会自动减半重试。
 
 ## 三、验收标准
 
@@ -116,6 +117,7 @@ biden 的基线更高、锐度比大于 1（渲染比原图更锐），所以增
 | 现象 | 处理 |
 |---|---|
 | SyncFix 报 `No module named imageio` | 用 `--syncfix-env syncfix` 或 `--syncfix-python <该环境解释器>` |
+| SyncFix 显存不足（`CUDA out of memory`） | 调小 `--syncfix-batch`（默认 8；84 张一次过约需 11 GiB）。流程在失败时会自动按批大小减半重试两次 |
 | 精修图数量少于视角数 | 精修器未跑完；`--skip-syncfix` 后可复用已有结果 |
 | 换 `--promote-name` 后评测找不到模型 | 状态里记了目标名，会自动重跑微调；若被 `--force` 跳过则手动跑第 3 步 |
 | 锐度比掉得多 | 手动降 `--lr-scaling`，或把 `--sharp-tolerance` 收紧到 0.02 |
