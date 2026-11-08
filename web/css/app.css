@@ -152,6 +152,17 @@ label.inline select,
 label.inline input[type="range"] { width: auto; }
 label.inline input[type="range"] { min-width: 90px; }
 
+/* 角度读数固定宽度：`0°` 与 `-50°` 字宽不同，不固定会让滑块左右跳。
+   定宽 + 右对齐 + 等宽数字，读数变化时布局完全不动。 */
+#o-yaw,
+#o-pitch {
+  display: inline-block;
+  flex: 0 0 auto;
+  min-width: 4ch;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
 /* 数据源为 live（待接入）时置灰整条驱动相关控件 */
 .player.is-live .drive-control { opacity: .45; pointer-events: none; }
 
