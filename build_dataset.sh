@@ -1,13 +1,11 @@
 #!/usr/bin/env bash
 # 构建数据集：一个入口把"图像 → RDF 跟踪 → 标准数据集"整条流程跑完。
 #
-# 标准结构（见 docs/CONVENTIONS.md §6）：
+# 标准结构：
 #   datasets/<对象>/images/ + render_inputs.npz
-# 增强集同结构，放在 datasets/<对象>/augmented/。
 #
 # 用法：
 #   ./build_dataset.sh <images 目录> --name crh_3              # 新建数据集
-#   ./build_dataset.sh <images 目录> --into crh_1             # 作为 crh_1 的增强集
 #   ./build_dataset.sh <images 目录> --name crh_3 --limit 300 # 只取前 300 帧
 #   ./build_dataset.sh --video <视频文件> --name crh_4        # 预留（暂未实现）
 #
@@ -39,7 +37,6 @@ usage() {
 SOURCE=""
 VIDEO=""
 NAME=""
-INTO=""
 LIMIT=0
 STRIDE=1
 FORCE=""
@@ -49,7 +46,6 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --video)   VIDEO="${2:-}"; shift 2 ;;
     --name)    NAME="${2:-}"; shift 2 ;;
-    --into)    INTO="${2:-}"; shift 2 ;;
     --limit)   LIMIT="${2:-0}"; shift 2 ;;
     --stride)  STRIDE="${2:-1}"; shift 2 ;;
     --keep-images) KEEP_IMAGES="--keep-images"; shift ;;
@@ -74,8 +70,7 @@ fi
 
 [[ -n "$SOURCE" ]] || { usage; }
 [[ -d "$SOURCE" ]] || die "目录不存在：$SOURCE"
-[[ -n "$NAME" || -n "$INTO" ]] || die "需要 --name（新数据集）或 --into（增强集）"
-[[ -z "$NAME" || -z "$INTO" ]] || die "--name 与 --into 只能给一个"
+[[ -n "$NAME" ]] || die "需要 --name（数据集名，写到 datasets/<name>/）"
 
 SOURCE="$(cd "$SOURCE" && pwd)"
 IMAGES_DIR=""
@@ -103,11 +98,7 @@ fi
 info "整理为标准数据集（环境：$MAIN_ENV）"
 ARGS=(--from "$SOURCE" --limit "$LIMIT" --images "$IMAGES_DIR")
 if [[ -n "$KEEP_IMAGES" ]]; then ARGS+=("$KEEP_IMAGES"); fi
-if [[ -n "$INTO" ]]; then
-  ARGS+=(--into "$INTO")
-else
-  ARGS+=(--name "$NAME")
-fi
+ARGS+=(--name "$NAME")
 [[ -n "$FORCE" ]] && ARGS+=("$FORCE")
 
 conda run -n "$MAIN_ENV" --no-capture-output \

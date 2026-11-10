@@ -81,10 +81,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="第几步开始启用形变基（默认 3000）")
     p.add_argument("--mask-weight", type=float, default=None,
                    help="背景在损失里的权重；1 表示与前景同权（默认）")
-    p.add_argument("--augment", action="store_true",
-                   help="把 <数据集>/augmented/ 混进训练集（验证集仍只用真实数据）")
-    p.add_argument("--augment-weight", type=float, default=None,
-                   help="增强样本的损失权重（0 = 完全不考虑）")
     p.add_argument("--test-ratio", type=float, default=None,
                    help="验证集比例（0.3 表示末尾 30%%，默认 0.3）")
     p.add_argument("--eval-every", type=int, default=None)
@@ -109,14 +105,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="模型结构配置（默认：模型目录里的 config.yaml，"
                         "没有就用仓库模板 configs/model.yaml）")
     p.add_argument("--output-dir", type=Path, default=None)
-    p.add_argument("--promote", action="store_true",
-                   help="训练结束后把模型装进 models/<对象>/<名字>/，可直接用于渲染")
     p.add_argument("--promote-name", default=None,
                    help="装进 models/ 时用的名字（默认与 --work-name 相同）")
-    p.add_argument("--promote-from", type=Path, default=None,
-                   help="装哪个文件（默认列表末尾的 model.ply）")
-    p.add_argument("--force", action="store_true",
-                   help="目标目录已存在时覆盖")
     p.add_argument("--dry-run", action="store_true",
                    help="不需要 GPU：检查数据与配置，打印将要做的事")
     return p.parse_args(argv)
@@ -150,8 +140,6 @@ def main(argv: list[str] | None = None) -> int:
                       else cfg.get("train.pipeline.blend_start", 3_000))
     test_ratio = float(args.test_ratio if args.test_ratio is not None
                        else cfg.get("train.pipeline.test_ratio", 0.3))
-    augment_weight = float(args.augment_weight if args.augment_weight is not None
-                           else cfg.get("train.pipeline.augment_weight", 1.0))
     eval_every = int(args.eval_every if args.eval_every is not None
                      else cfg.get("train.pipeline.eval_every", 1000))
     save_every = int(args.save_every if args.save_every is not None
@@ -381,25 +369,9 @@ def main(argv: list[str] | None = None) -> int:
         CheckpointHook(save=save, every=save_every),
     )
 
-    from live3dgsavatar.data.sources import MixedSource, PrefetchSource
+    from live3dgsavatar.data.sources import PrefetchSource
 
     train_source = train_src
-    aug_dir = data_dir / str(cfg.get("train.pipeline.augment_dir", "augmented"))
-    if args.augment:
-        if not (aug_dir / "render_inputs.npz").is_file():
-            raise SystemExit(
-                f"[error] 找不到增强集 {aug_dir}/render_inputs.npz\n"
-                "        先跑 ./build_dataset.sh <图像目录> --into <对象>")
-        if augment_weight <= 0:
-            print("  [warn] --augment-weight=0：增强集不参与（等于没开 --augment）")
-        else:
-            aug_src = ManifestSource(aug_dir, split="train",
-                                     test_ratio=test_ratio, device="cpu",
-                                     seed=args.seed + 1)
-            train_source = MixedSource([(train_src, 1.0),
-                                        (aug_src, augment_weight)], seed=args.seed)
-            print(f"  增强集 : {len(aug_src)} 帧（权重 {augment_weight:g}，"
-                  f"占混合采样 {len(aug_src)/(len(aug_src)+len(train_src)):.0%}）")
     if workers > 0:
         train_source = PrefetchSource(train_source, batch_size, workers=workers,
                                       depth=max(2, workers * 2))
@@ -438,21 +410,21 @@ def main(argv: list[str] | None = None) -> int:
         "stopped_early": report.stopped_early,
     }, indent=2, ensure_ascii=False), encoding="utf-8")
 
-    if args.promote:
-        best_ply = out_dir / "model_best.ply"
-        src = args.promote_from or (best_ply if best_ply.is_file() else final_ply)
-        print(f"  装入来源：{src.name}")
-        name = args.promote_name or work
-        target = models_dir / subject / name
-        try:
-            promote_model(source_ply=src, structure_config=model_cfg,
-                          report=report_path, target=target, force=args.force)
-        except (FileExistsError, FileNotFoundError) as e:
-            print(f"[error] {e}", file=sys.stderr)
-            return 1
-        print(f"已装入：{target}")
-        print(f"  渲染：python scripts/render_test.py --subject {subject} "
-              f"--work-name {name}")
+    # 训练结束一律落盘：结果不装进 models/ 就没有可用的模型，
+    # 所以不提供"不保存"的开关。目标已存在时直接覆盖（同名即视为重训）。
+    best_ply = out_dir / "model_best.ply"
+    src = best_ply if best_ply.is_file() else final_ply
+    print(f"  装入来源：{src.name}")
+    name = args.promote_name or work
+    target = models_dir / subject / name
+    try:
+        promote_model(source_ply=src, structure_config=model_cfg,
+                      report=report_path, target=target, force=True)
+    except (FileExistsError, FileNotFoundError) as e:
+        print(f"[error] {e}", file=sys.stderr)
+        return 1
+    print(f"已装入：{target}")
+    print(f"  评测：bash eval.sh --subject {subject} --work-name {name}")
     return 0
 
 

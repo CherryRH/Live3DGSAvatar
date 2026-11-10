@@ -33,7 +33,7 @@ bash setup_env.sh                       # 建环境 + 编译 CUDA 扩展（一�
 conda activate live3dgs
 
 bash build_dataset.sh <图像目录> --name <对象>            # ① 数据集
-bash train.sh --subject <对象> --work-name base --promote  # ② 训练
+bash train.sh --subject <对象> --work-name base             # ② 训练（自动装进 models/）
 bash run_gui.sh --subject <对象> --work-name base          # ③ 预览
 ```
 
@@ -41,13 +41,13 @@ bash run_gui.sh --subject <对象> --work-name base          # ③ 预览
 
 ```bash
 bash train.sh --subject <对象> --work-name <版本>
-bash train.sh --subject <对象> --work-name <版本> --promote   # 装进 models/
 ```
 
 - 数据：`datasets/<对象>/`（`images/` + `render_inputs.npz`）；
-- 切分：末尾一部分作验证（`test_ratio`），验证集只含真实数据；
+- 切分：末尾 30% 作验证（`test_ratio`），验证集只含真实数据；
 - 早停：正脸 PSNR 与大角度缺口的加权指标（`--no-robust-eval` 可关）；
-- 产物：`output/train/<对象>/<版本>/`，`model_best.ply` 为最佳检查点。
+- 产物：`output/train/<对象>/<版本>/`；训练结束**自动**把最佳检查点装进
+  `models/<对象>/<版本>/`（同名覆盖），无需额外开关。
 
 参数与取舍写在训练脚本与 `training/` 的注释里。
 

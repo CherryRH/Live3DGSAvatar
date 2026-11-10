@@ -321,29 +321,3 @@ def test_model_ply_accepts_absolute_path(tmp_path) -> None:
         resolve_model_ply(cfg)
     # 错误里必须给出**实际查找的完整路径**，否则用户无从下手
     assert str(tmp_path / "missing.ply") in str(exc.value)
-def test_render_test_no_save_skips_frame_copy() -> None:
-    """**回归测试**：`--no-save` 且不生成视频时，不得做 D2H 拷贝。
-
-    `main()` 里 `keep_images` 与 `share_dir` 必须分别门控；`render_core()`
-    在两者都为空时直接跳过，不构造 `arr`（`.cpu()` 会同步等待内核，
-    会污染耗时测量）。
-    """
-    import ast
-
-    path = REPO_ROOT / "scripts" / "render_test.py"
-    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-
-    core = next((n for n in tree.body
-                 if isinstance(n, ast.FunctionDef) and n.name == "render_core"), None)
-    assert core is not None, "render_test.py 应有一个 render_core()"
-    source = ast.unparse(core)
-    assert "keep_images" in source, "render_core 应接受 keep_images"
-    assert "share_dir is None" in source and "keep_images" in source, \
-        "两者都为空时必须跳过拷图"
-
-    main_fn = next((n for n in tree.body
-                    if isinstance(n, ast.FunctionDef) and n.name == "main"), None)
-    main_src = ast.unparse(main_fn)
-    assert "keep_images=want_video" in main_src, \
-        "视频需求应通过 keep_images 传入"
-

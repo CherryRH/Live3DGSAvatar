@@ -158,7 +158,7 @@ class ManifestSource:
     def _select_split(self, split: str, test_ratio: float) -> list[int]:
         """按比例切分：末尾 `test_ratio` 归验证集。
 
-        用比例而不是帧数，换数据集时不必重算参数；增强集也按同一比例切。
+        用比例而不是帧数，换数据集时不必重算参数。
         """
         n = self._n_all
         ratio = float(test_ratio)
@@ -244,7 +244,7 @@ class ManifestSource:
     # ------------------------------------------------------------ 迭代 --
 
     def __len__(self) -> int:
-        """当前切分的帧数（`PrefetchSource`/`MixedSource` 也依赖它）。"""
+        """当前切分的帧数（`PrefetchSource` 也依赖它）。"""
         return len(self._index)
 
     def random_indices(self, n: int) -> list[int]:
@@ -362,69 +362,3 @@ class PrefetchSource:
         return self.inner.iter_batches(batch_size, shuffle=shuffle)
 
 
-class MixedSource:
-    """把真实数据与增强数据混在一起采样，并给增强样本一个**逐样本权重**。
-
-    用法：
-
-        MixedSource([(real_src, 1.0), (aug_src, 0.5)], seed=0)
-
-    每步在"拼接后的索引空间"里均匀抽 —— 也就是增强数据按它的**帧数占比**
-    自然进入 batch；`weight` 再按组打折。两者分开是有意的：
-
-    - 占比决定"每步看到多少合成图"
-    - 权重决定"合成图的误差算多少分"
-
-    权重为 0 的组会被**直接排除**（不该占 batch 名额，也不该浪费算力）。
-    """
-
-    def __init__(self, parts, *, seed: int = 0) -> None:
-        import random as _random
-
-        usable = [(src, float(w)) for src, w in parts if float(w) > 0]
-        if not usable:
-            raise ValueError("MixedSource 至少需要一个权重 > 0 的数据源")
-        self.parts = usable
-        self._sizes = [len(src) for src, _ in usable]
-        self._offsets = [0]
-        for s in self._sizes[:-1]:
-            self._offsets.append(self._offsets[-1] + s)
-        self._total = sum(self._sizes)
-        self._rng = _random.Random(seed)
-
-    def __len__(self) -> int:
-        return self._total
-
-    def _locate(self, flat: int) -> tuple[int, int]:
-        """拼接索引 → `(第几个源, 源内索引)`。"""
-        for k in range(len(self._sizes) - 1, -1, -1):
-            if flat >= self._offsets[k]:
-                return k, flat - self._offsets[k]
-        return 0, flat
-
-    def random_batch(self, batch_size: int) -> Batch:
-        picks = [self._rng.randrange(self._total) for _ in range(int(batch_size))]
-        samples = []
-        weights = []
-        for flat in picks:
-            k, local = self._locate(flat)
-            src, w = self.parts[k]
-            samples.append(src.sample(src._index[local]))
-            weights.append(w)
-        return Batch(
-            mesh=torch.stack([s.mesh for s in samples]),
-            blend_weight=torch.stack([s.blend_weight for s in samples]),
-            image=torch.stack([s.image for s in samples]),
-            mask=torch.stack([s.mask for s in samples]),
-            weight=torch.tensor(weights, dtype=torch.float32),
-        )
-
-    def iter_batches(self, batch_size: int, shuffle: bool = False):
-        """验证只走**第一个**源（真实数据）—— 合成图不该进验证集。"""
-        return self.parts[0][0].iter_batches(batch_size, shuffle=shuffle)
-
-    def close(self) -> None:
-        for src, _ in self.parts:
-            close = getattr(src, "close", None)
-            if callable(close):
-                close()

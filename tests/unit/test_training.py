@@ -539,49 +539,6 @@ def test_split_ratio_rejects_out_of_range() -> None:
         ManifestSource._select_split(src, "train", 1.5)
 
 
-def test_mixed_source_weights_and_excludes_zero() -> None:
-    """增强样本带权重；权重为 0 的源被直接排除（不占名额）。"""
-    import numpy as np
-
-    from live3dgsavatar.data.sources import Batch, MixedSource
-
-    class Src:
-        def __init__(self, value: float, n: int = 5):
-            self.value = value
-            self._index = list(range(n))
-            self.n = n
-
-        def __len__(self) -> int:
-            return self.n
-
-        def sample(self, i: int) -> Batch:
-            return SimpleNamespace(
-                mesh=torch.full((4, 3), self.value),
-                blend_weight=torch.zeros(129),
-                image=torch.full((3, 4, 4), self.value),
-                mask=torch.ones(1, 4, 4, dtype=torch.bool))
-
-    real, aug, ignored = Src(0.0), Src(1.0), Src(2.0)
-    mix = MixedSource([(real, 1.0), (aug, 0.5), (ignored, 0.0)], seed=0)
-    assert len(mix) == 10, "权重 0 的源不应计入总长度"
-
-    b = mix.random_batch(64)
-    assert b.weight.shape == (64,)
-    assert set(b.weight.tolist()) <= {1.0, 0.5}
-    assert float(b.weight.sum()) > 0
-
-
-def test_mixed_source_validates_parts() -> None:
-    from live3dgsavatar.data.sources import MixedSource
-
-    class Src:
-        _index = [0]
-        def __len__(self): return 1
-
-    with pytest.raises(ValueError, match="权重 > 0"):
-        MixedSource([(Src(), 0.0)])
-
-
 def test_objective_applies_sample_weight() -> None:
     """逐样本权重：被忽略的样本不影响损失。"""
     pred = torch.zeros(2, 3, 4, 4)

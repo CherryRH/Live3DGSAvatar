@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""把一个"RDF 跟踪结果目录"整理成标准数据集（或某数据集的增强集）。
+"""把一个"RDF 跟踪结果目录"整理成标准数据集。
 
 ## 统一的数据集结构
 
@@ -9,7 +9,7 @@ datasets/<对象>/
 └── render_inputs.npz   mesh(N,5083,3) / blend_weight(N,129) / K / w2v / size / names
 ```
 
-增强集是同一结构，放在 `<对象>/augmented/` 下。约定。
+
 
 ## 输入
 
@@ -24,8 +24,8 @@ datasets/<对象>/
 # 新数据集：datasets/<name>/
 python scripts/build_dataset.py --from <目录> --name <name>
 
-# 增强集：datasets/<对象>/augmented/
-python scripts/build_dataset.py --from <目录> --into <对象>
+# 就地烘焙（跟踪结果已经落在 datasets/<对象>/）
+python scripts/build_dataset.py --from datasets/<对象> --name <对象>
 ```
 
 通常不直接调用本脚本，而是用根目录的 `build_dataset.sh`：它会先把 RDF 跑好。
@@ -52,15 +52,13 @@ MANIFEST_KEYS = ("mesh", "blend_weight", "K", "w2v", "width", "height", "names")
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="把 RDF 跟踪结果整理成标准数据集 / 增强集")
+        description="把 RDF 跟踪结果整理成标准数据集")
     p.add_argument("--from", dest="source", type=Path, required=True,
                    help="含 images/ 与 render_inputs.npz 的目录")
     p.add_argument("--name", default=None,
                    help="新数据集名（写到 datasets/<name>/）")
-    p.add_argument("--into", default=None,
-                   help="已有数据集名（写到 datasets/<该对象>/augmented/）")
     p.add_argument("--out", type=Path, default=None,
-                   help="直接指定输出目录（优先于 --name/--into）")
+                   help="直接指定输出目录（优先于 --name）")
     p.add_argument("--images", type=Path, default=None,
                    help="图像目录（默认 <来源>/images；可以直接给图像目录本身）")
     p.add_argument("--keep-images", action="store_true",
@@ -259,20 +257,13 @@ def main(argv: list[str] | None = None) -> int:
     flame_dir = Path(str(cfg.get("paths.flame_dir")))
     datasets_root = repo_root() / str(cfg.get("paths.data_root", "datasets"))
 
+    base_dataset = None
     if args.out is not None:
         out_dir = args.out.expanduser()
-        base_dataset = None
-    elif args.into is not None:
-        base_dataset = datasets_root / args.into
-        if not (base_dataset / "render_inputs.npz").is_file():
-            print(f"[error] 目标数据集不存在：{base_dataset}", file=sys.stderr)
-            return 1
-        out_dir = base_dataset / "augmented"
     elif args.name is not None:
         out_dir = datasets_root / args.name
-        base_dataset = None
     else:
-        print("[error] 需要 --name（新数据集）或 --into（增强集）或 --out",
+        print("[error] 需要 --name（新数据集）或 --out（指定目录）",
               file=sys.stderr)
         return 1
 
@@ -287,11 +278,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[error] {e}", file=sys.stderr)
         return 1
 
-    if args.into is not None:
-        print("提示：训练时加 --augment 才会用到增强集")
-    else:
-        print(f"提示：python scripts/train.py --subject {out_dir.name} "
-              f"--work-name <版本>")
+    print(f"提示：bash train.sh --subject {out_dir.name} --work-name <版本>")
     return 0
 
 

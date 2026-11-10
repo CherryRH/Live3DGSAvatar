@@ -7,7 +7,7 @@
 #   bash eval.sh --subject <对象> --work-name <版本> --frame-mode random --frames 64
 #   bash eval.sh --subject <对象> --work-name <版本> --base-work <基线>
 #   bash eval.sh --subject <对象> --work-name <版本> --frames -1      # 全部
-#   bash eval.sh --subject <对象> --work-name <版本> --no-video --no-lpips
+#   bash eval.sh --subject <对象> --work-name <版本> --no-lpips   # 跳过 LPIPS
 #
 # 取帧：--frame-mode head（默认，从头）/ tail（从尾）/ random（随机，--seed 可重现）。
 # 视频帧率固定 30（与实时指标口径一致）；渲染耗时与 FPS 仍在报告里。

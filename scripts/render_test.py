@@ -111,11 +111,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--batch-size", type=int, default=None, help="批大小")
     p.add_argument("--output-dir", type=Path, default=None,
                    help="产物根目录（默认 output/render_test/<对象>/<版本>/<数据集>）")
-    p.add_argument("--no-save", action="store_true",
-                   help="不落盘、不拷贝到主机（干净测量渲染耗时）")
     p.add_argument("--save-images", action="store_true",
                    help="额外落盘渲染 PNG（默认只出对比视频）")
-    p.add_argument("--no-video", action="store_true", help="不生成对比视频")
     p.add_argument("--no-lpips", action="store_true",
                    help="跳过 LPIPS（首次使用需下载 AlexNet 权重）")
     p.add_argument("--profile", action="store_true",
@@ -221,13 +218,11 @@ from live3dgsavatar.evaluation.protocol import (  # noqa: E402
 
 
 def render_core(args, scene, frames: list[int], out_dir: Path,
-                share_dir: Path | None = None, keep_images: bool = False):
+                share_dir: Path | None = None):
     """用本项目 `core/` 渲染。
 
     Args:
-        share_dir: 非 ``None`` 时落盘 PNG。
-        keep_images: 是否把图像留在内存里（拼视频用）；``False`` 且
-            `share_dir is None` 时跳过 D2H 拷贝，只做渲染与计时。
+        share_dir: 非 ``None`` 时额外落盘 PNG。图像总是留在内存里（拼视频用）。
     """
     import torch
 
@@ -316,10 +311,6 @@ def render_core(args, scene, frames: list[int], out_dir: Path,
         torch.cuda.synchronize()
         dt = (time.perf_counter() - t0) * 1000.0
         per_frame_ms.extend([dt / len(chunk)] * len(chunk))
-
-        if share_dir is None and not keep_images:
-            # 干净测量：连 D2H 拷贝都不做（窗口前的 `.cpu()` 会同步等待内核）
-            continue
 
         from PIL import Image
 
@@ -445,17 +436,14 @@ def main() -> int:
 
     out_root = args.output_dir
     out_root.mkdir(parents=True, exist_ok=True)
-    want_video = not args.no_video and not args.no_save
-    share_dir = (out_root / "images"
-                 if args.save_images and not args.no_save else None)
+    share_dir = out_root / "images" if args.save_images else None
     if share_dir is not None:
         share_dir.mkdir(parents=True, exist_ok=True)
     stale = clean_previous_outputs(out_root, share_dir)
     if stale:
         print(f"  清理旧产物：{stale} 张", flush=True)
 
-    images, perf = render_core(args, scene, indices, out_root, share_dir,
-                               keep_images=want_video)
+    images, perf = render_core(args, scene, indices, out_root, share_dir)
 
     result = EvaluationReport(
         subject=args.subject, work_name=args.work_name, dataset=args.dataset,
@@ -498,28 +486,27 @@ def main() -> int:
             print("      [warn] LPIPS 不可用（缺 lpips 或权重），已跳过",
                   flush=True)
 
-        # 对比视频：原图 | 渲染，每帧叠加 PSNR / SSIM / LPIPS，帧率取渲染均值
-        if want_video:
-            frames_out = []
-            for item in per_frame:
-                i = item["frame"]
-                ref_rgb, _ = gt[i]
-                img = images.get(i)
-                if img is None:
-                    continue
-                left = f"target {i:05d}"
-                parts = [f"PSNR {item['psnr']:.2f}"]
-                if item["ssim"] is not None:
-                    parts.append(f"SSIM {item['ssim']:.4f}")
-                if item["lpips"] is not None:
-                    parts.append(f"LPIPS {item['lpips']:.4f}")
-                right = f"render {i:05d} | " + " | ".join(parts)
-                frames_out.append(compose_pair(ref_rgb, img, left, right))
-            if frames_out:
-                video_path = write_video(out_root / "compare", frames_out,
-                                         args.video_fps)
-                print(f"\n  对比视频：{video_path}（{len(frames_out)} 帧，"
-                      f"{args.video_fps:.0f} FPS；渲染均值 {perf['fps']:.0f} FPS）")
+    # 对比视频：原图 | 渲染，每帧叠加 PSNR / SSIM / LPIPS；帧率固定 30
+    frames_out = []
+    for item in per_frame:
+        i = item["frame"]
+        ref_rgb, _ = gt[i]
+        img = images.get(i)
+        if img is None:
+            continue
+        left = f"target {i:05d}"
+        parts = [f"PSNR {item['psnr']:.2f}"]
+        if item["ssim"] is not None:
+            parts.append(f"SSIM {item['ssim']:.4f}")
+        if item["lpips"] is not None:
+            parts.append(f"LPIPS {item['lpips']:.4f}")
+        right = f"render {i:05d} | " + " | ".join(parts)
+        frames_out.append(compose_pair(ref_rgb, img, left, right))
+    if frames_out:
+        video_path = write_video(out_root / "compare", frames_out,
+                                 args.video_fps)
+        print(f"\n  对比视频：{video_path}（{len(frames_out)} 帧，"
+              f"{args.video_fps:.0f} FPS；渲染均值 {perf['fps']:.0f} FPS）")
 
     report_path = out_root / "report.json"
     report_path.write_text(json.dumps(report, indent=2, ensure_ascii=False),

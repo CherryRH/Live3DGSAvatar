@@ -8,7 +8,7 @@
 
 `render_inputs.npz` 有两种 schema，按内容判别：
 
-- `mesh` + `blend_weight`：已烘焙，可直接渲染（数据集、增强集）
+- `mesh` + `blend_weight`：已烘焙，可直接渲染（标准数据集）
 - `x` + `verts`：RDF 跟踪输出（5023 顶点、118 维），需补牙与映射为 129 维
 
 后者是 `scripts/rdf_dump.py` 的产物：RDF 的虚拟相机与数据集的相机一致，

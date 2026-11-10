@@ -67,8 +67,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--rolls", type=float, nargs="+", default=None,
                    help="滚转角（默认只取 0）")
     p.add_argument("--out", type=Path, default=None)
-    p.add_argument("--no-save-images", action="store_true",
-                   help="只算指标，不落渲染图")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--dry-run", action="store_true")
     return p.parse_args(argv)
@@ -390,42 +388,41 @@ def main(argv: list[str] | None = None) -> int:
     (out_dir / "selected.json").write_text(
         json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
 
-    if not args.no_save_images:
-        vis_dir = out_dir / "views"
-        vis_dir.mkdir(exist_ok=True)
-        refs_dir = out_dir / "refs"
-        # 视角集合变了以后旧图会残留，和新结果混在一起 → 先清掉
-        for _d in (vis_dir, refs_dir):
-            if _d.is_dir():
-                for _p in _d.glob("*.png"):
-                    _p.unlink()
-        for cand in result.chosen:
-            spec_view = cand.payload["view"]
-            base_verts = mesh_of(scene.frames[int(cand.payload["base_frame"])])
-            center_i = base_verts[0].mean(dim=0).detach().cpu()
-            cam = camera_at(center_i, spec_view["yaw"], spec_view["pitch"],
-                            spec_view["roll"])
-            weight = scene.frames[int(cand.payload["base_frame"])][
-                "blend_weight"].unsqueeze(0).to(device)
-            with torch.no_grad():
-                gs = avatar.deform(mesh_input(base_verts), weight)
-                out = rasterizer.render(gs, cam, bg)
-            img = (out.color[0].clamp(0, 1).permute(1, 2, 0).cpu().numpy()
-                   * 255.0).astype(np.uint8)
-            from PIL import Image
-            Image.fromarray(img).save(vis_dir / f"{cand.label}.png")
+    vis_dir = out_dir / "views"
+    vis_dir.mkdir(exist_ok=True)
+    refs_dir = out_dir / "refs"
+    # 视角集合变了以后旧图会残留，和新结果混在一起 → 先清掉
+    for _d in (vis_dir, refs_dir):
+        if _d.is_dir():
+            for _p in _d.glob("*.png"):
+                _p.unlink()
+    for cand in result.chosen:
+        spec_view = cand.payload["view"]
+        base_verts = mesh_of(scene.frames[int(cand.payload["base_frame"])])
+        center_i = base_verts[0].mean(dim=0).detach().cpu()
+        cam = camera_at(center_i, spec_view["yaw"], spec_view["pitch"],
+                        spec_view["roll"])
+        weight = scene.frames[int(cand.payload["base_frame"])][
+            "blend_weight"].unsqueeze(0).to(device)
+        with torch.no_grad():
+            gs = avatar.deform(mesh_input(base_verts), weight)
+            out = rasterizer.render(gs, cam, bg)
+        img = (out.color[0].clamp(0, 1).permute(1, 2, 0).cpu().numpy()
+               * 255.0).astype(np.uint8)
+        from PIL import Image
+        Image.fromarray(img).save(vis_dir / f"{cand.label}.png")
 
-            # 顺带把该候选的基帧（真实图）存成参考图：精修时正好用它做 --ref_image
-            base_idx = int(cand.payload["base_frame"])
-            src_path = data_dir / "images" / f"{base_idx:05d}.png"
-            if src_path.is_file():
-                refs_dir.mkdir(exist_ok=True)
-                dst = refs_dir / f"{base_idx:05d}.png"
-                if not dst.exists():
-                    rgba = np.asarray(Image.open(src_path).convert("RGBA"))
-                    rgb = rgba[..., :3].copy()
-                    rgb[rgba[..., 3] <= 127] = 0        # 与渲染同底（黑）
-                    Image.fromarray(rgb).save(dst)
+        # 顺带把该候选的基帧（真实图）存成参考图：精修时正好用它做 --ref_image
+        base_idx = int(cand.payload["base_frame"])
+        src_path = data_dir / "images" / f"{base_idx:05d}.png"
+        if src_path.is_file():
+            refs_dir.mkdir(exist_ok=True)
+            dst = refs_dir / f"{base_idx:05d}.png"
+            if not dst.exists():
+                rgba = np.asarray(Image.open(src_path).convert("RGBA"))
+                rgb = rgba[..., :3].copy()
+                rgb[rgba[..., 3] <= 127] = 0        # 与渲染同底（黑）
+                Image.fromarray(rgb).save(dst)
 
     print(f"\n缺陷质量构成：从未观测 {mass_summary['unseen_share']:.1%}，"
           f"看过但坏 {mass_summary['observed_bad_share']:.1%}")
@@ -437,15 +434,14 @@ def main(argv: list[str] | None = None) -> int:
     print(f"\n产物：{out_dir}")
     print(f"  selected.json  选中的组合与收益")
     print(f"  mass.npz       逐高斯缺陷质量（后续微调权重）")
-    if not args.no_save_images:
-        print(f"  views/         选中组合的渲染图（可直接作 SyncFix 的 --input_image）")
-        print(f"  refs/          各候选基帧的真实图（作 --ref_image）")
-        print("\n下一轮精修（把 degraded 与 refs 一起喂给 SyncFix）：")
-        print(f"  python ~/Projects/SyncFix/inference.py \\\n"
-              f"    --input_image {out_dir}/views \\\n"
-              f"    --ref_image   {out_dir}/refs \\\n"
-              f"    --model_path  <SyncFix 权重> --output_dir {out_dir}/refined \\\n"
-              f"    --n_per_pass {len(result.chosen)} --ref_size 1 "
+    print(f"  views/         选中组合的渲染图（可直接作 SyncFix 的 --input_image）")
+    print(f"  refs/          各候选基帧的真实图（作 --ref_image）")
+    print("\n下一轮精修（把 degraded 与 refs 一起喂给 SyncFix）：")
+    print(f"  python ~/Projects/SyncFix/inference.py \\\n"
+          f"    --input_image {out_dir}/views \\\n"
+          f"    --ref_image   {out_dir}/refs \\\n"
+          f"    --model_path  <SyncFix 权重> --output_dir {out_dir}/refined \\\n"
+          f"    --n_per_pass {len(result.chosen)} --ref_size 1 "
               f"--height 512 --width 512")
     return 0
 
