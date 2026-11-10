@@ -72,12 +72,15 @@ bash enhance.sh --subject <对象> --work-name <版本> \
 ## 三、评测
 
 ```bash
-bash eval.sh --subject <对象> --work-name <版本>
+bash eval.sh --subject <对象> --work-name <版本>                     # 默认前 64 帧
+bash eval.sh --subject <对象> --work-name <版本> --frame-mode tail --frames 120
+bash eval.sh --subject <对象> --work-name <版本> --frame-mode random --frames 64
 bash eval.sh --subject <对象> --work-name <版本> --base-work <基线版本>
 ```
 
-产物：`report.json`（PSNR / SSIM / LPIPS / 锐度 / 性能）+ `compare.mp4`
-（原图与渲染并排，逐帧叠加指标）。给了 `--base-work` 时额外做同视角缺陷对比。
+- 取帧：`--frames` 定数量，`--frame-mode head|tail|random` 定从哪里取；
+- 产物：`report.json`（PSNR / SSIM / LPIPS / 锐度 / 性能）+ `compare.mp4`
+  （原图与渲染并排，逐帧叠加指标，30 FPS）；给了 `--base-work` 时额外做同视角缺陷对比。
 
 ## 四、渲染与前端
 

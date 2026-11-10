@@ -200,3 +200,23 @@ def test_write_video_produces_a_file(tmp_path) -> None:
     out = m.write_video(tmp_path / "compare", frames, 12.0)
     assert out.is_file() and out.stat().st_size > 0
     assert out.suffix in (".mp4", ".webp")
+
+
+# ------------------------------------------------------------- 取帧方式 --
+
+
+def test_select_indices_head_tail_random() -> None:
+    m = _load()
+    assert m.select_indices(100, 5, "head") == [0, 1, 2, 3, 4]
+    assert m.select_indices(100, 5, "head", offset=90) == [90, 91, 92, 93, 94]
+    assert m.select_indices(100, 5, "tail") == [95, 96, 97, 98, 99]
+    got = m.select_indices(100, 5, "random", seed=7)
+    assert len(got) == 5 and got == sorted(got)
+    assert got == m.select_indices(100, 5, "random", seed=7), "同种子可复现"
+    assert len(m.select_indices(100, -1, "head")) == 100
+
+
+def test_select_indices_handles_more_frames_than_available() -> None:
+    m = _load()
+    assert m.select_indices(10, 99, "tail") == list(range(10))
+    assert len(m.select_indices(10, 99, "random", seed=3)) == 10

@@ -97,10 +97,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--dataset", default=None,
                    help="用哪个数据集评测（datasets/<名字>，必须是标准数据集；"
                         "默认取 --subject 同名数据集）")
-    p.add_argument("--frames", type=int, default=None, help="帧数；-1 表示全部")
+    p.add_argument("--frames", type=int, default=None,
+                   help="评测多少帧；-1 表示全部")
+    p.add_argument("--frame-mode", choices=("head", "tail", "random"),
+                   default="head",
+                   help="取帧方式：head=从开头（默认）、tail=从结尾、random=随机")
+    p.add_argument("--seed", type=int, default=0, help="random 模式的随机种子")
+    p.add_argument("--video-fps", type=float, default=30.0,
+                   help="对比视频帧率（默认 30，与实时指标口径一致）")
     # `default=None`：脚本不硬编码业务默认量，未给时在 `_finalize` 里取 0
     p.add_argument("--frame-offset", type=int, default=None,
-                   help="从第几帧开始取（配合 --frames 可只评估留出的尾段）")
+                   help="起始帧（仅 head 模式生效）")
     p.add_argument("--batch-size", type=int, default=None, help="批大小")
     p.add_argument("--output-dir", type=Path, default=None,
                    help="产物根目录（默认 output/render_test/<对象>/<版本>/<数据集>）")
@@ -336,6 +343,29 @@ def render_core(args, scene, frames: list[int], out_dir: Path,
     return images, perf
 
 
+def select_indices(total: int, frames: int | None, mode: str, *,
+                   seed: int = 0, offset: int = 0) -> list[int]:
+    """按取帧方式返回**全局帧号**列表。
+
+    - `head`  ：从 `offset` 开始连续取（`--frame-offset` 只在这里生效）
+    - `tail`  ：取最后 n 帧
+    - `random`：全片随机取 n 帧（`seed` 固定则可复现）
+
+    `frames` 为 ``None`` 或 `-1` 时表示全部。
+    """
+    import numpy as np
+
+    total = int(total)
+    n = total if frames is None or int(frames) < 0 else min(int(frames), total)
+    if mode == "tail":
+        return list(range(total - n, total))
+    if mode == "random":
+        rng = np.random.default_rng(int(seed))
+        return sorted(int(i) for i in rng.choice(total, size=n, replace=False))
+    start = max(0, min(int(offset), total))
+    return list(range(start, min(total, start + n)))
+
+
 def load_gt(args, frames: list[int], offset: int = 0):
     """读取数据集原图（RGBA）。返回 `{i: (rgb HxWx3, mask HxW bool)}`。
 
@@ -399,11 +429,14 @@ def main() -> int:
     # ⚠️ 必须显式传 `data_dir`：`--dataset` 选的数据集与模型所属对象的
     # subject 不一定同名，而 `load_scene(cfg)` 只按 cfg 的 subject 找数据集 ——
     # 漏了这个参数就会"显示的是 A 数据集，实际渲染 B 数据集"。
-    scene = load_scene(cfg, frames=args.frames,
-                       frame_offset=args.frame_offset, data_dir=args.data)
+    # 统一整段载入：三种取帧方式用同一套**全局下标**，GT 与渲染不会错位。
+    # 帧数据很小（2863 帧约 175 MB），不值得为 head 模式单独优化。
+    scene = load_scene(cfg, frames=-1, data_dir=args.data)
     total = scene.total_frames
-    n = scene.num_frames
-    print(f"  数据集: 载入 {n} / 共 {total} 帧（起始 {args.frame_offset}）", flush=True)
+    indices = select_indices(total, args.frames, args.frame_mode,
+                             seed=args.seed, offset=args.frame_offset)
+    n = len(indices)
+    print(f"  数据集: 共 {total} 帧，取 {n} 帧（{args.frame_mode}）", flush=True)
 
     # 背景按图像本身判定：带 alpha 的是实拍（用配置的黑底），
     # 纯 RGB 的多为白底合成图（用白底，否则 PSNR 全被背景吃掉）。
@@ -421,7 +454,7 @@ def main() -> int:
     if stale:
         print(f"  清理旧产物：{stale} 张", flush=True)
 
-    images, perf = render_core(args, scene, list(range(n)), out_root, share_dir,
+    images, perf = render_core(args, scene, indices, out_root, share_dir,
                                keep_images=want_video)
 
     result = EvaluationReport(
@@ -433,7 +466,7 @@ def main() -> int:
 
     print(f"  读取原图：{n} 张（解码 512² PNG，约 {n * 14 / 1000:.0f} s）…",
           flush=True)
-    gt = load_gt(args, list(range(n)), offset=args.frame_offset)
+    gt = load_gt(args, indices)
     video_path = None
     if gt is None:
         print("      [warn] 找不到数据集原图，改做无真值统计", flush=True)
@@ -484,9 +517,9 @@ def main() -> int:
                 frames_out.append(compose_pair(ref_rgb, img, left, right))
             if frames_out:
                 video_path = write_video(out_root / "compare", frames_out,
-                                         perf["fps"])
+                                         args.video_fps)
                 print(f"\n  对比视频：{video_path}（{len(frames_out)} 帧，"
-                      f"{perf['fps']:.0f} FPS）")
+                      f"{args.video_fps:.0f} FPS；渲染均值 {perf['fps']:.0f} FPS）")
 
     report_path = out_root / "report.json"
     report_path.write_text(json.dumps(report, indent=2, ensure_ascii=False),

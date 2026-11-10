@@ -2,10 +2,15 @@
 # 评测一个模型：封装 scripts/render_test.py（+ 可选的缺陷对比）。
 #
 # 用法：
-#   bash eval.sh --subject crh_1 --work-name run
-#   bash eval.sh --subject crh_1 --work-name run_refined --base-work run
-#   bash eval.sh --subject crh_1 --work-name run --frames -1 --frame-offset 2577
-#   bash eval.sh --subject crh_1 --work-name run --no-video --no-lpips
+#   bash eval.sh --subject <对象> --work-name <版本>                  # 前 64 帧
+#   bash eval.sh --subject <对象> --work-name <版本> --frames 120 --frame-mode tail
+#   bash eval.sh --subject <对象> --work-name <版本> --frame-mode random --frames 64
+#   bash eval.sh --subject <对象> --work-name <版本> --base-work <基线>
+#   bash eval.sh --subject <对象> --work-name <版本> --frames -1      # 全部
+#   bash eval.sh --subject <对象> --work-name <版本> --no-video --no-lpips
+#
+# 取帧：--frame-mode head（默认，从头）/ tail（从尾）/ random（随机，--seed 可重现）。
+# 视频帧率固定 30（与实时指标口径一致）；渲染耗时与 FPS 仍在报告里。
 #
 # 产物：output/render_test/<对象>/<版本>/<数据集>/
 #   report.json   PSNR / SSIM / LPIPS / 锐度 / 性能

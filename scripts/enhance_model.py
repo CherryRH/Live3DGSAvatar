@@ -464,17 +464,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.no_render_test:
         print("  留出集渲染测试：跳过（--no-render-test）")
     else:
-        offset = None
-        try:
-            import numpy as np
-
-            with np.load(Path(data_dir) / "render_inputs.npz",
-                         allow_pickle=True) as d:
-                total = int(d["mesh"].shape[0])
-            ratio = float(cfg.get("train.pipeline.test_ratio", 0.1))
-            offset = total - max(1, int(round(total * ratio)))
-        except Exception:                                  # noqa: BLE001
-            print("  [warn] 无法推算留出段起点，渲染全部帧")
+        # 从**结尾**取 eval_frames 帧：训练用的是开头段，结尾天然是留出区；
+        # 这样也不依赖预训练的切分比例（谁切的、怎么切的都不影响）。
         for name in (work, new_work):
             report_path = (Path(str(cfg.get("paths.output_dir", "output")))
                            / "render_test" / subject / name / dataset
@@ -486,9 +477,8 @@ def main(argv: list[str] | None = None) -> int:
                 cmd = [py, str(scripts / "render_test.py"),
                        "--subject", subject, "--work-name", name,
                        "--dataset", dataset,
-                       "--frames", str(args.eval_frames)]
-                if offset is not None:
-                    cmd += ["--frame-offset", str(offset)]
+                       "--frames", str(args.eval_frames),
+                       "--frame-mode", "tail"]
                 try:
                     run(cmd, dry_run=args.dry_run)
                 except RuntimeError as e:
