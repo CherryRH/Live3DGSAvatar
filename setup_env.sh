@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Live3DGSAvatar 环境初始化脚本
+# 环境初始化：建 conda 环境并编译三个本地 CUDA 扩展（一条命令，可重复执行）。
 #
 # 在独立 conda 环境中完成：CUDA 13.0 + PyTorch + 三个本地扩展
 # （nvdiffrast / fused-ssim / diff-gaussian-rasterization，全部从 submodules/ 构建）
