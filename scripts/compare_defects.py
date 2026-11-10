@@ -78,6 +78,7 @@ def summarize_rows(rows: list[dict]) -> dict:
     out: dict = {"n": len(rows)}
     for key in ("hole_base", "hole_new", "hole_in_base", "hole_in_new",
                 "sharp_base", "sharp_new", "psnr_base", "psnr_new",
+                "ssim_base", "ssim_new",
                 "spike_base", "spike_new", "outside_base", "outside_new"):
         values = col(key)
         if values.size:
@@ -178,7 +179,8 @@ def main(argv: list[str] | None = None) -> int:
     import nvdiffrast.torch as dr
     from PIL import Image
 
-    from live3dgsavatar.core.camera import orbit_w2c, roll_w2c
+    from live3dgsavatar.core.camera import orbit_w2c
+    from live3dgsavatar.core.metrics import ssim, roll_w2c
     from live3dgsavatar.core.io import load_ply
     from live3dgsavatar.core.io.ply import read_embedded_config
     from live3dgsavatar.core.metrics import psnr_masked
@@ -208,7 +210,7 @@ def main(argv: list[str] | None = None) -> int:
                              device=device)}
 
     def render_and_measure(avatar, frame, cam, refined):
-        """返回 `(hole, sharpness, psnr_refined)`。"""
+        """返回 `(hole, hole_in, sharpness, psnr_refined, ssim_refined, spike, outside)`。"""
         mesh = Mesh(verts=frame["mesh"].unsqueeze(0), faces=scene.faces,
                     uvs=scene.uvs, uv_faces=scene.uv_faces)
         with torch.no_grad():
@@ -241,11 +243,12 @@ def main(argv: list[str] | None = None) -> int:
             sharp = float(np.hypot(gx, gy)[fg].mean())
         else:
             sharp = 0.0
-        psnr = None
+        psnr = ssim_fit = None
         if refined is not None:
             mask = refined.max(axis=-1) > 8
             psnr = psnr_masked(image, refined, mask)
-        return hole, hole_in, sharp, psnr, spike, outside
+            ssim_fit = ssim(image, refined, mask)
+        return hole, hole_in, sharp, psnr, ssim_fit, spike, outside
 
     rows: list[dict] = []
     for label in labels:
@@ -266,20 +269,25 @@ def main(argv: list[str] | None = None) -> int:
         if path.is_file():
             refined = np.asarray(Image.open(path).convert("RGB"), np.float32)
 
-        hb, ib, sb, pb, kb, ob = render_and_measure(models["base"], frame, cam, refined)
-        hn, inn, sn, pn, kn, on = render_and_measure(models["new"], frame, cam, refined)
+        hb, ib, sb, pb, qb, kb, ob = render_and_measure(
+            models["base"], frame, cam, refined)
+        hn, inn, sn, pn, qn, kn, on = render_and_measure(
+            models["new"], frame, cam, refined)
         rows.append({"label": label, "hole_base": hb, "hole_new": hn,
                      "hole_in_base": ib, "hole_in_new": inn,
                      "sharp_base": sb, "sharp_new": sn,
                      "spike_base": kb, "spike_new": kn,
                      "outside_base": ob, "outside_new": on,
-                     "psnr_base": pb, "psnr_new": pn})
+                     "psnr_base": pb, "psnr_new": pn,
+                     "ssim_base": qb, "ssim_new": qn})
         print(f"  {label[:38]:38s} 缺口 {hb:.3f}→{hn:.3f}"
               f"（内部 {ib:.3f}→{inn:.3f}）  云外溢 {ob:.3f}→{on:.3f}  "
               f"尖刺 {kb:.4f}→{kn:.4f}  "
               f"锐度 {sb:5.2f}→{sn:5.2f}  "
               f"拟合 {('—' if pb is None else f'{pb:.1f}')}→"
-              f"{('—' if pn is None else f'{pn:.1f}')}")
+              f"{('—' if pn is None else f'{pn:.1f}')}  "
+              f"SSIM {('—' if qb is None else f'{qb:.3f}')}→"
+              f"{('—' if qn is None else f'{qn:.3f}')}")
 
     summary = summarize_rows(rows)
     out_dir = Path(args.out or defects_dir)
@@ -300,6 +308,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  锐度    ：{summary['sharp_base']['mean']:.2f} → "
               f"{summary['sharp_new']['mean']:.2f}"
               f"（相对 {summary.get('sharp_rel', 0):+.1%}）")
+        if "ssim_base" in summary:
+            print(f"  拟合 SSIM：{summary['ssim_base']['mean']:.3f} → "
+                  f"{summary['ssim_new']['mean']:.3f}")
         if "psnr_delta" in summary:
             print(f"  拟合精修图：{summary['psnr_delta']:+.2f} dB"
                   "（渲染 vs SyncFix 输出，**不是**真值）")

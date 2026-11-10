@@ -48,7 +48,7 @@ python scripts/train.py --subject <对象> --work-name <版本> --promote   # �
 - 早停：正脸 PSNR 与大角度缺口的加权指标（`--no-robust-eval` 可关）；
 - 产物：`output/train/<对象>/<版本>/`，`model_best.ply` 为最佳检查点。
 
-参数、取舍与速度调优见 [`docs/TRAINING.md`](docs/TRAINING.md)。
+参数与取舍写在训练脚本与 `training/` 的注释里。
 
 ## 二、增强微调
 
@@ -67,7 +67,7 @@ python scripts/enhance_model.py --subject <对象> --work-name <版本> \
 每步都能单独重跑（`--skip-find` / `--skip-syncfix` / `--skip-train`），
 状态记在 `<缺陷目录>/enhance_pipeline.json`。
 
-流程、冻结参数、验收标准和已知边界见 [`docs/ENHANCE.md`](docs/ENHANCE.md)。
+默认参数与验收标准写在 `scripts/enhance_model.py` 的注释里。
 
 ## 三、渲染与前端
 
@@ -85,7 +85,7 @@ bash run_gui.sh --subject <对象> --work-name <版本>   # 启动即加载
   有视角偏移时不计算 PSNR（数据集原图对不上该视角）；
 - **驱动**：可用数据集逐帧驱动，也可接 RDF 实时追踪（见下）。
 
-前端无构建步骤（原生 ES modules）；协议见 [`docs/GUI_PROTOCOL.md`](docs/GUI_PROTOCOL.md)。
+前端无构建步骤（原生 ES modules）；协议见后端 `app/protocol.py`。
 
 ### 实时驱动（可选）
 
@@ -95,7 +95,7 @@ conda activate live3dgs     && bash run_gui.sh                            # 终�
 ```
 
 界面右侧选「RDF 实时追踪」。追踪服务未连上时停在数据集首帧，不会黑屏。
-细节见 [`docs/LIVE_DRIVING.md`](docs/LIVE_DRIVING.md)。
+细节见 `scripts/rdf_bridge.py` 与 `tracking/`。
 
 ## 目录
 
@@ -116,28 +116,6 @@ models/       模型（不入库）
 datasets/     数据（不入库）
 submodules/   本地 CUDA 扩展（vendored，见 ATTRIBUTION.md）
 ```
-
-## 文档
-
-| 文档 | 内容 |
-|---|---|
-| [`docs/TRAINING.md`](docs/TRAINING.md) | 训练：切分、早停、增广、速度 |
-| [`docs/ENHANCE.md`](docs/ENHANCE.md) | 增强管线：流程、参数、验收、边界 |
-| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | 分层、模块边界、设计取舍 |
-| [`docs/CORE_GUIDE.md`](docs/CORE_GUIDE.md) | 渲染内核导读（形状流转、易错点） |
-| [`docs/CONVENTIONS.md`](docs/CONVENTIONS.md) | 坐标 / 矩阵 / 精度约定 |
-| [`docs/CONFIG.md`](docs/CONFIG.md) | 配置项说明 |
-| [`docs/GUI_PROTOCOL.md`](docs/GUI_PROTOCOL.md) | 前后端协议（HTTP + WebSocket） |
-| [`docs/LIVE_DRIVING.md`](docs/LIVE_DRIVING.md) | 实时驱动链路与标定 |
-| [`docs/ONLINE_UPDATE.md`](docs/ONLINE_UPDATE.md) | 通话开始时的一段观测做外观微调 |
-| [`docs/ENVIRONMENT.md`](docs/ENVIRONMENT.md) | 环境搭建与排错 |
-| [`docs/REDESIGN.md`](docs/REDESIGN.md) | 表现力边界的实测与已试方案（内部记录，代码已回退）|
-| [`docs/CAP4D.md`](docs/CAP4D.md) | 生成式数据增广的评估结论（内部记录，未采纳）|
-
-> `docs/` 下的部分文档是内部记录，含实验数据与数据集名。对外展示前需要另行清理；
-> README 本身不含任何实测数据或数据集名称。
-
-脚本用法写在各自文件开头（`scripts/*.py`）。
 
 ## 测试
 

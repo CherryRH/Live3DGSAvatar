@@ -9,8 +9,11 @@
 用法::
 
     python scripts/render_test.py --frames 20
-    python scripts/render_test.py --frames -1 --batch-size 4 --dump-diff
+    python scripts/render_test.py --frames -1 --batch-size 4
     python scripts/render_test.py --dry-run          # 无需 GPU 的形状/约定自检
+
+产物：`report.json`（PSNR / SSIM / LPIPS / 锐度 / 性能）+ `compare.mp4`
+（原图 | 渲染并排，每帧叠加指标；缺 imageio 时退化为 `compare.webp`）。
 """
 
 from __future__ import annotations
@@ -51,20 +54,26 @@ def _normalize_argv(argv: list[str]) -> list[str]:
 
 
 def clean_previous_outputs(out_root: Path, share_dir: Path | None) -> int:
-    """清掉上一次运行留下的图（`images/`、`diff/`）。
+    """清掉上一次运行留下的旧产物（`images/`、旧视频）。
 
     产物目录按"对象/版本/数据集"复用，但**帧数会变**（换 `--frames`、换数据集）。
     实测踩过一次：先跑 2863 帧中途中断，再跑 212 帧，`images/` 里留下 1025 张
-    新旧混杂的图，统计与肉眼检查都会被污染。
+    新旧混杂的图，统计与肉眼检查都会被污染。视频同理（旧文件会看起来像新结果）。
 
     Returns:
         删除的文件数
     """
     removed = 0
-    for sub in (share_dir, Path(out_root) / "diff"):
-        if sub is None or not Path(sub).is_dir():
+    dirs = [d for d in (share_dir, Path(out_root) / "images") if d is not None]
+    for sub in dirs:
+        if not Path(sub).is_dir():
             continue
         for path in Path(sub).glob("*.png"):
+            path.unlink()
+            removed += 1
+    for pattern in ("compare.mp4", "compare.webp"):
+        path = Path(out_root) / pattern
+        if path.is_file():
             path.unlink()
             removed += 1
     return removed
@@ -96,12 +105,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="产物根目录（默认 output/render_test/<对象>/<版本>/<数据集>）")
     p.add_argument("--no-save", action="store_true",
                    help="不落盘、不拷贝到主机（干净测量渲染耗时）")
-    p.add_argument("--dump-diff", action="store_true",
-                   help="输出对比图（默认开）")
+    p.add_argument("--save-images", action="store_true",
+                   help="额外落盘渲染 PNG（默认只出对比视频）")
+    p.add_argument("--no-video", action="store_true", help="不生成对比视频")
+    p.add_argument("--no-lpips", action="store_true",
+                   help="跳过 LPIPS（首次使用需下载 AlexNet 权重）")
     p.add_argument("--profile", action="store_true",
                    help="额外输出 deform / 光栅化分阶段耗时（诊断用）")
-    p.add_argument("--no-diff", action="store_true",
-                   help="不输出对比图（只出 images 与 report）")
     p.add_argument("--background", type=float, nargs=3, default=None,
                    metavar=("R", "G", "B"), help="背景色")
     p.add_argument("--tex-size", type=int, default=None)
@@ -162,10 +172,8 @@ def _finalize(args: argparse.Namespace, cfg: Config) -> argparse.Namespace:
         # 模型/数据集缺一不可，错误要能直接指出该补哪个
         raise SystemExit(f"[error] {e}") from None
     args.gt_dir = args.data / str(cfg.get("paths.image_subdir", "images"))
-    args.dump_diff = not args.no_diff and (
-        args.dump_diff or bool(cfg.get("test.dump_diff", True)))
 
-    # 三层目录：<对象>/<版本>/<数据集>；内部统一 report.json + images/ + diff/
+    # 三层目录：<对象>/<版本>/<数据集>；内部统一 report.json + 对比视频
     out_root = Path(args.output_dir) if args.output_dir else (
         Path(str(cfg.get("paths.output_dir", "output"))) / "render_test"
         / args.subject / args.work_name / args.dataset)
@@ -197,18 +205,21 @@ def _finalize(args: argparse.Namespace, cfg: Config) -> argparse.Namespace:
 from live3dgsavatar.core.metrics import psnr, psnr_masked  # noqa: E402
 from live3dgsavatar.evaluation import (  # noqa: E402
     EvaluationReport, summarize_no_reference, summarize_quality)
+from live3dgsavatar.evaluation.protocol import (  # noqa: E402
+    frame_metrics, lpips_score)
 
 
 # ------------------------------------------------------------- 渲染 --
 
 
 def render_core(args, scene, frames: list[int], out_dir: Path,
-                share_dir: Path | None = None):
+                share_dir: Path | None = None, keep_images: bool = False):
     """用本项目 `core/` 渲染。
 
     Args:
-        share_dir: 非 ``None`` 时落盘 PNG 并返回图像数组；``None``
-            （`--no-save`）时**跳过 D2H 拷贝与编码**，只做渲染与计时。
+        share_dir: 非 ``None`` 时落盘 PNG。
+        keep_images: 是否把图像留在内存里（拼视频用）；``False`` 且
+            `share_dir is None` 时跳过 D2H 拷贝，只做渲染与计时。
     """
     import torch
 
@@ -298,7 +309,7 @@ def render_core(args, scene, frames: list[int], out_dir: Path,
         dt = (time.perf_counter() - t0) * 1000.0
         per_frame_ms.extend([dt / len(chunk)] * len(chunk))
 
-        if share_dir is None:
+        if share_dir is None and not keep_images:
             # 干净测量：连 D2H 拷贝都不做（窗口前的 `.cpu()` 会同步等待内核）
             continue
 
@@ -307,7 +318,8 @@ def render_core(args, scene, frames: list[int], out_dir: Path,
         arr = (out.color.clamp(0, 1).permute(0, 2, 3, 1) * 255).byte().cpu().numpy()
         for j, i in enumerate(chunk):
             images[i] = arr[j]
-            Image.fromarray(arr[j]).save(share_dir / f"{i:05d}.png")
+            if share_dir is not None:
+                Image.fromarray(arr[j]).save(share_dir / f"{i:05d}.png")
 
     print(f"  [render] {total_frames}/{total_frames} 完成", flush=True)
     perf = {
@@ -399,15 +411,17 @@ def main() -> int:
 
     out_root = args.output_dir
     out_root.mkdir(parents=True, exist_ok=True)
-    share_dir = None if args.no_save else out_root / "images"
+    want_video = not args.no_video and not args.no_save
+    share_dir = (out_root / "images"
+                 if args.save_images and not args.no_save else None)
     if share_dir is not None:
         share_dir.mkdir(parents=True, exist_ok=True)
     stale = clean_previous_outputs(out_root, share_dir)
     if stale:
-        print(f"  清理旧产物：{stale} 张（images/ 与 diff/ 会重新生成）",
-              flush=True)
+        print(f"  清理旧产物：{stale} 张", flush=True)
 
-    images, perf = render_core(args, scene, list(range(n)), out_root, share_dir)
+    images, perf = render_core(args, scene, list(range(n)), out_root, share_dir,
+                               keep_images=want_video)
 
     result = EvaluationReport(
         subject=args.subject, work_name=args.work_name, dataset=args.dataset,
@@ -419,32 +433,59 @@ def main() -> int:
     print(f"  读取原图：{n} 张（解码 512² PNG，约 {n * 14 / 1000:.0f} s）…",
           flush=True)
     gt = load_gt(args, list(range(n)), offset=args.frame_offset)
+    video_path = None
     if gt is None:
         print("      [warn] 找不到数据集原图，改做无真值统计", flush=True)
         report["no_reference"] = summarize_no_reference(images)
     else:
         print(f"  原图就绪：{len(gt)} 张", flush=True)
         report["quality"] = summarize_quality(images, gt)
-
-    # 原图 | 渲染结果（每格带 PSNR 标签）—— 一眼能看出差在哪一帧
-    if args.dump_diff and not args.no_save and gt and images:
-        diff_dir = out_root / "diff"
-        print(f"  写对比图：{len(gt)} 张 …", flush=True)
-        written = 0
+        per_frame, lpips_acc = [], []
         for i in sorted(gt):
             ref_rgb, ref_mask = gt[i]
             img = images.get(i)
             if img is None or img.shape != ref_rgb.shape:
                 continue
-            value = psnr_masked(img, ref_rgb, ref_mask)
-            if value is None:
-                value = psnr(img, ref_rgb)
-            label = f"{value:.2f} dB"
-            write_comparison(diff_dir / f"{i:05d}.png",
-                             [(f"target {i:05d}", ref_rgb),
-                              (f"render  {label}", img)])
-            written += 1
-        print(f"\n  对比图：{diff_dir}（{written} 张，原图 | 渲染）")
+            m = frame_metrics(img, ref_rgb, ref_mask)
+            if m.get("lpips") is not None:
+                lpips_acc.append(float(m["lpips"]))
+            per_frame.append({"frame": int(i), **m})
+        if per_frame:
+            report["quality"]["per_frame"] = per_frame
+        if lpips_acc:
+            arr = np.asarray(lpips_acc, dtype=np.float64)
+            report["quality"]["lpips"] = {
+                "median": round(float(np.median(arr)), 4),
+                "min": round(float(arr.min()), 4),
+                "max": round(float(arr.max()), 4),
+                "mean": round(float(arr.mean()), 4),
+                "n": int(arr.size)}
+        elif not args.no_lpips:
+            print("      [warn] LPIPS 不可用（缺 lpips 或权重），已跳过",
+                  flush=True)
+
+        # 对比视频：原图 | 渲染，每帧叠加 PSNR / SSIM / LPIPS，帧率取渲染均值
+        if want_video:
+            frames_out = []
+            for item in per_frame:
+                i = item["frame"]
+                ref_rgb, _ = gt[i]
+                img = images.get(i)
+                if img is None:
+                    continue
+                left = f"target {i:05d}"
+                parts = [f"PSNR {item['psnr']:.2f}"]
+                if item["ssim"] is not None:
+                    parts.append(f"SSIM {item['ssim']:.4f}")
+                if item["lpips"] is not None:
+                    parts.append(f"LPIPS {item['lpips']:.4f}")
+                right = f"render {i:05d} | " + " | ".join(parts)
+                frames_out.append(compose_pair(ref_rgb, img, left, right))
+            if frames_out:
+                video_path = write_video(out_root / "compare", frames_out,
+                                         perf["fps"])
+                print(f"\n  对比视频：{video_path}（{len(frames_out)} 帧，"
+                      f"{perf['fps']:.0f} FPS）")
 
     report_path = out_root / "report.json"
     report_path.write_text(json.dumps(report, indent=2, ensure_ascii=False),
@@ -452,10 +493,10 @@ def main() -> int:
     _print_summary(report)
     print(f"\n  产物：{out_root}")
     print(f"    report.json  指标")
-    if not args.no_save:
+    if video_path is not None:
+        print(f"    {video_path.name}  对比视频（原图 | 渲染，带逐帧指标）")
+    if share_dir is not None:
         print(f"    images/      渲染图（{n} 张）")
-        if args.dump_diff and gt:
-            print(f"    diff/        对比图（原图 | 渲染）")
     return 0
 
 
@@ -476,6 +517,14 @@ def _print_summary(report: dict) -> None:
             if s:
                 print(f"  {label:24s} 中位 {s['median']:.2f} dB  "
                       f"最小 {s['min']:.2f} dB  (n={s['n']})")
+        s = q.get("ssim")
+        if s:
+            print(f"  {'SSIM（mask 内）':24s} 中位 {s['median']:.4f}  "
+                  f"最小 {s['min']:.4f}  (n={s['n']})")
+        s = q.get("lpips")
+        if s:
+            print(f"  {'LPIPS（越低越好）':24s} 中位 {s['median']:.4f}  "
+                  f"最大 {s['max']:.4f}  (n={s['n']})")
         s = q.get("max_abs_diff")
         if s:
             print(f"  {'max|Δ| (0-255)':24s} 中位 {s['median']:.0f}  "
@@ -519,6 +568,56 @@ def _label_strip(width: int, text: str, height: int = 20):
     strip = Image.new("RGB", (width, height), (24, 26, 32))
     ImageDraw.Draw(strip).text((6, 4), text, fill=(230, 232, 238))
     return strip
+
+
+def compose_pair(left: np.ndarray, right: np.ndarray,
+                 left_label: str, right_label: str,
+                 strip_h: int = 22, gap: int = 4) -> np.ndarray:
+    """左=原图、右=渲染，一格一条标签，返回 `HxWx3` uint8（拼视频用）。"""
+    from PIL import Image, ImageDraw
+
+    tiles = [Image.fromarray(np.ascontiguousarray(x)) for x in (left, right)]
+    w, h = tiles[0].size
+    canvas = Image.new("RGB", (w * 2 + gap, h + strip_h), (10, 11, 14))
+    draw = ImageDraw.Draw(canvas)
+    for i, (tile, text) in enumerate(zip(tiles, (left_label, right_label))):
+        x = i * (w + gap)
+        draw.text((x + 4, 4), text, fill=(232, 234, 240))
+        canvas.paste(tile, (x, strip_h))
+    return np.asarray(canvas)
+
+
+def write_video(path: Path, frames: list[np.ndarray], fps: float) -> Path:
+    """把已拼好的帧写成视频。
+
+    优先用 `imageio`（mp4/H.264）；没装时退化为**动图 WebP**（PIL 直接写，
+    浏览器可播放）。两条路都能用，缺依赖不会让整个测试失败。
+    """
+    if not frames:
+        return path
+    fps = max(1.0, float(fps))
+    try:
+        import imageio.v2 as iio
+
+        real = path.with_suffix(".mp4")
+        real.parent.mkdir(parents=True, exist_ok=True)
+        writer = iio.get_writer(str(real), fps=fps, codec="libx264",
+                                quality=8, macro_block_size=1)
+        try:
+            for frame in frames:
+                writer.append_data(frame)
+        finally:
+            writer.close()
+        return real
+    except Exception:                                   # noqa: BLE001
+        from PIL import Image
+
+        real = path.with_suffix(".webp")
+        real.parent.mkdir(parents=True, exist_ok=True)
+        images = [Image.fromarray(np.ascontiguousarray(f)) for f in frames]
+        images[0].save(real, save_all=True, append_images=images[1:],
+                       duration=int(1000 / fps), loop=0, quality=90)
+        return real
 
 
 def write_comparison(path: Path, panels) -> None:

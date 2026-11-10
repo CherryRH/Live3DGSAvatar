@@ -120,12 +120,12 @@ def test_no_arbitrary_directory_option() -> None:
 
 
 def test_output_dir_has_three_levels() -> None:
-    """产物目录 = <对象>/<版本>/<数据集>，内部只有 report/images/diff。"""
+    """产物目录 = <对象>/<版本>/<数据集>，内部是 report + 对比视频。"""
     src = SCRIPT.read_text(encoding="utf-8")
     assert '/ args.subject / args.work_name / args.dataset' in src
-    assert 'out_root / "images"' in src
-    assert 'out_root / "diff"' in src
     assert 'out_root / "report.json"' in src
+    assert 'out_root / "compare"' in src, "对比视频写在产物根目录"
+    assert 'out_root / "images"' in src, "可选：--save-images 时才落图"
 
 
 def test_scene_is_loaded_from_selected_dataset() -> None:
@@ -166,16 +166,37 @@ def test_clean_previous_outputs_removes_stale_images(tmp_path) -> None:
     m = _load()
     out = tmp_path / "exp"
     images = out / "images"
-    diff = out / "diff"
-    for d, n in ((images, 3), (diff, 2)):
-        d.mkdir(parents=True)
-        for i in range(n):
-            (d / f"{i:05d}.png").write_bytes(b"x")
+    images.mkdir(parents=True)
+    for i in range(3):
+        (images / f"{i:05d}.png").write_bytes(b"x")
+    (out / "compare.webp").write_bytes(b"old")
     (out / "report.json").write_text("{}", encoding="utf-8")
 
     removed = m.clean_previous_outputs(out, images)
 
-    assert removed == 5
+    assert removed == 4, "3 张图 + 1 个旧视频"
     assert list(images.glob("*.png")) == []
-    assert list(diff.glob("*.png")) == []
+    assert not (out / "compare.webp").exists()
     assert (out / "report.json").is_file(), "指标文件不该被清理"
+
+
+# ------------------------------------------------------------- 对比视频 --
+
+
+def test_compose_pair_is_two_panels_with_label_strip() -> None:
+    m = _load()
+    left = np.zeros((16, 16, 3), np.uint8)
+    right = np.full((16, 16, 3), 200, np.uint8)
+    frame = m.compose_pair(left, right, "target 00001",
+                           "render 00001 | PSNR 27.1 | SSIM 0.91 | LPIPS 0.08")
+    assert frame.shape == (16 + 22, 16 * 2 + 4, 3), "两格横排 + 标签条"
+
+
+def test_write_video_produces_a_file(tmp_path) -> None:
+    """没有 imageio 时退化为动图 WebP，仍然要产出一个文件。"""
+    m = _load()
+    frames = [np.zeros((8, 8, 3), np.uint8),
+              np.full((8, 8, 3), 255, np.uint8)]
+    out = m.write_video(tmp_path / "compare", frames, 12.0)
+    assert out.is_file() and out.stat().st_size > 0
+    assert out.suffix in (".mp4", ".webp")

@@ -57,11 +57,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--subject", default=None)
     p.add_argument("--work-name", default=None)
     p.add_argument("--dataset", default=None)
-    p.add_argument("--budget", type=int, default=24, help="缺陷视角数量")
-    p.add_argument("--mode", choices=("defect", "sweep"), default="defect",
-                   help="sweep=激进模式：跳过缺陷评分，尽量覆盖所有数据看不够的点")
-    p.add_argument("--sweep-coverage-max", type=int, default=4,
-                   help="sweep 模式下'观测次数 ≤ 该值'算覆盖不足")
+    p.add_argument("--budget", type=int, default=16, help="缺陷视角数量（上限）")
     # ---- 搜索范围（调大即可覆盖更极端的视角/表情）----
     p.add_argument("--yaw-limit", type=float, default=40.0)
     p.add_argument("--pitch-limit", type=float, default=20.0)
@@ -86,7 +82,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         "环境则自动使用，否则用当前 python")
     p.add_argument("--syncfix-out", type=Path, default=None,
                    help="SyncFix 的原始输出目录（默认 <缺陷目录>/syncfix_raw）")
-    p.add_argument("--syncfix-batch", type=int, default=8,
+    p.add_argument("--syncfix-batch", type=int, default=4,
                    help="SyncFix 每次前向处理多少张（显存不够就调小；"
                         "84 张一次过约需 11 GiB）")
     p.add_argument("--syncfix-arg", action="append", default=[],
@@ -278,6 +274,10 @@ def render_metrics(report: dict | None) -> dict:
             out[name] = round(float(q[key]["median"]), 2)
     if "sharpness" in q:
         out["sharp_ratio"] = q["sharpness"]["ratio"]
+    if "ssim" in q:
+        out["ssim"] = round(float(q["ssim"]["median"]), 4)
+    if "lpips" in q:
+        out["lpips"] = round(float(q["lpips"]["median"]), 4)
     return out
 
 
@@ -328,7 +328,7 @@ def main(argv: list[str] | None = None) -> int:
     state = load_state(state_path)
 
     # 显式改了搜索范围时，旧的缺陷结果已失效 —— 必须重跑第 1 步
-    search_override = (args.mode != "defect" or any(
+    search_override = (any(
         v is not None for v in (args.yaw_limit, args.pitch_limit, args.clusters,
                                 args.axes, args.min_angle_sep,
                                 args.per_base_max)) or bool(args.rolls))
@@ -368,8 +368,6 @@ def main(argv: list[str] | None = None) -> int:
         cmd = [py, str(scripts / "find_defects.py"),
                "--subject", subject, "--work-name", work,
                "--dataset", dataset, "--budget", str(args.budget),
-               "--mode", args.mode,
-               "--sweep-coverage-max", str(args.sweep_coverage_max),
                "--out", str(defects_dir)]
         for flag, value in (("--yaw-limit", args.yaw_limit),
                             ("--pitch-limit", args.pitch_limit),
@@ -518,6 +516,12 @@ def main(argv: list[str] | None = None) -> int:
               f"{new_rt.get('psnr', '—')} dB")
         print(f"  锐度比       : {base_rt.get('sharp_ratio', '—')} → "
               f"{new_rt.get('sharp_ratio', '—')}")
+    if base_rt.get("ssim") is not None or new_rt.get("ssim") is not None:
+        print(f"  SSIM         : {base_rt.get('ssim', '—')} → "
+              f"{new_rt.get('ssim', '—')}")
+    if base_rt.get("lpips") is not None or new_rt.get("lpips") is not None:
+        print(f"  LPIPS        : {base_rt.get('lpips', '—')} → "
+              f"{new_rt.get('lpips', '—')}")
     d = results.get("defects", {})
     if d:
         print(f"  结构缺口     : {d.get('hole_before', '—')} → "

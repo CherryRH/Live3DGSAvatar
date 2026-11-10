@@ -321,49 +321,29 @@ def test_model_ply_accepts_absolute_path(tmp_path) -> None:
         resolve_model_ply(cfg)
     # 错误里必须给出**实际查找的完整路径**，否则用户无从下手
     assert str(tmp_path / "missing.ply") in str(exc.value)
-def test_render_test_guards_image_access_for_no_save() -> None:
-    """**回归测试**：`--no-save` 下不得对空图像字典取值。
+def test_render_test_no_save_skips_frame_copy() -> None:
+    """**回归测试**：`--no-save` 且不生成视频时，不得做 D2H 拷贝。
 
-    `--no-save` 跳过 D2H 拷贝，`core_imgs` / `ref_imgs` 保持为空。
-    对比循环曾直接 `core_imgs[i]`，于是 `KeyError: 0` —— 而那发生在
-    渲染与计时**全部跑完之后**，白白浪费一次完整运行。
-
-    检查方式：对 `main()` 做 AST 作用域分析，找出每个 `core_imgs[...]` /
-    `ref_imgs[...]` 所在的最近 `if` 条件，要求其中出现 `has_core` / `has_ref`
-    或对 `*_imgs` 的成员判断。
+    `main()` 里 `keep_images` 与 `share_dir` 必须分别门控；`render_core()`
+    在两者都为空时直接跳过，不构造 `arr`（`.cpu()` 会同步等待内核，
+    会污染耗时测量）。
     """
     import ast
 
     path = REPO_ROOT / "scripts" / "render_test.py"
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
 
+    core = next((n for n in tree.body
+                 if isinstance(n, ast.FunctionDef) and n.name == "render_core"), None)
+    assert core is not None, "render_test.py 应有一个 render_core()"
+    source = ast.unparse(core)
+    assert "keep_images" in source, "render_core 应接受 keep_images"
+    assert "share_dir is None" in source and "keep_images" in source, \
+        "两者都为空时必须跳过拷图"
+
     main_fn = next((n for n in tree.body
                     if isinstance(n, ast.FunctionDef) and n.name == "main"), None)
-    assert main_fn is not None, "render_test.py 应有一个 main()"
+    main_src = ast.unparse(main_fn)
+    assert "keep_images=want_video" in main_src, \
+        "视频需求应通过 keep_images 传入"
 
-    # 收集每个"图像取值"节点 → 其所有外层 If 的条件源码
-    problems: list[str] = []
-    targets = {"core_imgs", "ref_imgs"}
-
-    def cond_source(test: ast.AST) -> str:
-        return ast.unparse(test)
-
-    def visit(node: ast.AST, guards: list[str]) -> None:
-        if isinstance(node, ast.If):
-            guards = guards + [cond_source(node.test)]
-        if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name):
-            if node.value.id in targets:
-                blob = " ".join(guards)
-                ok = ("has_core" in blob or "has_ref" in blob
-                      or "core_imgs" in blob or "ref_imgs" in blob)
-                if not ok:
-                    problems.append(
-                        f"{path.name}:{node.lineno} {node.value.id}[...] "
-                        f"未被 has_core / has_ref 守卫（外层条件：{guards or '无'}）")
-        for child in ast.iter_child_nodes(node):
-            visit(child, guards)
-
-    for stmt in main_fn.body:
-        visit(stmt, [])
-
-    assert not problems, "\n  ".join(["存在未守卫的图像取值："] + problems)

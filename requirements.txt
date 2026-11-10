@@ -36,6 +36,12 @@ uvicorn[standard]==0.34.0
 # ---------- 训练 / 日志 ----------
 tensorboard==2.21.0
 
+# ---------- 评测产物：对比视频 ----------
+# imageio + ffmpeg 后端用于把逐帧对比拼成 mp4（渲染测试产物）。
+# 缺这两个包时脚本会退化为动图 WebP，不影响指标。
+imageio==2.37.0
+imageio-ffmpeg==0.6.0
+
 # ---------- 可选：特定训练配置才需要 ----------
 # nvdiffrast / fused-ssim / diff-gaussian-rasterization 从 submodules/ 构建，
 # 见 docs/ENVIRONMENT.md §3.7

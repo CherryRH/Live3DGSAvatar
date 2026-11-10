@@ -328,7 +328,10 @@ def main(argv: list[str] | None = None) -> int:
     holdout_ids = list(range(train_end, total))
 
     def evaluate_frames(ids: list[int] | set[int]) -> dict:
-        psnrs, ratios = [], []
+        from live3dgsavatar.evaluation.protocol import (frame_metrics,
+                                                       lpips_score)
+
+        psnrs, ratios, ssims, lpipss = [], [], [], []
         for i in sorted(ids):
             path = data_dir / "images" / f"{i:05d}.png"
             if not path.is_file():
@@ -346,10 +349,20 @@ def main(argv: list[str] | None = None) -> int:
             if v is not None:
                 psnrs.append(v)
                 ratios.append(sharpness_ratio(pred, gt, mask))
+                m = frame_metrics(pred, gt, mask)
+                if m.get("ssim") is not None:
+                    ssims.append(float(m["ssim"]))
+                if m.get("lpips") is not None:
+                    lpipss.append(float(m["lpips"]))
         if not psnrs:
             return {"psnr": float("nan"), "sharp": float("nan"), "n": 0}
-        return {"psnr": float(np.mean(psnrs)), "sharp": float(np.mean(ratios)),
-                "n": len(psnrs)}
+        out = {"psnr": float(np.mean(psnrs)), "sharp": float(np.mean(ratios)),
+               "n": len(psnrs)}
+        if ssims:
+            out["ssim"] = float(np.mean(ssims))
+        if lpipss:
+            out["lpips"] = float(np.mean(lpipss))
+        return out
 
     before = evaluate_frames(eval_ids_final)
     before_holdout = (evaluate_frames(holdout_ids[:args.eval_frames])
@@ -514,6 +527,12 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"\n完成：{report.iterations} 步，{report.seconds:.1f} s")
     print(f"  选点集 PSNR：{before['psnr']:.2f} → {after['psnr']:.2f} dB")
+    if "ssim" in after:
+        print(f"  选点集 SSIM：{before.get('ssim', float('nan')):.4f} → "
+              f"{after['ssim']:.4f}")
+    if "lpips" in after:
+        print(f"  选点集 LPIPS：{before.get('lpips', float('nan')):.4f} → "
+              f"{after['lpips']:.4f}")
     print(f"  选点集锐度比：{before['sharp']:.3f} → {after['sharp']:.3f}")
     if after_holdout:
         print(f"  留出段 PSNR：{before_holdout['psnr']:.2f} → "

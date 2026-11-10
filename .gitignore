@@ -36,7 +36,8 @@ submodules/*/build/
 submodules/*/samples/data/
 
 # ---- 组会周报（内部汇报，不入库）----
-docs/周报/
+# 开发文档暂不对外：只在本地保留，不进入仓库
+/docs/
 
 # 数据集
 datasets/*

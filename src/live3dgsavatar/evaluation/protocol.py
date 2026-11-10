@@ -18,9 +18,10 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from ..core.metrics import Accum, max_abs_diff, psnr, psnr_masked
+from ..core.metrics import Accum, max_abs_diff, psnr, psnr_masked, ssim
 
-__all__ = ["EvaluationReport", "summarize_quality", "summarize_no_reference"]
+__all__ = ["EvaluationReport", "summarize_quality", "summarize_no_reference",
+           "frame_metrics", "lpips_score"]
 
 
 def summarize_quality(images: dict[int, np.ndarray],
@@ -36,6 +37,7 @@ def summarize_quality(images: dict[int, np.ndarray],
         没有可比对的帧时返回空字典。
     """
     full, masked, mad = Accum(), Accum(), Accum()
+    struct = Accum()
     sharp_r, sharp_g = Accum(), Accum()
     for index, image in images.items():
         item = gt.get(index)
@@ -47,6 +49,7 @@ def summarize_quality(images: dict[int, np.ndarray],
         full.add(psnr(image, ref_rgb))
         masked.add(psnr_masked(image, ref_rgb, ref_mask))
         mad.add(max_abs_diff(image, ref_rgb))
+        struct.add(ssim(image, ref_rgb, ref_mask))
         # 锐度：只在掩码内统计平均梯度。PSNR 会奖励"更平滑"，必须同时看它，
         # 否则"PSNR 涨了但细节糊了"这种退化会被漏掉（踩过）。
         if ref_mask is not None and bool(ref_mask.any()):
@@ -55,12 +58,71 @@ def summarize_quality(images: dict[int, np.ndarray],
 
     out: dict = {"psnr_full": full.summary(),
                  "psnr_masked": masked.summary(),
-                 "max_abs_diff": mad.summary()}
+                 "max_abs_diff": mad.summary(),
+                 "ssim": struct.summary()}
     sr, sg = sharp_r.summary(), sharp_g.summary()
     if sr and sg and sg["median"] > 0:
         out["sharpness"] = {"render": sr, "gt": sg,
                             "ratio": round(sr["median"] / sg["median"], 3)}
     return {k: v for k, v in out.items() if v is not None}
+
+
+def frame_metrics(image: np.ndarray, ref_rgb: np.ndarray,
+                  ref_mask: np.ndarray | None) -> dict:
+    """单帧的 PSNR / SSIM / LPIPS；算不出的项为 `None`。
+
+    视频叠加、报告与逐帧对比都走这一个函数，避免各处口径漂移。
+    """
+    if image.shape != ref_rgb.shape:
+        return {"psnr": None, "ssim": None, "lpips": None}
+    value = psnr_masked(image, ref_rgb, ref_mask)
+    if value is None:
+        value = psnr(image, ref_rgb)
+    return {
+        "psnr": round(float(value), 2),
+        "ssim": (lambda v: round(float(v), 4) if v is not None else None)(
+            ssim(image, ref_rgb, ref_mask)),
+        "lpips": (lambda v: round(float(v), 4) if v is not None else None)(
+            lpips_score(image, ref_rgb)),
+    }
+
+
+_LPIPS_MODEL = None
+_LPIPS_FAILED = False
+
+
+def lpips_score(image: np.ndarray, ref_rgb: np.ndarray) -> float | None:
+    """LPIPS（AlexNet backbone），越低越像；不可用时返回 ``None``。
+
+    依赖 `lpips` 包与首次运行时的权重下载。失败只降级，不影响其他指标。
+    输入按 0–255 的 NHWC uint8 处理（与其他指标同口径）。
+    """
+    global _LPIPS_MODEL, _LPIPS_FAILED
+    if _LPIPS_FAILED:
+        return None
+    try:
+        import torch
+        import lpips as lpips_lib
+    except Exception:                                  # pragma: no cover
+        _LPIPS_FAILED = True
+        return None
+    try:
+        if _LPIPS_MODEL is None:
+            _LPIPS_MODEL = lpips_lib.LPIPS(net="alex", verbose=False)
+            _LPIPS_MODEL.eval()
+            if torch.cuda.is_available():
+                _LPIPS_MODEL = _LPIPS_MODEL.cuda()
+        a = torch.from_numpy(np.asarray(image, np.float32) / 127.5 - 1.0)
+        b = torch.from_numpy(np.asarray(ref_rgb, np.float32) / 127.5 - 1.0)
+        a = a.permute(2, 0, 1).unsqueeze(0)
+        b = b.permute(2, 0, 1).unsqueeze(0)
+        device = next(_LPIPS_MODEL.parameters()).device
+        with torch.no_grad():
+            value = _LPIPS_MODEL(a.to(device), b.to(device))
+        return float(value.item())
+    except Exception:                                  # pragma: no cover
+        _LPIPS_FAILED = True
+        return None
 
 
 def _mean_gradient(image: np.ndarray, mask: np.ndarray) -> float:

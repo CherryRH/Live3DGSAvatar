@@ -44,6 +44,38 @@ def psnr_masked(a: np.ndarray, b: np.ndarray, mask: np.ndarray | None) -> float 
     return _psnr_from_mse(float(np.einsum("ij,ij->", diff, diff)) / diff.size)
 
 
+def ssim(a: np.ndarray, b: np.ndarray, mask: np.ndarray | None = None,
+         *, sigma: float = 1.5) -> float | None:
+    """结构相似度（0–1，越高越像）。
+
+    灰度 → 高斯加权的局部均值/方差/协方差 → 逐像素 SSIM 取均值。
+    有掩码时只统计**腐蚀过**的掩码内部：轮廓处 1–2 px 的对齐误差属于
+    对齐问题，不是结构问题，不该计入分数。
+    """
+    from scipy.ndimage import binary_erosion, gaussian_filter
+
+    if a.shape != b.shape:
+        return None
+    x = np.asarray(a, dtype=np.float64).mean(axis=-1)
+    y = np.asarray(b, dtype=np.float64).mean(axis=-1)
+    mu_x = gaussian_filter(x, sigma)
+    mu_y = gaussian_filter(y, sigma)
+    var_x = gaussian_filter(x * x, sigma) - mu_x * mu_x
+    var_y = gaussian_filter(y * y, sigma) - mu_y * mu_y
+    cov = gaussian_filter(x * y, sigma) - mu_x * mu_y
+    c1 = (0.01 * 255.0) ** 2
+    c2 = (0.03 * 255.0) ** 2
+    num = (2 * mu_x * mu_y + c1) * (2 * cov + c2)
+    den = (mu_x * mu_x + mu_y * mu_y + c1) * (var_x + var_y + c2)
+    ssim_map = num / np.maximum(den, 1e-12)
+    if mask is not None and bool(np.any(mask)):
+        inner = binary_erosion(np.asarray(mask, bool), iterations=2)
+        if not bool(inner.any()):
+            inner = np.asarray(mask, bool)
+        return float(ssim_map[inner].mean())
+    return float(ssim_map.mean())
+
+
 def psnr_pair(render: np.ndarray, target: np.ndarray,
               mask: np.ndarray | None = None):
     """一次算出 `(全图 PSNR, 掩码内 PSNR)`；尺寸不一致返回 `(None, None)`。
