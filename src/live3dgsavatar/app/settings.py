@@ -23,7 +23,8 @@
 
 | 标记 | 含义 | 应用方式 |
 |---|---|---|
-| `editable=True` | 改完立刻生效，不需要重载模型或重启 | 写入运行中的 `cfg` / `RenderParams` |
+| `editable=True`，`requires=None` | 改完立刻生效 | 写入运行中的 `cfg` / `RenderParams` |
+| `editable=True`，`requires="reload"` | 可改并持久化，重载后生效 | 写入 `configs/local.yaml`，下次加载读取 |
 | `editable=False` | 结构性参数 | 面板里只读展示 + 给原因 |
 
 **为什么限制得这么严**：路径与模型结构一旦变化，已加载的张量就与新配置不一致
@@ -50,7 +51,7 @@ from ..config import Config, repo_root
 #: `(键, 标题, 文件名, 说明, 排序)`
 GROUPS: tuple[tuple[str, str, str, str, int], ...] = (
     ("render", "画面", "render.yaml", "画面与帧率", 10),
-    ("train", "在线更新", "train.yaml", "在线更新参数", 20),
+    ("train", "训练与更新", "train.yaml", "训练管线与在线更新", 20),
     ("system", "系统", "system.yaml", "对象、路径与服务", 30),
 )
 
@@ -204,7 +205,7 @@ FIELDS: tuple[Field, ...] = (
        editable=True, minimum=0.0, maximum=1.0, step=0.05,
        help="0 表示只看人物区域"),
     _f("train.pipeline.enabled", "启用训练管线", "train", "bool", order=120,
-       reason="训练尚未接入"),
+       editable=True, help="关闭后 scripts/train.py 直接报错退出", requires="reload"),
     _f("train.pipeline.iterations", "训练步数", "train", "int", order=110,
        editable=True, minimum=1, maximum=1_000_000,
        help="默认 5 万步；冒烟可设几千", requires="reload"),
@@ -216,13 +217,7 @@ FIELDS: tuple[Field, ...] = (
        help="前 N 步只用模板网格", requires="reload"),
     _f("train.pipeline.test_ratio", "验证集比例", "train", "float", order=122,
        editable=True, minimum=0.0, maximum=0.5, step=0.05,
-       help="0.1=末尾 10% 作验证", requires="reload"),
-    _f("train.pipeline.augment_dir", "增强集目录", "train", "text", order=123,
-       editable=True,
-       help="相对数据集；用 build_dataset.sh 生成", requires="reload"),
-    _f("train.pipeline.augment_weight", "增强损失权重", "train", "float",
-       order=124, editable=True, minimum=0.0, maximum=1.0, step=0.1,
-       help="0=不参与；训练时需加 --augment", requires="reload"),
+       help="0.3=末尾 30% 作验证", requires="reload"),
     _f("train.pipeline.augment_dir", "增强集目录", "train", "text", order=123,
        editable=True,
        help="相对数据集；用 build_dataset.sh 生成", requires="reload"),

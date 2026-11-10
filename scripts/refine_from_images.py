@@ -68,7 +68,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--eval-mode", choices=("angle", "random", "holdout", "both"),
                    default="angle",
                    help="angle=全数据集里挑大角度帧（默认，适合增强阶段）；"
-                        "random=全数据集随机；holdout=预训练末尾 10%%（仅供对照）；"
+                        "random=全数据集随机；holdout=末尾 30%%（仅供对照）；"
                         "both=选点用 angle、另外报告 holdout")
     p.add_argument("--anchor-mode", choices=("angle", "uniform"), default="angle",
                    help="锚定帧采样：angle=按角度加权（默认），uniform=均匀；"
@@ -182,7 +182,7 @@ def main(argv: list[str] | None = None) -> int:
     with np.load(data_dir / "render_inputs.npz", allow_pickle=True) as d:
         total = int(d["mesh"].shape[0])
         weights_all = np.asarray(d["blend_weight"], dtype=np.float32)
-    ratio = float(cfg.get("train.pipeline.test_ratio", 0.1))
+    ratio = float(cfg.get("train.pipeline.test_ratio", 0.3))
     held = max(1, int(round(total * ratio)))
     train_end = total - held
 
@@ -291,7 +291,7 @@ def main(argv: list[str] | None = None) -> int:
     # 增强阶段不知道预训练是怎么切分的，也没必要沿用；这里按"姿态"挑帧：
     #   angle  = 全数据集里 |yaw| 较大的那部分（默认）
     #   random = 全数据集随机
-    #   holdout= 预训练末尾 10%（保留，仅用于与历史数字对照）
+    #   holdout= 末尾 30%（保留，仅用于与历史数字对照）
     from live3dgsavatar.data.pose import angle_weights, head_yaw
 
 
@@ -313,7 +313,7 @@ def main(argv: list[str] | None = None) -> int:
     else:  # holdout
         eval_ids_final = list(np.linspace(train_end, total - 1,
                                           min(n_eval, held)).astype(int))
-        print(f"  选点集：预训练末尾 10% 的 {len(eval_ids_final)} 帧（仅对照）")
+        print(f"  选点集：末尾 30% 的 {len(eval_ids_final)} 帧（仅对照）")
     eval_ids = set(eval_ids_final)
 
     def _frame_for(i: int) -> dict:

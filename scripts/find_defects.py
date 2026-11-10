@@ -116,7 +116,7 @@ def main(argv: list[str] | None = None) -> int:
         total = int(weights.shape[0])
     X = expression_matrix(weights)
 
-    ratio = float(cfg.get("train.pipeline.test_ratio", 0.1))
+    ratio = float(cfg.get("train.pipeline.test_ratio", 0.3))
     held = max(1, int(round(total * ratio)))
     train_end = total - held                     # 覆盖统计与表情候选只用训练段
 

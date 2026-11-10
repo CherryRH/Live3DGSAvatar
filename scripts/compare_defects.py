@@ -161,7 +161,7 @@ def main(argv: list[str] | None = None) -> int:
 
     with np.load(data_dir / "render_inputs.npz", allow_pickle=True) as d:
         total = int(d["mesh"].shape[0])
-    ratio = float(cfg.get("train.pipeline.test_ratio", 0.1))
+    ratio = float(cfg.get("train.pipeline.test_ratio", 0.3))
     train_end = total - max(1, int(round(total * ratio)))
 
     print(f"对照 : {base_ply}")

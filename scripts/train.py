@@ -86,7 +86,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--augment-weight", type=float, default=None,
                    help="增强样本的损失权重（0 = 完全不考虑）")
     p.add_argument("--test-ratio", type=float, default=None,
-                   help="验证集比例（0.1 表示末尾 10%%，默认 0.1）")
+                   help="验证集比例（0.3 表示末尾 30%%，默认 0.3）")
     p.add_argument("--eval-every", type=int, default=None)
     p.add_argument("--save-every", type=int, default=None)
     p.add_argument("--patience", type=int, default=None,
@@ -149,7 +149,7 @@ def main(argv: list[str] | None = None) -> int:
     blend_start = int(args.blend_start if args.blend_start is not None
                       else cfg.get("train.pipeline.blend_start", 3_000))
     test_ratio = float(args.test_ratio if args.test_ratio is not None
-                       else cfg.get("train.pipeline.test_ratio", 0.1))
+                       else cfg.get("train.pipeline.test_ratio", 0.3))
     augment_weight = float(args.augment_weight if args.augment_weight is not None
                            else cfg.get("train.pipeline.augment_weight", 1.0))
     eval_every = int(args.eval_every if args.eval_every is not None

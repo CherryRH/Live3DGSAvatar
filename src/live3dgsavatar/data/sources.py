@@ -33,8 +33,8 @@ from pathlib import Path
 import numpy as np
 import torch
 
-#: 默认验证集比例（末尾 10%）
-DEFAULT_TEST_RATIO = 0.1
+#: 默认验证集比例（末尾 30%）
+DEFAULT_TEST_RATIO = 0.3
 
 
 @dataclass
@@ -83,7 +83,7 @@ class ManifestSource:
     Args:
         data_dir: 数据集目录
         split: ``"train"`` / ``"test"`` / ``"all"``
-        test_ratio: 末尾多少比例归验证集（0.1 = 末尾 10%）
+        test_ratio: 末尾多少比例归验证集（0.3 = 末尾 30%）
         device: 样本放到哪个设备
         image_cache: 图像缓存条数（0 = 不缓存）
         background: 背景色 `[3]`；掩码外填它
