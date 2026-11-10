@@ -2,8 +2,8 @@
 """**在 `realdenseface` 环境里运行**：通用的"画面进、参数出"追踪服务。
 
 本项目（`live3dgs`）把一帧画面发过来，本进程做追踪，回一帧参数与顶点。
-两边环境不兼容（RDF 的 `flame_solver` 是 cpython-311），所以必须分进程；
-细节见 `docs/LIVE_DRIVING.md`。
+两边环境不兼容（RDF 的 `flame_solver` 是 cpython-311），所以必须分进程，
+通过 TCP 交换「画面 → 参数」。
 
 ## 通用性
 
@@ -301,7 +301,7 @@ def main() -> int:
                       "  conda activate realdenseface", file=sys.stderr)
             if "asset" in kinds:
                 print("\n资产问题：把 RealDenseFace 的 weights/ 与 configs/ 一起部署，\n"
-                      "详见 docs/ENVIRONMENT.md「RDF 资产」", file=sys.stderr)
+                      "详见 RealDenseFace 的部署说明。", file=sys.stderr)
             return 1
         print("✓ 环境检查通过")
         if args.check_deps:
@@ -323,8 +323,7 @@ def main() -> int:
         server.bind((args.host, args.port))
         server.listen(1)
         print(f"追踪服务已启动：{args.host}:{args.port}", flush=True)
-        print("  协议：发一帧画面 → 回一帧参数与网格（见 docs/LIVE_DRIVING.md）",
-              flush=True)
+        print("  协议：每发一帧画面，回一帧参数与网格", flush=True)
 
         while True:
             print("等待客户端连接…", flush=True)

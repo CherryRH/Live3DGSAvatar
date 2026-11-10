@@ -9,7 +9,7 @@ datasets/<对象>/
 └── render_inputs.npz   mesh(N,5083,3) / blend_weight(N,129) / K / w2v / size / names
 ```
 
-增强集是同一结构，放在 `<对象>/augmented/` 下。约定见 `docs/CONVENTIONS.md` §6。
+增强集是同一结构，放在 `<对象>/augmented/` 下。约定。
 
 ## 输入
 

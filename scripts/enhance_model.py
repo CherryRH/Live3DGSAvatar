@@ -27,7 +27,7 @@ compare_defects.py     同一批视角的结构缺口对比
 ## 用法
 
 ```bash
-python scripts/enhance_model.py --subject crh_1 --work-name run \\
+python scripts/enhance_model.py --subject <对象> --work-name <版本> \\
     --syncfix-dir ~/Projects/SyncFix --syncfix-model <权重路径> \\
     --promote-name run_refined
 ```

@@ -16,7 +16,7 @@
 ## 用法
 
 ```bash
-python scripts/find_defects.py --subject crh_1 --work-name run --dataset crh_1
+python scripts/find_defects.py --subject <对象> --work-name <版本> --dataset <对象>
 ```
 
 产物在 `output/defects/<对象>/<版本>/<数据集>/`。
@@ -55,13 +55,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--dense-from", type=float, default=30.0,
                    help="|yaw| 超过该值后按 dense-step 加密")
     p.add_argument("--dense-step", type=float, default=5.0)
-    p.add_argument("--clusters", type=int, default=8, help="表情聚类数")
-    p.add_argument("--axes", type=int, default=6, help="主轴极值方向数")
+    p.add_argument("--clusters", type=int, default=12, help="表情聚类数")
+    p.add_argument("--axes", type=int, default=10, help="主轴极值方向数")
     # ---- 多样性约束 ----
-    p.add_argument("--min-angle-sep", type=float, default=None,
-                   help="已选视角之间的最小 (yaw,pitch) 距离（度）")
-    p.add_argument("--per-base-max", type=int, default=None,
-                   help="同一个基帧最多选几个视角")
+    p.add_argument("--min-angle-sep", type=float, default=6.0,
+                   help="已选视角之间的最小 (yaw,pitch) 距离（度）；0 关闭")
+    p.add_argument("--per-base-max", type=int, default=3,
+                   help="同一个基帧最多选几个视角；0 关闭")
     p.add_argument("--min-gain-ratio", type=float, default=0.002,
                    help="单次新增低于总质量的这个比例就停（太小会把预算花在长尾）")
     p.add_argument("--rolls", type=float, nargs="+", default=None,
@@ -335,8 +335,8 @@ def main(argv: list[str] | None = None) -> int:
 
     result = greedy_cover(candidates, mass, budget=int(args.budget),
                           min_gain_ratio=float(args.min_gain_ratio),
-                          min_sep=args.min_angle_sep,
-                          per_key_max=args.per_base_max)
+                          min_sep=(args.min_angle_sep or None),
+                          per_key_max=(args.per_base_max or None))
 
     # 逐面汇总：覆盖次数、孔洞、飞点（都用同一套面索引，便于横向比较）
     off_face = np.zeros(n_faces, dtype=np.float64)

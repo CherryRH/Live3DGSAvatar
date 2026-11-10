@@ -1,12 +1,11 @@
 # Live3DGSAvatar 依赖清单
 #
 # 目标环境：conda env `live3dgs`，Python 3.10，CUDA 13.0
-# 安装顺序很重要，见 docs/ENVIRONMENT.md：
+# 安装顺序很重要（顺序错了会因为编译器/依赖解析失败）：
 #   conda → cuda-toolkit → torch → setuptools/wheel/ninja
 #         → chumpy（单独装）→ 本文件 → submodules/ 下的本地扩展
 #
 # ⚠️ 本文件中**不含 numpy**，这是刻意的。
-#   见 docs/ENVIRONMENT.md §3.6「关于 numpy」：
 #   numpy 由本文件的其他包（scipy/tensorboard 等）自然解析为 2.x，
 #   chumpy 对 numpy 2.x 的兼容性由 src/live3dgsavatar/compat/ 在导入期修补。
 #   若在此处 pin 旧版 numpy，pip 会退回源码编译并失败。
@@ -44,6 +43,6 @@ imageio-ffmpeg==0.6.0
 
 # ---------- 可选：特定训练配置才需要 ----------
 # nvdiffrast / fused-ssim / diff-gaussian-rasterization 从 submodules/ 构建，
-# 见 docs/ENVIRONMENT.md §3.7
+# 环境与编译步骤以 setup_env.sh 为准。
 lpips==0.1.4
 pygame==2.6.1

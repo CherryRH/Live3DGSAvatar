@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """环境自检 —— Live3DGSAvatar
 
-逐项校验 docs/ENVIRONMENT.md 中的版本矩阵与关键依赖。
+逐项校验版本矩阵与关键依赖。
 GPU 项非阻塞（无 GPU 权限时记为 warn），其余失败即 exit 1。
 
 用法:

@@ -14,7 +14,7 @@ alpha 就掉到 0.5 以下，表现为空洞 —— 这是大角度崩坏的一�
 
 ```bash
 python scripts/analyze_uv_density.py --tex-size 256 320 384
-python scripts/analyze_uv_density.py --ply models/crh_1/run/model.ply   # 对照真实绑定
+python scripts/analyze_uv_density.py --ply models/<对象>/<版本>/model.ply   # 对照真实绑定
 ```
 """
 

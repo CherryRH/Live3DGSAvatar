@@ -15,7 +15,7 @@
 2. **Python 3.11 移除了 `inspect.getargspec`** —— `chumpy/ch.py:1203` 仍在用。
    这与 numpy 版本无关：3.10 下不出现，3.11 下即使 numpy 1.x 也会出现。
 
-原因与移除条件见 docs/ENVIRONMENT.md §3.6。
+在升级 numpy（>=2.0 稳定支持）或换 Python 后可以尝试移除本补丁。
 """
 
 from __future__ import annotations

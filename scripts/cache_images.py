@@ -9,7 +9,7 @@
 
 ## 用法
 
-    python scripts/cache_images.py --subject crh_1
+    python scripts/cache_images.py --subject <对象>
     python scripts/cache_images.py --data datasets/crh_2
 
 产物：`<数据集>/images.npy`（uint8，`[N,H,W,3或4]`），行序与

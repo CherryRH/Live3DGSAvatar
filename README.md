@@ -10,9 +10,10 @@
 
 | 能力 | 入口 | 说明 |
 |---|---|---|
-| 数据构建 | `./build_dataset.sh` | 自动跑 RDF 跟踪，烘焙成训练格式 |
-| 训练 | `scripts/train.py` | 单目视频 → 可驱动高斯头像 |
-| 增强微调 | `scripts/enhance_model.py` | 找缺陷 → 外部精修 → 微调 → 落地评测 |
+| 数据构建 | `bash build_dataset.sh` | 自动跑 RDF 跟踪，烘焙成训练格式 |
+| 训练 | `bash train.sh` | 单目视频 → 可驱动高斯头像 |
+| 增强微调 | `bash enhance.sh` | 找缺陷 → 外部精修 → 微调 → 落地评测 |
+| 评测 | `bash eval.sh` | 对比视频 + PSNR/SSIM/LPIPS |
 | 实时渲染 / 前端 | `bash run_gui.sh` | 浏览器预览，可切模型、调整视角、接实时驱动 |
 
 ## 已知边界
@@ -31,16 +32,16 @@
 bash setup_env.sh                       # 建环境 + 编译 CUDA 扩展（一次）
 conda activate live3dgs
 
-./build_dataset.sh <图像目录> --name <对象>          # ① 数据集
-python scripts/train.py --subject <对象> --work-name base --promote   # ② 训练
-bash run_gui.sh --subject <对象> --work-name base                     # ③ 预览
+bash build_dataset.sh <图像目录> --name <对象>            # ① 数据集
+bash train.sh --subject <对象> --work-name base --promote  # ② 训练
+bash run_gui.sh --subject <对象> --work-name base          # ③ 预览
 ```
 
 ## 一、训练
 
 ```bash
-python scripts/train.py --subject <对象> --work-name <版本>
-python scripts/train.py --subject <对象> --work-name <版本> --promote   # 装进 models/
+bash train.sh --subject <对象> --work-name <版本>
+bash train.sh --subject <对象> --work-name <版本> --promote   # 装进 models/
 ```
 
 - 数据：`datasets/<对象>/`（`images/` + `render_inputs.npz`）；
@@ -56,10 +57,9 @@ python scripts/train.py --subject <对象> --work-name <版本> --promote   # �
 （当前用 SyncFix）修好，再以缺陷加权的方式微调，最后按验证指标挑检查点。
 
 ```bash
-python scripts/enhance_model.py --subject <对象> --work-name <版本> \
+bash enhance.sh --subject <对象> --work-name <版本> \
     --syncfix-dir <SyncFix 目录> \
     --syncfix-model <权重路径> \
-    --syncfix-env syncfix \
     --promote-name <版本>_refined
 ```
 
@@ -69,7 +69,17 @@ python scripts/enhance_model.py --subject <对象> --work-name <版本> \
 
 默认参数与验收标准写在 `scripts/enhance_model.py` 的注释里。
 
-## 三、渲染与前端
+## 三、评测
+
+```bash
+bash eval.sh --subject <对象> --work-name <版本>
+bash eval.sh --subject <对象> --work-name <版本> --base-work <基线版本>
+```
+
+产物：`report.json`（PSNR / SSIM / LPIPS / 锐度 / 性能）+ `compare.mp4`
+（原图与渲染并排，逐帧叠加指标）。给了 `--base-work` 时额外做同视角缺陷对比。
+
+## 四、渲染与前端
 
 ```bash
 bash run_gui.sh                  # 默认 http://localhost:8000
@@ -90,8 +100,8 @@ bash run_gui.sh --subject <对象> --work-name <版本>   # 启动即加载
 ### 实时驱动（可选）
 
 ```bash
-conda activate realdenseface && python scripts/rdf_bridge.py --port 8980   # 终端 A
-conda activate live3dgs     && bash run_gui.sh                            # 终端 B
+bash run_tracking.sh    # 终端 A：追踪服务
+bash run_gui.sh         # 终端 B：本项目的界面
 ```
 
 界面右侧选「RDF 实时追踪」。追踪服务未连上时停在数据集首帧，不会黑屏。
@@ -108,8 +118,9 @@ src/live3dgsavatar/
   app/        GUI 后端（会话、协议、设置）
   tracking/   实时驱动的 RDF 桥
   streaming/  推流（预留，未实现）
+*.sh          一键入口：环境 / 数据集 / 训练 / 增强 / 评测 / 预览 / 追踪服务
 web/          前端（无构建步骤）
-scripts/      训练 / 增强 / 评测 / 数据构建 / 实时驱动
+scripts/      各步骤的实现（也可单独调用）
 tests/        后端单测（无需 GPU）；web/tests/ 为前端测试
 configs/      系统 / 渲染 / 训练 / 模型配置
 models/       模型（不入库）

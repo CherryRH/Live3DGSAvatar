@@ -1,15 +1,19 @@
 #!/usr/bin/env python
-"""用外部精修图微调模型：缺陷加权 + 高频保持 + 留出真值选点。
+"""用外部精修图微调模型：缺陷加权 + 精修图体检 + 验证集选点。
 
-这条路线对应"缺陷检测 → 外部精修 → 微调"的闭环。前一版能在留出集上拿到约
-+0.9 dB，但也有已知问题：画面变软（高频能量 −13%）、没有防住精修图自身的偏差。
-这一版针对这三点做了收紧：
+这条路线对应"缺陷检测 → 外部精修 → 微调"的闭环。几条刻意的约束：
 
 1. **只在缺陷处监督**：权重图取 `|精修 − 渲染|`，前景内给下限、前景外为 0；
-2. **保住高频**：额外加 SSIM 项（`fused_ssim`），抑制 L1 带来的整体平滑；
-3. **按留出真值选点**：每若干步在留出段上算 PSNR 与锐度比，用
-   `score = PSNR − λ·max(0, 0.85 − 锐度比)` 选最佳检查点，锐度掉太多会被扣分；
-4. **精修图体检**：前景 IoU 太低或整体色差过大的图直接跳过，避免把坏样本当目标。
+2. **精修图体检**：前景 IoU 太低或整体色差过大的视角直接跳过，
+   避免把坏样本当目标；
+3. **按真值选点**：每若干步在**验证帧**上算 PSNR 与锐度比，
+   用 `score = PSNR − λ·max(0, 容差线 − 锐度比)` 选最佳检查点；
+   容差线 = 训练前锐度 − `--sharp-tolerance`（默认 0.03），随模型自适应，
+   不接受"用模糊换 PSNR"；
+4. **真实帧锚定**：每批混入真实数据，且验证帧从锚定里剔除，避免自己考自己。
+
+SSIM 项默认关闭（`--ssim-weight 0`）：`fused-ssim` 的 backward 在个别构建上
+会触发 CUDA illegal memory access。需要时显式开启并自行验证。
 
 不改模型格式、不改数据。
 
@@ -17,13 +21,13 @@
 
 ```bash
 # 1) 找缺陷并渲染待修视角（同时写出 refs/，作为精修的参考图）
-python scripts/find_defects.py --subject crh_1 --work-name run --dataset crh_1
+python scripts/find_defects.py --subject <对象> --work-name <版本> --dataset <对象>
 
 # 2) 用外部精修器处理 <缺陷目录>/views/，输出到 <缺陷目录>/refined/
 
-# 3) 微调
-python scripts/refine_from_images.py --subject crh_1 --work-name run \\
-    --steps 600 --promote --promote-name run_refined --force
+# 3) 微调（一般通过 scripts/enhance_model.py 串起来跑）
+python scripts/refine_from_images.py --subject <对象> --work-name <版本> \
+    --steps 600 --promote --promote-name <版本>_refined --force
 ```
 """
 

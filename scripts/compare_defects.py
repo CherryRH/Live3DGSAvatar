@@ -21,8 +21,8 @@
 ## 用法
 
 ```bash
-python scripts/compare_defects.py --subject crh_1 --work-name run_refined \\
-    --base-work run --dataset crh_1
+python scripts/compare_defects.py --subject <对象> --work-name <版本>_refined \\
+    --base-work <版本> --dataset <对象>
 ```
 """
 

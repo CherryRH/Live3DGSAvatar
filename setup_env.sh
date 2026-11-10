@@ -23,7 +23,7 @@
 # _CONDA_PYTHON_SYSCONFIGDATA_NAME_USED（该变量仅在 activate 时赋值），
 # 一旦开启 -u，conda 自己的钩子就会以 "unbound variable" 致命退出。
 # 这是 cuda-toolkit → cuda-compiler → cuda-nvcc → gcc_linux-64 的传递依赖导致的，非本项目代码问题。
-# 详见 docs/ENVIRONMENT.md §7。
+# 这是 cuda 工具链的已知行为，与本项目代码无关。
 set -eo pipefail
 
 # ---------------------------------------------------------------- 配置区 ----
@@ -203,7 +203,7 @@ pip install -r "$REPO_ROOT/requirements.txt"
 # 让 `import live3dgsavatar` 与 `python -m live3dgsavatar.app` 可用。
 #
 # ⚠️ 必须加 --no-deps：本项目的运行期依赖（torch 与三个 CUDA 扩展）有自己的
-#    安装顺序与 --no-build-isolation 要求（见 docs/ENVIRONMENT.md §2）。
+#    安装顺序与 --no-build-isolation 要求。
 #    让 pip 顺着 pyproject 去解析它们会与上面的步骤打架。
 log "以可编辑模式安装本项目（--no-deps）"
 pip install --no-deps --no-build-isolation -e "$REPO_ROOT"
@@ -225,7 +225,7 @@ import numpy
 print(f"  numpy  {numpy.__version__}")
 if numpy.__version__.split('.')[0] >= '2':
     print("  提示：numpy 2.x 下 chumpy 需要兼容补丁，"
-          "已由 src/live3dgsavatar/compat/ 在导入期处理（见 docs/ENVIRONMENT.md §3.6）")
+          "已由 src/live3dgsavatar/compat/ 在导入期处理
 PY
 
 # ------------------------------------- 5. nvdiffrast / fused-ssim ----

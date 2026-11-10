@@ -1,10 +1,11 @@
 #!/usr/bin/env python
 """渲染测试：本项目 `core/` 出图，与数据集原图对比，并测性能。
 
-判据只有两项：
+判据：
 
-- **重建质量**：与数据集原图的 PSNR（全图 / 前景掩码内）
+- **重建质量**：PSNR（全图 / 前景掩码内）、SSIM、LPIPS、锐度比
 - **性能**：单帧耗时、FPS、峰值显存
+- **产物**：`report.json` + 对比视频（原图 | 渲染，逐帧叠加指标）
 
 用法::
 
@@ -46,7 +47,7 @@ def _normalize_argv(argv: list[str]) -> list[str]:
     """把 `--work_name` 这类**选项名**规整成 `--work-name`（两种写法都接受）。
 
     只改以 `--` 开头的 token。之前对**所有**参数做替换，会把取值也改掉：
-    `--subject crh_1` 变成 `crh-1`、路径里的下划线被改掉 —— 后者只在测试里
+    `--subject my_name` 变成 `my-name`、路径里的下划线被改掉 —— 后者只在测试里
     暴露（真实运行时 `main()` 走的是未规整的分支），很难查。
     """
     return [a.replace("_", "-") if a.startswith("--") else a
@@ -153,7 +154,7 @@ def _finalize(args: argparse.Namespace, cfg: Config) -> argparse.Namespace:
             and str(cfg.get("work_name") or "").strip()):
         raise SystemExit(
             "[error] 需要指定模型：--subject 与 --work-name\n"
-            "        例如 --subject crh_1 --work-name run")
+            "        例如 --subject <对象> --work-name <版本>")
     args.subject = str(cfg.get("subject"))
     args.work_name = str(cfg.get("work_name"))
 
