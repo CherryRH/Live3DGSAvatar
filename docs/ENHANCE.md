@@ -45,6 +45,7 @@ python scripts/enhance_model.py --subject crh_1 --work-name run \
 | 选点帧 | 全数据集 `\|yaw\| ≥ 60` 分位的帧中随机 64 帧 | 不沿用预训练切片；这些帧不参与锚定 |
 | 检查点判据 | `PSNR − 20·max(0, 训练前锐度 − 0.03 − 当前锐度)` | 锐度掉太多自动拒绝 |
 | SSIM 项 | 0（关闭） | 个别构建上其 backward 会触发 CUDA 错误 |
+| 精修批大小 | `--syncfix-batch 8` | 一次前向张数；失败会按批大小减半重试 |
 
 **评测**：留出集 286 帧 PSNR + 锐度比；同一批缺陷视角的缺口 / 尖刺 / 云外溢。
 

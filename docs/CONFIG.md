@@ -233,6 +233,9 @@ output_dir: output                     # output 特殊：相对**当前工作目
 | `save_every` | `5000` | 定期存档间隔（另有 `model_best.ply`）|
 | `prefetch_workers` | `2` | 后台预取线程数；0 关闭 |
 | `max_frames` | `null` | 采样上限；`null` 表示全部 |
+| `robust_eval` | `true` | 早停时加入大角度视角（不改模型，只影响验收指标）|
+| `robust_eval_frames` | `24` | 参与大角度统计的验证帧数（等间隔抽样）|
+| `robust_eval_weight` | `10.0` | 缺口比例折算成 dB 的系数 |
 
 ### `train.online_update` —— 在线更新
 

@@ -223,13 +223,14 @@ v2 的元数据形如：
 覆盖没有变化。按这个结果，第二步"按误差激活新点"也不会改变缺口——它与这次实验同属
 "增加点"这一族。
 
-剩下的嫌疑是**位置**：偏移中位 27 mm、且只在被观测视角下受约束。可以用
-`scripts/ablate_offsets.py` 直接检验（不训练）：
+剩下的嫌疑是**位置**：偏移中位 27 mm、且只在被观测视角下受约束。当时用一次性
+消融脚本（把偏移直接置零/截断，不训练）检验，结论是偏移**承载细节**、不能去掉：
 
-```bash
-python scripts/ablate_offsets.py --subject crh_1 --work-name run --mode zero
-python scripts/compare_defects.py --subject crh_1 --work-name run_zero --base-work run
+```text
+run_zero：缺口 0.170 → 0.186，锐度 −16.8%
 ```
+
+脚本已随回退一起删除；结论保留在本文与 ENHANCE 的边界说明里。
 
 **结果（也是负）**：把偏移归零后，缺口反而略升，外观大幅变差：
 

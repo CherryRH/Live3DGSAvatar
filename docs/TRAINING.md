@@ -15,7 +15,10 @@ data/sources ┘  （只提供样本，不依赖 training）
 | `training/schedule.py` | lr 曲线、形变基暖启动、早停判据 |
 | `training/objectives.py` | 加权损失（L1/SSIM/LPIPS/alpha），返回分项 |
 | `training/trainer.py` | 训练循环 + 钩子（验证/存档/日志/时间预算） |
-| `training/densify.py` | 自适应加密/剪枝（**待实现**）|
+| `training/observations.py` | 外部观测（精修图）与真实帧混批 |
+
+> 本项目的模型**不做自适应加密/剪枝**：采样点由 UV texel 绑定决定（约 6 万），
+> 数量固定。这是刻意的取舍，相关实验见 [`REDESIGN.md`](REDESIGN.md)。
 
 `trainer` 通过注入 `render_fn` 与渲染解耦，所以调度、钩子、早停都能**离线单测**。
 
@@ -36,7 +39,8 @@ python scripts/train.py --subject crh_1 --work-name run5 --promote   # 训练并
 ```
 
 常用覆盖：`--iterations` `--batch-size` `--blend-start` `--test-ratio`
-`--mask-weight` `--eval-every` `--patience` `--prefetch-workers` `--augment`。
+`--mask-weight` `--eval-every` `--patience` `--prefetch-workers` `--augment`
+`--robust-eval` / `--no-robust-eval`（大角度验证与早停）。
 
 产物（`output/train/<对象>/<版本>/`）：
 

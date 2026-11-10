@@ -88,10 +88,10 @@ loop:
 
 ```json
 {
-  "subject": "duda",
-  "work_name": "test",
+  "subject": "crh_1",
+  "work_name": "run",
   "model": {
-    "path": "models/duda/test/model.ply",
+    "path": "models/crh_1/run/model.ply",
     "num_gaussians": 60353,
     "num_basis": 20,
     "num_basis_in": 129,
@@ -101,7 +101,9 @@ loop:
     "background": [0.0, 0.0, 0.0],
     "scaling_modifier": 1.0,
     "scale": 1.0,
-    "target_fps": 60
+    "target_fps": 60,
+    "yaw": 0.0,
+    "pitch": 0.0
   },
   "dataset": {
     "num_frames": 254,
@@ -113,7 +115,7 @@ loop:
 ### `POST /api/model`
 
 ```json
-{"subject": "duda", "work_name": "test"}
+{"subject": "crh_1", "work_name": "test"}
 ```
 
 成功返回新的 `/api/state` 同构对象；失败返回 `400` + `{"error": "..."}`。

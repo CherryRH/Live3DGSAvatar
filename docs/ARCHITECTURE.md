@@ -1,7 +1,11 @@
-# Live3DGSAvatar 架构设计文档
+# 架构说明（现状）
 
-> 视频通话场景 3DGS 人体重建 —— 第一阶段（头部）架构设计
-> 状态：**待审核**　版本：v0.1　最后更新：待定
+> 视频通话场景的 3DGS 头部重建。本文描述**当前代码的组织方式与边界**，
+> 不是早期设计稿：与代码不符的段落已按现状更正。
+
+三条主线：**训练**（`training/` + `scripts/train.py`）、
+**增强微调**（`scripts/enhance_model.py`）、**渲染与前端**（`core/render/` + `app/` + `web/`）。
+实时驱动（`tracking/`）与在线更新（`training/updater.py`）是可选能力，见对应文档。
 
 ---
 
@@ -26,13 +30,14 @@
 
 ### 1.1 产品目标
 
-第一阶段的理想产物：**一个支持静态训练、实时渲染、动态更新的图形化程序**。
+本项目要交付的产物：**一个支持静态训练、实时渲染、动态更新的图形化程序**。
 
 | 能力 | 含义 | 对应后端 |
 |---|---|---|
 | 静态训练 | 给定单目视频序列，重建一个可驱动头部 avatar | `training/` |
 | 实时渲染 | 给定驱动参数，实时出图（目标 ≥ 60 FPS @ 512²） | `core/render/` |
-| 动态更新 | 流式到达的帧可持续优化模型（在线重建） | `training/online.py` |
+| 动态更新 | 用一小段观测微调外观（在线更新，非在线重建） | `training/updater.py` |
+| 增强 | 外部精修图做缺陷加权微调 | `scripts/enhance_model.py` |
 
 ### 1.2 已确定的硬约束
 
@@ -73,15 +78,14 @@
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  app/          图形化程序 · CLI · 服务端入口                  │
-│                训练监控面板 / 实时预览 / 会话管理              │
+│  app/          GUI 服务端：会话 · 协议 · 设置                 │
+│                session.py（加载/渲染）  server.py（HTTP+WS）   │
 ├─────────────────────────────────────────────────────────────┤
-│  runtime/      门面层：把"模型+数据集+渲染器"组装成可用对象     │
-│                AvatarRuntime: train() / render() / update()  │
-│                Session: 服务端渲染会话（预留）                 │
+│  evaluation/   缺陷检测 · 视角候选 · 指标（增强流程用）        │
+│                defects.py  selection.py  robustness.py       │
 ├─────────────────────────────────────────────────────────────┤
-│  training/     训练循环 · 损失 · 优化器 · 采样池               │
-│                offline.py（离线）  online.py（在线/流式）      │
+│  training/     训练循环 · 损失 · 参数计划 · 钩子               │
+│                trainer.py（循环）  updater.py（在线外观微调）  │
 ├─────────────────────────────────────────────────────────────┤
 │  core/         算法核心（无训练逻辑、无 I/O、无 GUI）          │
 │  ├─ types.py        GaussianSet / Mesh / Camera / Frame      │
@@ -104,14 +108,13 @@
 ### 2.3 依赖方向（严格单向）
 
 ```
-app → runtime → training → core → ext
-                  ↓         ↑
-                data ───────┘
-                tracking ───┘
+app → training → core → ext
+  ↓       ↑
+web     data        （evaluation / tracking 为旁路，可依赖 core）
 ```
 
 规则：
-- `core/` **不得** import `training/`、`data/`、`app/`、`tracking/`。
+- `core/` **不得** import `training/`、`data/`、`app/`、`tracking/`、`evaluation/`。
 - `src/` **不得** import `tests/` —— `tests/` 不是包（无 `__init__.py`），
   只能靠 `sys.path` 找到：
   `src/` **不得** import `tests/`（`tests/` 不是包，只能靠 `sys.path` 找到）。
@@ -339,6 +342,7 @@ error: could not delete 'build/lib.linux-x86_64-cpython-310/nvdiffrast/__init__.
 | 驱动参数 | `[B, D]` 张量，`D = model.network.num_basis_in` |
 | 渲染接口 | `app/session.py::Session.render`（推理）/ `training/trainer.py`（训练，注入 `render_fn`） |
 | 在线更新 | `training/updater.py`（外观微调，与全量训练共用损失口径） |
+| 增强微调 | `scripts/enhance_model.py`（找缺陷 → 外部精修 → 用 `Trainer` 混批微调）；规格见 [`ENHANCE.md`](ENHANCE.md) |
 
 训练与推理的**唯一接口是 `.ply` 与驱动参数**：训练产出 PLY，推理加载 PLY。
 因此两边可以独立演进，不会互相绑死。
@@ -362,19 +366,22 @@ Frame(mesh, blend_weight, camera)
 2. **不做逐帧重建**：模型参数固定，每帧只做 `blend + bind + rasterize`。
 3. **零拷贝**：`GaussianSet` 的 5 个张量直接从 `GaussianAvatar` 的参数视图构造，避免 `expand/cat` 产生的隐式拷贝。
 
-### 7.3 服务端渲染（预留接口）
+### 7.3 服务端渲染
 
-`runtime/session.py` 定义：
+实现在 `app/session.py`（`Session`）：持有 `GaussianAvatar` + 数据集场景 + 光栅化器，
+按当前参数（帧号、驱动源、视角偏移 yaw/pitch、分辨率）出图。
 
 ```python
-class Session:
-    def __init__(self, avatar: GaussianAvatar, runtime: AvatarRuntime): ...
-    def push_drive_params(self, params: torch.Tensor) -> None: ...  # 接收驱动流
-    def render_frame(self, view: Camera) -> RenderOutput: ...       # 按观看者视角渲染
-    def push_observation(self, frame: Frame) -> None: ...           # 供在线更新
+session.load_model(subject, work_name)   # 切模型/数据集
+session.render()                          # → (rgb uint8, target|None, timings)
 ```
 
-`streaming/` 只留空模块与 TODO，**不实现**。具体传输方案（WebRTC / 编码器选型）留待后续决策。
+视角偏移复用缺陷检测的 `core.camera.orbit_w2c`：绕当前帧头心旋转相机，
+所以前端的角度与 `find_defects` 报告里的 `yaw/pitch` 是同一套坐标。
+帧流由 `app/server.py` 的 `produce()` 循环按帧数上限推送（WebSocket）。
+
+`streaming/` **未实现**（当前前端走浏览器内的 WebSocket 帧推流）。如需接入
+WebRTC 或编码器，从这里开始，不必改动 `core/`。
 
 ---
 
@@ -408,20 +415,19 @@ class Session:
 
 一键脚本 `setup_env.sh` 已把上述规则固化，幂等可重跑。
 
-### 8.3 数据与模型资产（当前仅 `duda`）
+### 8.3 数据与模型资产
 
-| 资产 | 路径 | 状态 |
+| 资产 | 路径 | 说明 |
 |---|---|---|
-| FLAME2020 | `data/FLAME2020/generic_model.pkl` | ✅ 已有（gitignore） |
-| flame_uv | `data/FLAME2020/flame_uv.npz` | ✅ 已有 |
-| eyelid | `data/FLAME2020/{l,r}_eyelid.npy` | ✅ 已有 |
-| 预训练模型 | `models/<subject>/<work_name>/model.ply` | ✅ 本项目 models/ |
-| 数据集 | `<DATA_DIR>/<subject>/{render_inputs.npz, images/}` | ✅ 已有 |
-| 渲染测试产物 | `output/render_test/`（由 `scripts/render_test.py` 生成） | ✅ |
+| FLAME2020 | `data/FLAME2020/generic_model.pkl` | 必需，不入库 |
+| flame_uv | `data/FLAME2020/flame_uv.npz` | 必需，不入库 |
+| eyelid | `data/FLAME2020/{l,r}_eyelid.npy` | 必需，不入库 |
+| 模型 | `models/<对象>/<版本>/model.ply` | 由训练或增强产出 |
+| 数据集 | `datasets/<对象>/{render_inputs.npz, images/}` | 由 `build_dataset.sh` 产出 |
+| 评测产物 | `output/`（渲染测试、缺陷、训练） | 可删，按需重建 |
 
-> **资产归属**：数据集在仓库外（`<DATA_DIR>/<subject>/`），模型在本项目
-> `models/<subject>/<work_name>/`，FLAME 资产在 `data/FLAME2020/`。
-> 三者各自独立，没有隐式的目录耦合。
+> 资产三层各自独立：FLAME 在 `data/`，模型在 `models/`，数据在 `datasets/`，
+> 没有隐式耦合。当前仓库内自带 `crh_1` 的模型与数据用于自检。
 
 ---
 
@@ -434,19 +440,21 @@ class Session:
 | **环境与基线** | 单条命令建环境；`scripts/env_check.py` 全绿 | `setup_env.sh` 幂等可重跑 |
 | **`core/` 渲染内核** | 与数据集原图的 **PSNR（前景掩码内）** | 见 9.2 |
 | **GUI（前后端）** | 读取模型并实时预览 | 见 `docs/GUI_PROTOCOL.md` |
-| **在线更新** | 修复前后 PSNR 提升 | `crh_1` 8 帧：**31.37 → 32.52 dB（+1.15）**，182 步 / 10.2 s；约 50 步即收敛（见 `docs/ONLINE_UPDATE.md` §4） |
+| **在线更新** | 修复前后 PSNR 提升 | 见 [`ONLINE_UPDATE.md`](ONLINE_UPDATE.md) §4（约 +1 dB，10 s 内收敛） |
+| **增强微调** | 留出集 PSNR 提升且锐度不降 | `crh_1`：27.42 → **28.16 dB**（+0.74），锐度 0.834 → 0.87 |
 
 ### 9.2 渲染质量与性能
 
-`python scripts/render_test.py`（`crh_1`，512²）：
+`python scripts/render_test.py`（`crh_1`，512²，留出集 286 帧）：
 
 | 指标 | 数值 |
 |---|---|
-| PSNR（全图） | 中位 **25.02 dB** |
-| **PSNR（前景掩码内）** | 中位 **30.71 dB** |
-| 单帧耗时 | 中位 **4.60 ms** |
-| 吞吐 | **175 FPS** |
-| 峰值显存 | 153 MiB |
+| PSNR（mask 内中位） | **27.42 dB**（增强后 28.16） |
+| 单帧耗时 | **约 5–11 ms**（与 GPU 有关） |
+| 吞吐 | **90–200 FPS** |
+| 峰值显存 | 约 150 MiB |
+
+数字随机器与模型规模变化，评测口径见 [`ENHANCE.md`](ENHANCE.md)。
 
 **性能取舍**：`core/` 走纯 PyTorch（`linear_blending` 不用 CUDA 内核），
 约 190 FPS；目标是 30–60 FPS，**余量充足**。需要再提速时的选项见 §11.2。
@@ -457,7 +465,7 @@ class Session:
 
 | 检查 | 内容 |
 |---|---|
-| 分层单向 | `core/` 不得 import `data/` / `training/` / `app/` / `tracking/` / `runtime/` / `streaming/` |
+| 分层单向 | `core/` 不得 import `data/` / `training/` / `app/` / `tracking/` / `evaluation/` / `streaming/` |
 | CUDA 隔离 | `diff_gaussian_rasterization` 只允许在 `core/render/rasterizer.py` 与 `core/deform/blend.py` 出现 |
 | 无 I/O | `core/` 不得 import `argparse` / `sys`；`plyfile` / `json` 仅限 `core/io/ply.py` |
 | 导入期无设备访问 | `core/` 模块作用域不得调用 `torch.cuda.*`（否则无 GPU 环境下导入即失败） |
