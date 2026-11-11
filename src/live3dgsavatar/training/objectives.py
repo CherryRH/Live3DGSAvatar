@@ -71,6 +71,8 @@ class Objective:
     # FLAME 几何监督（默认 0 = 关闭；由 train.py 按配置打开）
     hole: float = 0.0
     spill: float = 0.0
+    nv_hole: float = 0.0
+    nv_spill: float = 0.0
     mask_weight: float = 0.0
     lpips_from: int = 20_000
     _lpips_model: object | None = field(default=None, repr=False)
@@ -125,15 +127,13 @@ class Objective:
             total = total + self.lpips * v
             parts["lpips"] = float(v.detach())
 
-        if self.hole > 0 and extras and "hole" in extras:
-            v = extras["hole"]
-            total = total + self.hole * v
-            parts["hole"] = float(v.detach())
-
-        if self.spill > 0 and extras and "spill" in extras:
-            v = extras["spill"]
-            total = total + self.spill * v
-            parts["spill"] = float(v.detach())
+        for key in ("hole", "spill", "nv_hole", "nv_spill"):
+            if extras and key in extras:
+                weight = float(getattr(self, key, 0.0))
+                if weight > 0:
+                    v = extras[key]
+                    total = total + weight * v
+                    parts[key] = float(v.detach())
 
         if self.alpha > 0 and alpha is not None and target_alpha is not None:
             ta = target_alpha.to(alpha.dtype)
@@ -142,7 +142,7 @@ class Objective:
             parts["alpha"] = float(v.detach())
 
         for name, value in (extras or {}).items():
-            if name in ("hole", "spill"):
+            if name in ("hole", "spill", "nv_hole", "nv_spill"):
                 continue  # 已在上面按字段处理，避免重复计入
             weight = getattr(self, name, 0.0)
             if weight > 0:

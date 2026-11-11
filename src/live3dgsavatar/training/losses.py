@@ -174,6 +174,30 @@ def background_spill_loss(alpha: torch.Tensor, fg: torch.Tensor, *,
     return (extra * bg).sum() / bg.sum().clamp_min(1.0)
 
 
+def surface_spill_loss(alpha: torch.Tensor, surface: torch.Tensor, *,
+                       margin: int = 12, alpha_min: float = 0.05,
+                       alpha_max: float = 0.6) -> torch.Tensor:
+    """新视角：FLAME 表面（膨胀 `margin` 像素）之外的**半透明**溢出惩罚。
+
+    只罚 `alpha ∈ (alpha_min, alpha_max)` 的带内贡献：实色头发/背景噪声不罚，
+    目标是薄雾/虚影（半透明、离头较远的那层）。带内峰值归一化到 1。
+    """
+    if alpha.shape != surface.shape:
+        raise ValueError(f"alpha {tuple(alpha.shape)} 与 surface "
+                         f"{tuple(surface.shape)} 形状不一致")
+    lo, hi = float(alpha_min), float(alpha_max)
+    if hi <= lo:
+        raise ValueError(f"alpha_max 必须大于 alpha_min，实际 {lo}, {hi}")
+    s = surface.to(dtype=alpha.dtype)
+    k = int(margin) * 2 + 1
+    if k > 1:
+        s = F.max_pool2d(s, kernel_size=k, stride=1, padding=k // 2)
+    outside = (1.0 - s).clamp_min(0.0)
+    band = torch.relu(alpha - lo) * torch.relu(hi - alpha)
+    scale = max(1e-6, ((hi - lo) / 2.0) ** 2)
+    return ((band / scale) * outside).sum() / outside.sum().clamp_min(1.0)
+
+
 def masked_psnr(
     prediction: torch.Tensor,
     target: torch.Tensor,

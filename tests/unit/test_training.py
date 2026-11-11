@@ -240,6 +240,39 @@ def test_alpha_geometry_losses() -> None:
     assert a2.grad is not None and torch.isfinite(a2.grad).all()
 
 
+def test_surface_spill_loss_targets_semi_transparent_veil() -> None:
+    from live3dgsavatar.training.losses import surface_spill_loss
+
+    surface = torch.zeros(1, 1, 8, 8, dtype=torch.bool)
+    alpha = torch.full((1, 1, 8, 8), 0.3)
+    # 表面之外、半透明：应被罚（loss 是表面外区域的均值）
+    surface[..., 4, 4] = True
+    heavy = float(surface_spill_loss(alpha, surface, margin=0))
+    assert heavy > 0.5
+    # 同样的 alpha 在膨胀后的表面内：不罚
+    assert float(surface_spill_loss(alpha, surface, margin=4)) == 0.0
+    # 实色（alpha=1）在表面外：不罚（头发/实色物体）
+    alpha_one = torch.zeros(1, 1, 8, 8)
+    alpha_one[..., 0, 0] = 1.0
+    assert float(surface_spill_loss(alpha_one, surface, margin=0)) == 0.0
+    # 全表面、没有外区：0
+    assert float(surface_spill_loss(alpha, torch.ones_like(surface),
+                                    margin=0)) == 0.0
+    a = alpha.clone().requires_grad_(True)
+    surface_spill_loss(a, surface, margin=0).backward()
+    assert a.grad is not None and torch.isfinite(a.grad).all()
+
+
+def test_objective_novel_view_terms() -> None:
+    pred = torch.zeros(1, 3, 4, 4)
+    total, parts = Objective(l1=0.0, nv_hole=2.0, nv_spill=3.0)(
+        pred=pred, target=pred.clone(),
+        extras={"nv_hole": torch.tensor(0.1), "nv_spill": torch.tensor(0.2)})
+    assert float(total) == pytest.approx(0.8)
+    assert parts["nv_hole"] == pytest.approx(0.1)
+    assert parts["nv_spill"] == pytest.approx(0.2)
+
+
 def test_objective_hole_spill_terms() -> None:
     pred = torch.zeros(1, 3, 4, 4)
     total, parts = Objective(l1=0.0, hole=2.0, spill=3.0)(
