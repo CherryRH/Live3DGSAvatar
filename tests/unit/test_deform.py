@@ -628,3 +628,23 @@ def test_vertex_normals_point_outward() -> None:
     n = vertex_normals(verts, faces)[0]
     assert torch.allclose(n, torch.tensor([[0.0, 0.0, 1.0]]).expand(4, 3),
                           atol=1e-6)
+
+
+def test_encode_normals_convention_signs() -> None:
+    """相机(+y 下, +z 前) → OpenGL(+y 上, +z 朝观察者) 的符号转换。"""
+    import torch
+
+    from live3dgsavatar.core.render.normals import encode_normals
+
+    front = torch.tensor([[0.0, 0.0, -1.0]])      # 正对相机的表面
+    gl = encode_normals(front, "opengl")[0]
+    assert torch.allclose(gl, torch.tensor([0.5, 0.5, 1.0]), atol=1e-6), \
+        "正对相机应编码成 (0.5, 0.5, 1)：B 通道最亮"
+
+    up = torch.tensor([[0.0, -1.0, 0.0]])         # 相机的"上"
+    assert torch.allclose(encode_normals(up, "opengl")[0],
+                          torch.tensor([0.5, 1.0, 0.5]), atol=1e-6)
+
+    cam = encode_normals(front, "camera")[0]
+    assert torch.allclose(cam, torch.tensor([0.5, 0.5, 0.0]), atol=1e-6), \
+        "camera 约定不做翻转"

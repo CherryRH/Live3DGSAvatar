@@ -14,7 +14,7 @@ import torch
 
 from .faceid import to_clip
 
-__all__ = ["vertex_normals", "normal_map"]
+__all__ = ["vertex_normals", "normal_map", "encode_normals"]
 
 
 def vertex_normals(verts: torch.Tensor, faces: torch.Tensor) -> torch.Tensor:
@@ -30,8 +30,23 @@ def vertex_normals(verts: torch.Tensor, faces: torch.Tensor) -> torch.Tensor:
     return (out / norm).unsqueeze(0)
 
 
+def encode_normals(n: torch.Tensor, convention: str = "opengl") -> torch.Tensor:
+    """相机空间法线 → `[0,1]` 编码（`n*0.5+0.5`）。
+
+    `opengl`（默认）会先把 `(x, y, z)` 转成 `(x, -y, -z)`：本项目的相机是
+    +y 朝下、+z 朝前，而 ControlNet 训练用的法线是 +y 朝上、+z 朝向观察者。
+    不转换的话法线图看起来"上下颠倒"，生成结果也会跟着错。
+    """
+    unit = n / n.norm(dim=-1, keepdim=True).clamp_min(1e-8)
+    if convention == "opengl":
+        unit = unit * torch.tensor([1.0, -1.0, -1.0], device=n.device,
+                                   dtype=n.dtype)
+    return (unit * 0.5 + 0.5).clamp(0, 1)
+
+
 def normal_map(verts: torch.Tensor, faces: torch.Tensor, camera,
-               glctx, flip_y: bool = True) -> tuple[torch.Tensor, torch.Tensor]:
+               glctx, flip_y: bool = True,
+               convention: str = "opengl") -> tuple[torch.Tensor, torch.Tensor]:
     """渲染相机空间法线图。
 
     Args:
@@ -41,10 +56,19 @@ def normal_map(verts: torch.Tensor, faces: torch.Tensor, camera,
         glctx: nvdiffrast 上下文
         flip_y: 同 `faceid`，投影前把 y 取反
 
+    Args:
+        convention: `"opengl"`（默认，给 ControlNet 用）或 `"camera"`（本项目
+            相机约定：+x 右、+y 下、+z 朝前）。两者差一个 `(x, -y, -z)`：
+            3DGS 的相机是 +y 朝下、+z 朝前，而 ControlNet 训练用的法线是
+            +y 朝上、+z 朝向观察者。**编码前必须转换**，否则法线图看起来
+            像"上下颠倒"（G 通道反了），生成结果也会跟着错。
+
     Returns:
         `(rgb, mask)`：`rgb` 为 `[H, W, 3]`、值域 `[0,1]` 的相机空间法线图
         （背景置 0）；`mask` 为 `[H, W]` bool，表示该像素落在网格上。
     """
+    if convention not in ("opengl", "camera"):
+        raise ValueError(f"convention 只能是 opengl/camera，实际 {convention!r}")
     import nvdiffrast.torch as dr
 
     pos = to_clip(verts, camera)
@@ -61,8 +85,6 @@ def normal_map(verts: torch.Tensor, faces: torch.Tensor, camera,
     interp, _ = dr.interpolate(cam_n.unsqueeze(0).contiguous(), rast,
                                faces.to(torch.int32))
     mask = rast[0, ..., 3] > 0
-    n = interp[0]
-    n = n / n.norm(dim=-1, keepdim=True).clamp_min(1e-8)
-    rgb = (n * 0.5 + 0.5).clamp(0, 1)
+    rgb = encode_normals(interp[0], convention)
     rgb = rgb * mask.unsqueeze(-1).to(rgb.dtype)
     return rgb, mask

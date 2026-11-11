@@ -75,6 +75,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                            "extra eyes, low resolution, watermark")
 
     # ---- 掩码与筛选 ----
+    p.add_argument("--normal-convention", choices=("opengl", "camera"),
+                   default="opengl",
+                   help="法线编码约定（ControlNet 用 opengl；camera 仅用于对比调试）")
     p.add_argument("--mask-dilate", type=int, default=6,
                    help="洞掩码向外扩多少像素（防止接缝）")
     p.add_argument("--trusted-tol", type=float, default=2.0,
@@ -109,6 +112,22 @@ def dilate(mask, radius: int):
             if dy * dy + dx * dx > radius * radius:
                 continue
             out |= np.roll(np.roll(m, dy, axis=0), dx, axis=1)
+    return out
+
+
+def _erode(mask, radius: int):
+    """二值腐蚀（与 dilate 对称的方形近似）。"""
+    import numpy as np
+
+    m = np.asarray(mask, bool)
+    if radius <= 0 or not m.any():
+        return m
+    out = m.copy()
+    for dy in range(-radius, radius + 1):
+        for dx in range(-radius, radius + 1):
+            if dy * dy + dx * dx > radius * radius:
+                continue
+            out &= np.roll(np.roll(m, dy, axis=0), dx, axis=1)
     return out
 
 
@@ -246,7 +265,8 @@ def main(argv: list[str] | None = None) -> int:
             gs = avatar.deform(mesh, weight)
             out = rasterizer.render(gs, cam, bg)
             ids = face_id_map(mesh.verts, faces, cam, glctx)
-            normal, surf = normal_map(mesh.verts, faces, cam, glctx)
+            normal, surf = normal_map(mesh.verts, faces, cam, glctx,
+                                      convention=args.normal_convention)
         alpha = out.alpha[0, 0].detach().cpu().numpy()
         img = (out.color[0].clamp(0, 1).permute(1, 2, 0).cpu().numpy()
                * 255.0).astype(np.uint8)
@@ -264,6 +284,17 @@ def main(argv: list[str] | None = None) -> int:
         Image.fromarray(normal_u8).save(dbg_dir / f"{label}.normal.png")
         Image.fromarray((mask * 255).astype(np.uint8)).save(
             dbg_dir / f"{label}.mask.png")
+        # 叠加图：在渲染图上画出掩码边界，便于**直接检查是否上下颠倒**
+        overlay = img.copy()
+        edge = mask ^ _erode(mask, 2)
+        overlay[edge] = np.array([255, 0, 0], np.uint8)
+        Image.fromarray(overlay).save(dbg_dir / f"{label}.overlay.png")
+        # 自检：法线掩码与面 id 掩码必须几乎一致（同一套光栅化）
+        ids_np = ids.detach().cpu().numpy() >= 0
+        agree = float((surf_np & ids_np).sum()) / max(1, int((surf_np | ids_np).sum()))
+        if agree < 0.98:
+            print(f"  [warn] {label}: 法线掩码与面 id 掩码一致性 {agree:.3f}"
+                  "（若明显偏低说明光栅化方向不一致）", flush=True)
         if args.dry_run:
             records.append({"label": label, "hole_px": int(mask.sum()),
                             "status": "dry-run"})
