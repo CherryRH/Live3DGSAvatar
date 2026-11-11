@@ -79,6 +79,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="锐度比的绝对下限；默认按'训练前锐度 − 容差'自适应")
     p.add_argument("--sharp-tolerance", type=float, default=0.03,
                    help="允许的锐度比下降幅度（相对训练前，默认 0.03）")
+    p.add_argument("--ssim-tolerance", type=float, default=0.005,
+                   help="允许的 SSIM 下降幅度（相对训练前，默认 0.005）")
+    p.add_argument("--lpips-tolerance", type=float, default=0.01,
+                   help="允许的 LPIPS 上升幅度（相对训练前，默认 0.01）")
     p.add_argument("--sharp-penalty", type=float, default=20.0,
                    help="锐度比每低 1.0 扣多少 dB")
     p.add_argument("--min-fg-iou", type=float, default=0.5,
@@ -379,6 +383,15 @@ def main(argv: list[str] | None = None) -> int:
     guard = (float(args.sharp_guard) if args.sharp_guard is not None
              else float(before["sharp"]) - float(args.sharp_tolerance))
     print(f"  锐度守卫：{guard:.3f}（{'绝对' if args.sharp_guard is not None else '相对容差'}）")
+    # 感知指标也要守住：只按 PSNR 选点会挑出"更平滑"的检查点
+    ssim_min = (float(before["ssim"]) - float(args.ssim_tolerance)
+                if "ssim" in before else None)
+    lpips_max = (float(before["lpips"]) + float(args.lpips_tolerance)
+                 if "lpips" in before else None)
+    if ssim_min is not None:
+        print(f"  SSIM 下限：{ssim_min:.4f}（训练前 {before['ssim']:.4f}）")
+    if lpips_max is not None:
+        print(f"  LPIPS 上限：{lpips_max:.4f}（训练前 {before['lpips']:.4f}）")
 
     class _Mixed:
         def __len__(self):
@@ -468,18 +481,36 @@ def main(argv: list[str] | None = None) -> int:
             if args.eval_every <= 0 or (iteration + 1) % args.eval_every != 0:
                 return
             m = evaluate_frames(eval_ids_final)
-            score = composite_score(m["psnr"], m["sharp"],
-                                    guard=guard,
-                                    penalty=args.sharp_penalty)
-            self.history.append({"iteration": iteration, "score": round(score, 3),
-                                 "psnr": round(m["psnr"], 3),
-                                 "sharp": round(m["sharp"], 3)})
+            # 硬门：锐度 / SSIM / LPIPS 任一越界就**不接受**该检查点。
+            # 只按 PSNR 排序时，模型会挑"更平滑"的解：PSNR 涨、SSIM/LPIPS 退。
+            reasons = []
+            if m["sharp"] < guard:
+                reasons.append(f"锐度 {m['sharp']:.3f} < {guard:.3f}")
+            if ssim_min is not None and m.get("ssim") is not None \
+                    and m["ssim"] < ssim_min:
+                reasons.append(f"SSIM {m['ssim']:.4f} < {ssim_min:.4f}")
+            if lpips_max is not None and m.get("lpips") is not None \
+                    and m["lpips"] > lpips_max:
+                reasons.append(f"LPIPS {m['lpips']:.4f} > {lpips_max:.4f}")
+            passed = not reasons and bool(m["n"])
+            self.history.append({
+                "iteration": iteration, "passed": passed,
+                "psnr": round(m["psnr"], 3), "sharp": round(m["sharp"], 3),
+                "ssim": (round(m["ssim"], 4) if m.get("ssim") is not None else None),
+                "lpips": (round(m["lpips"], 4) if m.get("lpips") is not None else None),
+                "reasons": reasons})
+            extra = ""
+            if m.get("ssim") is not None:
+                extra += f"  SSIM {m['ssim']:.4f}"
+            if m.get("lpips") is not None:
+                extra += f"  LPIPS {m['lpips']:.4f}"
             print(f"  [{iteration}] PSNR {m['psnr']:.2f}  锐度比 {m['sharp']:.3f}"
-                  f"  score {score:.2f}", flush=True)
-            if score > self.best and m["n"]:
-                self.best = score
+                  f"{extra}" + ("" if passed else f"  ✗ {', '.join(reasons)}"),
+                  flush=True)
+            if passed and m["psnr"] > self.best:
+                self.best = m["psnr"]
                 save_ply(avatar, self.out_dir / "model_best.ply")
-                print(f"       ↑ 刷新最佳 → model_best.ply", flush=True)
+                print("       ↑ 刷新最佳 → model_best.ply", flush=True)
 
         def on_end(self, trainer) -> None:
             pass
@@ -506,6 +537,12 @@ def main(argv: list[str] | None = None) -> int:
     report = trainer.run()
 
     save_ply(avatar, out_dir / "model.ply")
+    no_pass = not (out_dir / "model_best.ply").is_file() and bool(evaluator.history)
+    if no_pass:
+        # 没有任何检查点同时守住锐度/SSIM/LPIPS：这次微调视为失败，
+        # 产物保留在 finetune/ 便于排查，但**不落地**（避免替换好模型）
+        print("\n  [warn] 没有检查点通过锐度/SSIM/LPIPS 门限；"
+              "本次微调判为失败，不落地", flush=True)
     after = evaluate_frames(eval_ids_final)
     after_holdout = (evaluate_frames(holdout_ids[:args.eval_frames])
                      if before_holdout is not None else None)
@@ -525,6 +562,9 @@ def main(argv: list[str] | None = None) -> int:
         "holdout_before": before_holdout, "holdout_after": after_holdout,
         "score_history": evaluator.history,
         "ssim_weight": args.ssim_weight, "sharp_guard": args.sharp_guard,
+        "gates": {"sharp_min": guard, "ssim_min": ssim_min,
+                  "lpips_max": lpips_max},
+        "passed_any": (out_dir / "model_best.ply").is_file(),
     }
     (out_dir / "report.json").write_text(
         json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -542,6 +582,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  留出段 PSNR：{before_holdout['psnr']:.2f} → "
               f"{after_holdout['psnr']:.2f} dB（参照，不参与选点）")
     print(f"  产物：{out_dir}/model.ply")
+
+    if no_pass:
+        return 1
 
     if args.promote:
         name = args.promote_name or f"{work}_refined"
