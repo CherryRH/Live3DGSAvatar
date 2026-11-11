@@ -12,8 +12,12 @@ from __future__ import annotations
 
 import numpy as np
 
+from ..core.color import (DEAD_OPACITY, SH_C0, rgb_from_sh_dc,
+                          sh_dc_from_rgb)
+
 __all__ = [
     "DEAD_OPACITY",
+    "SH_C0",
     "summarize",
     "histogram_counts",
     "dead_mask",
@@ -22,13 +26,6 @@ __all__ = [
     "rgb_from_sh_dc",
     "allocate_targets",
 ]
-
-#: 物理不透明度低于此值视为"死点"：对渲染的贡献可忽略。
-#: 实测 biden/train1 有 51.9% 的高斯落在这一档，删掉它们渲染逐像素不变。
-DEAD_OPACITY = 0.01
-
-#: SH DC 的归一化常数（与 3DGS / 参照实现一致）
-SH_C0 = 0.28209479177387814
 
 
 def summarize(values, *, quantiles=(50, 90, 99)) -> dict:
@@ -74,16 +71,6 @@ def faces_without_gaussians(face_id, n_faces: int) -> np.ndarray:
     mask = np.ones(n, dtype=bool)
     mask[used] = False
     return mask
-
-
-def sh_dc_from_rgb(rgb) -> np.ndarray:
-    """`[0,1]` RGB → PLY 里存的 SH DC 系数（与 `extract_texture` 互逆）。"""
-    return (np.asarray(rgb, dtype=np.float64) - 0.5) / SH_C0
-
-
-def rgb_from_sh_dc(f_dc) -> np.ndarray:
-    """SH DC 系数 → `[0,1]` RGB。"""
-    return np.asarray(f_dc, dtype=np.float64) * SH_C0 + 0.5
 
 
 def allocate_targets(target_faces, n_points: int) -> np.ndarray:
