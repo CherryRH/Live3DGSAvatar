@@ -509,3 +509,26 @@ def test_pseudo_label_defaults_cover_ghosting() -> None:
     assert args.mask_mode == "full"
     assert args.strength >= 0.5, "0.4 只改纹理，动不了虚影"
     assert args.spike_threshold > 0
+
+
+def test_build_defect_mask_covers_ghosting() -> None:
+    """full 模式比 holes 多覆盖"模型自评的高缺陷面"。"""
+    import numpy as np
+
+    m = load_script("pseudo_label.py")
+    a = np.full((60, 60), 1.0, np.float32)
+    a[25:30, 25:30] = 0.0                 # 内部洞
+    surf = np.zeros((60, 60), bool)
+    surf[10:50, 10:50] = True
+    ids = np.full((60, 60), -1, np.int32)
+    ids[10:30, 10:50] = 3                 # 高缺陷面
+    ids[30:50, 10:50] = 4                 # 正常面
+    face_mass = np.array([0.0, 0.0, 0.0, 0.9, 0.1])
+
+    holes, _, _ = m.build_defect_mask(a, surf, ids, None, mode="holes")
+    full, _, st = m.build_defect_mask(
+        a, surf, ids, face_mass, mode="full", defect_quantile=0.5)
+    assert full[15, 15] == 1, "高缺陷面应被覆盖"
+    assert holes[15, 15] == 0, "holes 模式不该因为 face mass 扩进来"
+    assert full[27, 27] and holes[27, 27], "两者都应包含内部洞"
+    assert st["mask_ratio"] > float(holes.mean())

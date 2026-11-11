@@ -145,6 +145,40 @@ def _erode(mask, radius: int):
     return out
 
 
+def build_defect_mask(alpha, surf, ids_np, face_mass=None, *,
+                      mode: str = "full", spike: float = 0.15,
+                      defect_quantile: float = 0.7, max_hole_area: float = 0.15,
+                      border: int = 2, dilate_px: int = 6):
+    """构造"要重绘"的像素掩码，返回 `(mask, dropped, stats)`。
+
+    - `holes`：只修 alpha 不足的内部小洞；
+    - `full`（默认）：再并入 alpha 梯度破碎区与模型自评的高缺陷面。
+    """
+    import numpy as np
+
+    a = np.asarray(alpha, np.float32)
+    s = np.asarray(surf, bool)
+    gy, gx = np.gradient(a)
+    broken = s & (np.hypot(gx, gy) > spike)
+    hole = s & (a < 0.5)
+    if mode == "full":
+        hole = hole | dilate(broken, 3)
+        if face_mass is not None:
+            pm = np.zeros_like(a)
+            vv = np.asarray(ids_np) >= 0
+            pm[vv] = np.asarray(face_mass)[np.asarray(ids_np)[vv]]
+            vis = np.asarray(face_mass)[np.asarray(ids_np)[vv]]
+            if vis.size:
+                cut = float(np.quantile(vis, defect_quantile))
+                hole = hole | (s & (pm > cut))
+    limit = max_hole_area if mode == "holes" else 0.5
+    keepped, dropped = keep_interior_holes(hole, max_area=limit, border=border)
+    mask = dilate(keepped, dilate_px)
+    stats = {"hole_px": int((s & (a < 0.5)).sum()),
+             "mask_ratio": round(float(mask.mean()), 4)}
+    return mask, dropped, stats
+
+
 def keep_interior_holes(mask, *, max_area: float = 0.15,
                         border: int = 2):
     """只保留"内部的小洞"，返回 `(mask, 丢弃的连通域数)`。
@@ -346,6 +380,7 @@ def main(argv: list[str] | None = None) -> int:
             alpha_np = out.alpha[0, 0].detach().cpu().numpy()
             flip, ious = pick_flip(alpha_np, mesh.verts, cam)
             ids = face_id_map(mesh.verts, faces, cam, glctx, flip_y=flip)
+            ids_np = ids.detach().cpu().numpy() >= 0
             normal, surf = normal_map(mesh.verts, faces, cam, glctx,
                                       flip_y=flip,
                                       convention=args.normal_convention)
@@ -354,33 +389,17 @@ def main(argv: list[str] | None = None) -> int:
         surf_np = surf.detach().cpu().numpy()
         print(f"  {label:40s} 光栅 y 翻转={flip}"
               f"（IoU: 翻 {ious[True]:.3f} / 不翻 {ious[False]:.3f}）", flush=True)
-        # 缺陷区域：洞 + 破碎/虚影 +（full 模式）模型自评的高缺陷面
-        hole = surf_np & (alpha_np < 0.5)
-        gy, gx = np.gradient(alpha_np.astype(np.float32))
-        grad = np.hypot(gx, gy)
-        broken = surf_np & (grad > args.spike_threshold)
-        if args.mask_mode == "full":
-            hole = hole | dilate(broken, 3)
-            if face_mass is not None:
-                vis = ids_np[ids_np >= 0]
-                if vis.size:
-                    cut = float(np.quantile(face_mass[vis], args.defect_quantile))
-                    pm = np.zeros_like(alpha_np)
-                    vv = ids_np >= 0
-                    pm[vv] = face_mass[ids_np[vv]]
-                    hole = hole | (surf_np & (pm > cut))
-        # full 模式下要修的是"虚影/混乱"，面积可以大；holes 模式仍限制小洞
-        max_area = args.max_hole_area if args.mask_mode == "holes" else 0.5
-        hole, dropped = keep_interior_holes(
-            hole, max_area=max_area, border=args.border_margin)
+        mask, dropped, mstats = build_defect_mask(
+            alpha_np, surf_np, ids_np, face_mass, mode=args.mask_mode,
+            spike=args.spike_threshold, defect_quantile=args.defect_quantile,
+            max_hole_area=args.max_hole_area, border=args.border_margin,
+            dilate_px=args.mask_dilate)
         if dropped:
             print(f"  {label:40s} 丢弃 {dropped} 块大洞（缺失解剖结构/画面外）",
                   flush=True)
-        mask = dilate(hole, args.mask_dilate)
         if mask.any():
-            print(f"  {label:40s} 掩码 {100.0 * mask.mean():.1f}%"
-                  f"（洞 {int((surf_np & (alpha_np < 0.5)).sum())} px）",
-                  flush=True)
+            print(f"  {label:40s} 掩码 {100.0 * mstats['mask_ratio']:.1%}"
+                  f"（洞 {mstats['hole_px']} px）", flush=True)
         normal_u8 = (normal.detach().cpu().numpy() * 255).astype(np.uint8)
 
         Image.fromarray(img).save(dbg_dir / f"{label}.render.png")
@@ -393,7 +412,6 @@ def main(argv: list[str] | None = None) -> int:
         overlay[edge] = np.array([255, 0, 0], np.uint8)
         Image.fromarray(overlay).save(dbg_dir / f"{label}.overlay.png")
         # 自检：法线掩码与面 id 掩码必须几乎一致（同一套光栅化）
-        ids_np = ids.detach().cpu().numpy() >= 0
         agree = float((surf_np & ids_np).sum()) / max(1, int((surf_np | ids_np).sum()))
         if agree < 0.98:
             print(f"  [warn] {label}: 法线掩码与面 id 掩码一致性 {agree:.3f}"
