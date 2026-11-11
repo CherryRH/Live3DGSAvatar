@@ -225,7 +225,7 @@ import numpy
 print(f"  numpy  {numpy.__version__}")
 if numpy.__version__.split('.')[0] >= '2':
     print("  提示：numpy 2.x 下 chumpy 需要兼容补丁，"
-          "已由 src/live3dgsavatar/compat/ 在导入期处理
+          "已由 src/live3dgsavatar/compat/ 在导入期处理。")
 PY
 
 # ------------------------------------- 5. nvdiffrast / fused-ssim ----
