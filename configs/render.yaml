@@ -49,6 +49,10 @@ render:
   # `render_test.py` / `equivalence_check.py` 默认采样多少帧；-1 表示全部。
   # ⚠️ 对 GUI 后端**无影响**：GUI 是持续推流，帧数由驱动参数的播放决定。
   frames: 20
+  # 渲染测试产出的对比视频帧率（30 = 实时指标口径）
+  video_fps: 30
+  # 渲染测试 random 取帧的默认种子
+  test_seed: 0
 
   # 训练用的预分配上限（当前仅 BatchRasterizer 使用）。
   # 训练功能待接入，此处保留默认量。

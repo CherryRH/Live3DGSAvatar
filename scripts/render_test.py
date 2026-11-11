@@ -102,9 +102,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--frame-mode", choices=("head", "tail", "random"),
                    default="head",
                    help="取帧方式：head=从开头（默认）、tail=从结尾、random=随机")
-    p.add_argument("--seed", type=int, default=0, help="random 模式的随机种子")
-    p.add_argument("--video-fps", type=float, default=30.0,
-                   help="对比视频帧率（默认 30，与实时指标口径一致）")
+    p.add_argument("--seed", type=int, default=None,
+                   help="random 模式的随机种子（默认取配置）")
+    p.add_argument("--video-fps", type=float, default=None,
+                   help="对比视频帧率（默认取配置，30 = 实时指标口径）")
     # `default=None`：脚本不硬编码业务默认量，未给时在 `_finalize` 里取 0
     p.add_argument("--frame-offset", type=int, default=None,
                    help="起始帧（仅 head 模式生效）")
@@ -146,6 +147,10 @@ def _finalize(args: argparse.Namespace, cfg: Config) -> argparse.Namespace:
     # 先记下哪些结构参数是**用户显式给的**：只有那时才用它覆盖 PLY 的自描述，
     # 否则会让"模型结构与配置默认值不一致"的文件被错误加载。
     args.frame_offset = 0 if args.frame_offset is None else int(args.frame_offset)
+    args.seed = int(cfg.get("render.test_seed", 0)
+                   if args.seed is None else args.seed)
+    args.video_fps = float(cfg.get("render.video_fps", 30.0)
+                           if args.video_fps is None else args.video_fps)
     args._explicit_tex_size = args.tex_size is not None
     args._explicit_basis_in = args.num_basis_in is not None
     args._explicit_basis_blend = args.num_basis_blend is not None

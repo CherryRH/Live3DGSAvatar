@@ -98,6 +98,8 @@ _FALLBACK: dict[str, Any] = {
     "dataset.use_pose_weight": True,
     "dataset.pin_memory": False,
     "test.dump_diff": False,
+    "render.video_fps": 30.0,
+    "render.test_seed": 0,
     # ---- 训练 / 在线更新（configs/train.yaml）----
     "train.pipeline.enabled": False,
     "train.pipeline.iterations": 50_000,

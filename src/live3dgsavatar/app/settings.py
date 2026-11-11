@@ -169,6 +169,12 @@ FIELDS: tuple[Field, ...] = (
        editable=True, help="仅 checkpoint 数据集", requires="reload"),
     _f("test.dump_diff", "输出并排对比图", "render", "bool", order=200,
        editable=True, help="仅脚本使用"),
+    _f("render.video_fps", "对比视频帧率", "render", "float", order=210,
+       editable=True, minimum=1.0, maximum=120.0,
+       help="渲染测试产出的对比视频；30 = 实时指标口径"),
+    _f("render.test_seed", "评测随机种子", "render", "int", order=220,
+       editable=True, minimum=0, maximum=2**31 - 1,
+       help="random 取帧与伪标签的默认种子"),
 
     # ------------------------------------------------- 训练 / 在线更新 --
     _f("train.online_update.enabled", "启用在线更新", "train", "bool", order=10,
