@@ -45,7 +45,7 @@ def encode_normals(n: torch.Tensor, convention: str = "opengl") -> torch.Tensor:
 
 
 def normal_map(verts: torch.Tensor, faces: torch.Tensor, camera,
-               glctx, flip_y: bool = True,
+               glctx, flip_y: bool = False,
                convention: str = "opengl") -> tuple[torch.Tensor, torch.Tensor]:
     """渲染相机空间法线图。
 
@@ -54,7 +54,7 @@ def normal_map(verts: torch.Tensor, faces: torch.Tensor, camera,
         faces: `[F, 3]`
         camera: batch 为 1 的 `Camera`
         glctx: nvdiffrast 上下文
-        flip_y: 同 `faceid`，投影前把 y 取反
+        flip_y: 同 `faceid`；默认 `False`（实测直接送入即与渲染对齐）
 
     Args:
         convention: `"opengl"`（默认，给 ControlNet 用）或 `"camera"`（本项目

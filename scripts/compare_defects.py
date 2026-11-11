@@ -208,6 +208,19 @@ def main(argv: list[str] | None = None) -> int:
               "new": load_ply(new_ply, config=read_embedded_config(new_ply),
                              device=device)}
 
+    flip_state = {"value": None}
+
+    def _flip_for(verts, cam, alpha):
+        """首次调用时用 alpha 轮廓判定光栅化方向，之后固定。"""
+        if flip_state["value"] is None:
+            from live3dgsavatar.core.render.faceid import detect_flip
+
+            flip, scores = detect_flip(verts, faces, cam, glctx, alpha)
+            flip_state["value"] = flip
+            print(f"  光栅 y 翻转={flip}（IoU 不翻 {scores[False]:.3f} / "
+                  f"翻 {scores[True]:.3f}）", flush=True)
+        return bool(flip_state["value"])
+
     def render_and_measure(avatar, frame, cam, refined):
         """返回 `(hole, hole_in, sharpness, psnr_refined, ssim_refined, spike, outside)`。"""
         mesh = Mesh(verts=frame["mesh"].unsqueeze(0), faces=scene.faces,
@@ -215,8 +228,11 @@ def main(argv: list[str] | None = None) -> int:
         with torch.no_grad():
             gs = avatar.deform(mesh, frame["blend_weight"].unsqueeze(0))
             out = rasterizer.render(gs, cam, bg)
-            ids = face_id_map(frame["mesh"].unsqueeze(0), faces, cam, glctx)
-        alpha = out.alpha[0, 0].detach().cpu().numpy()
+            alpha_t = out.alpha[0, 0].detach().cpu().numpy()
+            flip = _flip_for(frame["mesh"].unsqueeze(0), cam, alpha_t)
+            ids = face_id_map(frame["mesh"].unsqueeze(0), faces, cam, glctx,
+                              flip_y=flip)
+        alpha = alpha_t
         ids_np = ids.detach().cpu().numpy()
         image = (out.color[0].clamp(0, 1).permute(1, 2, 0).cpu().numpy()
                  * 255.0).astype(np.uint8)

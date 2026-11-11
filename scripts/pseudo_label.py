@@ -78,6 +78,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--normal-convention", choices=("opengl", "camera"),
                    default="opengl",
                    help="法线编码约定（ControlNet 用 opengl；camera 仅用于对比调试）")
+    p.add_argument("--raster-flip", choices=("auto", "true", "false"),
+                   default="auto",
+                   help="光栅化是否翻转 y。auto = 用 alpha 轮廓自动判定（推荐）")
     p.add_argument("--mask-dilate", type=int, default=6,
                    help="洞掩码向外扩多少像素（防止接缝）")
     p.add_argument("--trusted-tol", type=float, default=2.0,
@@ -246,6 +249,23 @@ def main(argv: list[str] | None = None) -> int:
     import nvdiffrast.torch as dr
     glctx = dr.RasterizeCudaContext()
 
+    def pick_flip(alpha_np, verts, cam):
+        """用 alpha 轮廓判定光栅化方向：两种 y 翻转里，轮廓重合更好的那个。"""
+        a = alpha_np > 0.5
+        masks = {}
+        for flip in (False, True):
+            _, m = normal_map(verts, faces, cam, glctx, flip_y=flip,
+                              convention=args.normal_convention)
+            masks[flip] = m.detach().cpu().numpy()
+        ious = {k: foreground_iou(v, a) for k, v in masks.items()}
+        if args.raster_flip == "true":
+            best = True
+        elif args.raster_flip == "false":
+            best = False
+        else:
+            best = max(ious, key=ious.get)
+        return best, ious
+
     pipe = None if args.dry_run else build_pipeline(args)
     records = []
     for label in labels:
@@ -264,17 +284,21 @@ def main(argv: list[str] | None = None) -> int:
         with torch.no_grad():
             gs = avatar.deform(mesh, weight)
             out = rasterizer.render(gs, cam, bg)
-            ids = face_id_map(mesh.verts, faces, cam, glctx)
+            alpha_np = out.alpha[0, 0].detach().cpu().numpy()
+            flip, ious = pick_flip(alpha_np, mesh.verts, cam)
+            ids = face_id_map(mesh.verts, faces, cam, glctx, flip_y=flip)
             normal, surf = normal_map(mesh.verts, faces, cam, glctx,
+                                      flip_y=flip,
                                       convention=args.normal_convention)
-        alpha = out.alpha[0, 0].detach().cpu().numpy()
         img = (out.color[0].clamp(0, 1).permute(1, 2, 0).cpu().numpy()
                * 255.0).astype(np.uint8)
         surf_np = surf.detach().cpu().numpy()
+        print(f"  {label:40s} 光栅 y 翻转={flip}"
+              f"（IoU: 翻 {ious[True]:.3f} / 不翻 {ious[False]:.3f}）", flush=True)
         # 洞：网格说"有表面"但 alpha 不足
-        hole = surf_np & (alpha < 0.5)
+        hole = surf_np & (alpha_np < 0.5)
         if not bool(hole.any()):
-            gy, gx = np.gradient(alpha.astype(np.float32))
+            gy, gx = np.gradient(alpha_np.astype(np.float32))
             spur = np.hypot(gx, gy) > 0.08
             hole = surf_np & spur
         mask = dilate(hole, args.mask_dilate)

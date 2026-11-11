@@ -209,13 +209,27 @@ def main(argv: list[str] | None = None) -> int:
                       width=scene.width, height=scene.height).to(device)
 
     # ---- 1) 覆盖统计 ----
+    # 光栅化方向：用 alpha 轮廓自动判定（见 core/render/faceid.detect_flip）。
+    # 之前按"投影是 +y 向下"推导成必须翻 y，真机上这是错的（上下镜像）。
+    from live3dgsavatar.core.render.faceid import detect_flip
+
+    flip_y = False
     print(f"\n[1/3] 覆盖统计（{len(frames_cov)} 帧）…", flush=True)
     fids = []
     for j, frame in enumerate(frames_cov):
         verts = mesh_of(frame)
         cam = Camera(K=scene.K, w2c=w2c.unsqueeze(0).to(device),
                      width=scene.width, height=scene.height).to(device)
-        fids.append(face_id_map(verts, faces, cam, glctx).detach().cpu().numpy())
+        if j == 0:
+            with torch.no_grad():
+                gs0 = avatar.deform(mesh_input(verts),
+                                    frame["blend_weight"].unsqueeze(0).to(device))
+                a0 = rasterizer.render(gs0, cam, bg).alpha[0, 0].detach().cpu().numpy()
+            flip_y, scores = detect_flip(verts, faces, cam, glctx, a0)
+            print(f"  光栅 y 翻转={flip_y}（IoU 不翻 {scores[False]:.3f} / "
+                  f"翻 {scores[True]:.3f}）", flush=True)
+        fids.append(face_id_map(verts, faces, cam, glctx,
+                                flip_y=flip_y).detach().cpu().numpy())
         if (j + 1) % 20 == 0:
             print(f"  {j + 1}/{len(frames_cov)}", flush=True)
     cov_face = coverage_counts(fids, n_faces)
@@ -254,7 +268,8 @@ def main(argv: list[str] | None = None) -> int:
             with torch.no_grad():
                 gs = avatar.deform(mesh_input(base_verts), weight)
                 out = rasterizer.render(gs, cam, bg)
-                ids = face_id_map(base_verts, faces, cam, glctx)
+                ids = face_id_map(base_verts, faces, cam, glctx,
+                                  flip_y=flip_y)
                 # 飞点：变形后的高斯应贴在**该帧**的表面附近
                 offs = floater_offsets(gs.xyz[0].detach(), base_verts[0],
                                        scene.faces.to(device),

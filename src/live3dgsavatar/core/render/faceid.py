@@ -7,16 +7,20 @@
 用 nvdiffrast 在屏幕空间光栅化，与 UV 域的 `build_binding` 用的是同一个库、
 同一套约定。
 
-⚠️ **y 方向要翻**：我们的投影矩阵是 3DGS 约定（NDC 的 +y 向下，和像素坐标一致），
-而 nvdiffrast 按 OpenGL 约定（+y 向上）。所以送进去之前把 y 取反，
-否则 id 图会相对渲染结果上下镜像 —— 归因会全错，且很难看出原因。
+⚠️ **y 方向**：我们的投影矩阵是 3DGS 约定（NDC 的 +y 向下），nvdiffrast 的
+`rasterize` 输出按图像行序（第 0 行是图像顶部）。实测表明**不需要翻转**：
+直接送入就能与渲染结果对齐；翻转反而会上下镜像（真机上验证过：
+法线图/掩码出现"脖子朝上、头顶朝下"）。
+
+因此 `flip_y` 默认 `False`。若换相机约定或 nvdiffrast 版本，用
+`detect_flip()` 用 alpha 轮廓自动判定，别靠推导。
 """
 
 from __future__ import annotations
 
 import torch
 
-__all__ = ["to_clip", "rasterize_faces", "face_id_map"]
+__all__ = ["to_clip", "rasterize_faces", "face_id_map", "detect_flip"]
 
 
 def to_clip(verts: torch.Tensor, camera) -> torch.Tensor:
@@ -41,7 +45,7 @@ def to_clip(verts: torch.Tensor, camera) -> torch.Tensor:
 
 def rasterize_faces(clip_verts: torch.Tensor, faces: torch.Tensor,
                     resolution: tuple[int, int], glctx,
-                    flip_y: bool = True) -> torch.Tensor:
+                    flip_y: bool = False) -> torch.Tensor:
     """光栅化面 id，返回 `[H, W]` int32，`-1` 表示背景。
 
     Args:
@@ -64,8 +68,28 @@ def rasterize_faces(clip_verts: torch.Tensor, faces: torch.Tensor,
     return ids
 
 
+def detect_flip(verts: torch.Tensor, faces: torch.Tensor, camera, glctx,
+                alpha, threshold: float = 0.5) -> tuple[bool, dict]:
+    """用 alpha 轮廓判定是否需要翻 y，返回 `(flip, {选项: IoU})`。
+
+    光栅化方向不该靠推导（投影约定 + 库的行序很容易错），直接用渲染出来的
+    alpha 轮廓对齐：哪个方向的重合度高就用哪个。一次运行判一次即可。
+    """
+    import numpy as np
+
+    a = np.asarray(alpha) > threshold
+    scores = {}
+    for flip in (False, True):
+        ids = face_id_map(verts, faces, camera, glctx, flip_y=flip)
+        m = ids.detach().cpu().numpy() >= 0
+        union = int((m | a).sum())
+        scores[flip] = float((m & a).sum()) / union if union else 1.0
+    best = max(scores, key=scores.get)
+    return bool(best), scores
+
+
 def face_id_map(verts: torch.Tensor, faces: torch.Tensor, camera,
-                glctx, flip_y: bool = True) -> torch.Tensor:
+                glctx, flip_y: bool = False) -> torch.Tensor:
     """世界顶点 + 相机 → `[H, W]` 面 id 图（`-1` 为背景）。"""
     clip = to_clip(verts, camera)
     return rasterize_faces(clip, faces, (camera.height, camera.width), glctx,
