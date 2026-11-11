@@ -170,6 +170,21 @@ def test_objective_ssim_runs_on_cpu() -> None:
     assert parts["ssim"] < 1e-3, parts      # 完全一致 → 损失接近 0
 
 
+def test_parameter_plan_scaled() -> None:
+    from live3dgsavatar.training.plans import ParameterPlan
+
+    plan = ParameterPlan.rgba_avatar_defaults(scene_extent=0.2)
+    scaled = plan.scaled(0.25)
+    for name, g in plan.groups.items():
+        assert scaled.groups[name].lr == pytest.approx(g.lr * 0.25)
+        if g.final_lr is None:
+            assert scaled.groups[name].final_lr is None
+        else:
+            assert scaled.groups[name].final_lr == pytest.approx(g.final_lr * 0.25)
+    with pytest.raises(ValueError, match="为正"):
+        plan.scaled(0.0)
+
+
 def test_local_ssim_is_zero_on_identical_and_differentiable() -> None:
     """纯 torch SSIM：相同图损失为 0、能反传、mask 生效（替代会崩的 fused-ssim）。"""
     from live3dgsavatar.training.losses import local_ssim_loss

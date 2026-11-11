@@ -150,6 +150,25 @@ class ParameterPlan:
         plan = self.groups.get(group)
         return 0.0 if plan is None else plan.at(iteration)
 
+    def scaled(self, factor: float) -> "ParameterPlan":
+        """所有组的学习率乘同一个系数（warm-start 微调用）。
+
+        `scene_extent` 已经在构造时并入了 lr，这里乘一次即可；`final_lr` 为
+        `None`（常数）的组保持常数。factor <= 0 报错，避免"静默不训练"。
+        """
+        f = float(factor)
+        if f <= 0:
+            raise ValueError(f"学习率缩放系数必须为正，实际 {factor}")
+        groups = {}
+        for name, g in self.groups.items():
+            groups[name] = GroupPlan(
+                lr=g.lr * f,
+                final_lr=None if g.final_lr is None else g.final_lr * f,
+                max_steps=g.max_steps,
+                delay_steps=g.delay_steps,
+                delay_mult=g.delay_mult)
+        return ParameterPlan(groups=groups, scene_extent=self.scene_extent)
+
     def opt_groups(self, params: dict) -> list[dict]:
         """按 `parameter_groups()` 生成优化器参数组（只含启用的）。
 
