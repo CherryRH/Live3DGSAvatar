@@ -500,3 +500,12 @@ def test_keep_interior_holes_drops_border_and_large() -> None:
     assert dropped == 2
     assert kept[19, 19] and kept.sum() == 16
     assert not kept[1, 11] and not kept[30, 30]
+
+
+def test_pseudo_label_defaults_cover_ghosting() -> None:
+    """默认应修"破碎/虚影"而不只是洞：mask-mode=full、strength 足够动结构。"""
+    m = load_script("pseudo_label.py")
+    args = m.parse_args(["--subject", "a", "--work-name", "b"])
+    assert args.mask_mode == "full"
+    assert args.strength >= 0.5, "0.4 只改纹理，动不了虚影"
+    assert args.spike_threshold > 0

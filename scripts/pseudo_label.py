@@ -64,8 +64,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--base-model", default="runwayml/stable-diffusion-v1-5")
     p.add_argument("--controlnet", default="lllyasviel/control_v11p_sd15_normalbae")
     p.add_argument("--steps", type=int, default=30)
-    p.add_argument("--strength", type=float, default=0.40,
-                   help="img2img 强度；越大改得越多（也越容易改坏）")
+    p.add_argument("--strength", type=float, default=0.55,
+                   help="重绘强度；0.4 只改纹理，虚影/错位需要 0.55+ 才动")
     p.add_argument("--guidance", type=float, default=5.5)
     p.add_argument("--prompt",
                    default="professional photo of a human head, natural skin "
@@ -81,6 +81,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--raster-flip", choices=("auto", "true", "false"),
                    default="auto",
                    help="光栅化是否翻转 y。auto = 用 alpha 轮廓自动判定（推荐）")
+    p.add_argument("--mask-mode", choices=("holes", "full"), default="full",
+                   help="holes=只修 alpha 不足的洞；full=洞 + 破碎/虚影（默认）")
+    p.add_argument("--defect-quantile", type=float, default=0.7,
+                   help="full 模式下，缺陷质量高于该分位的区域也算进掩码")
+    p.add_argument("--spike-threshold", type=float, default=0.15,
+                   help="alpha 梯度超过该值视为破碎/虚影")
     p.add_argument("--mask-dilate", type=int, default=6,
                    help="洞掩码向外扩多少像素（防止接缝）")
     p.add_argument("--trusted-tol", type=float, default=2.0,
@@ -302,6 +308,23 @@ def main(argv: list[str] | None = None) -> int:
             best = max(ious, key=ious.get)
         return best, ious
 
+    # 逐面缺陷质量：把 mass.npz 的逐高斯质量平均到三角面，
+    # 再按面 id 图映射到像素 —— 这是"模型自己认为哪里差"的直接信号。
+    face_mass = None
+    mass_path = defects_dir / "mass.npz"
+    if mass_path.is_file():
+        with np.load(mass_path, allow_pickle=True) as d:
+            gmass = np.asarray(d["mass"], np.float32)
+        fmap = avatar.binding_face_id.detach().cpu().numpy()
+        acc = np.zeros(scene.faces.shape[0], np.float64)
+        cnt = np.zeros(scene.faces.shape[0], np.float64)
+        np.add.at(acc, fmap, gmass)
+        np.add.at(cnt, fmap, 1.0)
+        nz = cnt > 0
+        face_mass = np.zeros_like(acc)
+        face_mass[nz] = acc[nz] / cnt[nz]
+        print(f"  缺陷质量：{mass_path.name}（逐面中位 {np.median(face_mass):.3f}）")
+
     pipe = None if args.dry_run else build_pipeline(args)
     records = []
     for label in labels:
@@ -331,18 +354,33 @@ def main(argv: list[str] | None = None) -> int:
         surf_np = surf.detach().cpu().numpy()
         print(f"  {label:40s} 光栅 y 翻转={flip}"
               f"（IoU: 翻 {ious[True]:.3f} / 不翻 {ious[False]:.3f}）", flush=True)
-        # 洞：网格说"有表面"但 alpha 不足；只保留内部小洞
+        # 缺陷区域：洞 + 破碎/虚影 +（full 模式）模型自评的高缺陷面
         hole = surf_np & (alpha_np < 0.5)
-        if not bool(hole.any()):
-            gy, gx = np.gradient(alpha_np.astype(np.float32))
-            spur = np.hypot(gx, gy) > 0.08
-            hole = surf_np & spur
+        gy, gx = np.gradient(alpha_np.astype(np.float32))
+        grad = np.hypot(gx, gy)
+        broken = surf_np & (grad > args.spike_threshold)
+        if args.mask_mode == "full":
+            hole = hole | dilate(broken, 3)
+            if face_mass is not None:
+                vis = ids_np[ids_np >= 0]
+                if vis.size:
+                    cut = float(np.quantile(face_mass[vis], args.defect_quantile))
+                    pm = np.zeros_like(alpha_np)
+                    vv = ids_np >= 0
+                    pm[vv] = face_mass[ids_np[vv]]
+                    hole = hole | (surf_np & (pm > cut))
+        # full 模式下要修的是"虚影/混乱"，面积可以大；holes 模式仍限制小洞
+        max_area = args.max_hole_area if args.mask_mode == "holes" else 0.5
         hole, dropped = keep_interior_holes(
-            hole, max_area=args.max_hole_area, border=args.border_margin)
+            hole, max_area=max_area, border=args.border_margin)
         if dropped:
             print(f"  {label:40s} 丢弃 {dropped} 块大洞（缺失解剖结构/画面外）",
                   flush=True)
         mask = dilate(hole, args.mask_dilate)
+        if mask.any():
+            print(f"  {label:40s} 掩码 {100.0 * mask.mean():.1f}%"
+                  f"（洞 {int((surf_np & (alpha_np < 0.5)).sum())} px）",
+                  flush=True)
         normal_u8 = (normal.detach().cpu().numpy() * 255).astype(np.uint8)
 
         Image.fromarray(img).save(dbg_dir / f"{label}.render.png")
