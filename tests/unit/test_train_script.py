@@ -334,21 +334,28 @@ def test_sharpness_ratio_of_same_image_is_one() -> None:
 
 def test_syncfix_command_places_paths_and_extra_args() -> None:
     m = load_script("enhance_model.py")
-    args = m.parse_args(["--subject", "a", "--work-name", "b",
-                         "--syncfix-dir", "/tmp/SyncFix",
-                         "--syncfix-model", "/tmp/w.pt",
-                         "--syncfix-arg=--foo=1"])
-    cmd = m.syncfix_command(args, views=7)
-    assert cmd[0] == "python" and cmd[1].endswith("SyncFix/inference.py")
-    # 默认 --syncfix-batch 4：批量不能超过它
-    assert cmd[cmd.index("--n_per_pass") + 1] == "4"
-    full = m.syncfix_command(m.parse_args(["--subject", "a", "--work-name", "b",
-                                           "--syncfix-dir", "/tmp/S",
-                                           "--syncfix-batch", "0"]), views=7)
-    assert full[full.index("--n_per_pass") + 1] == "7", "0 表示不限"
-    assert cmd[cmd.index("--model_path") + 1] == "/tmp/w.pt"
-    assert "--foo=1" in cmd
-    assert "{views}" in cmd and "{refs}" in cmd and "{raw}" in cmd
+    # 隔离本机的 conda 环境：自动探测到同名 `syncfix` env 时，默认前缀会变成
+    # `conda run ...`，断言就会随机器而变。这里固定成"探测不到"。
+    orig = m._detect_conda_env
+    m._detect_conda_env = lambda name: None
+    try:
+        args = m.parse_args(["--subject", "a", "--work-name", "b",
+                             "--syncfix-dir", "/tmp/SyncFix",
+                             "--syncfix-model", "/tmp/w.pt",
+                             "--syncfix-arg=--foo=1"])
+        cmd = m.syncfix_command(args, views=7)
+        assert cmd[0] == "python" and cmd[1].endswith("SyncFix/inference.py")
+        # 默认 --syncfix-batch 4：批量不能超过它
+        assert cmd[cmd.index("--n_per_pass") + 1] == "4"
+        full = m.syncfix_command(m.parse_args(["--subject", "a", "--work-name", "b",
+                                               "--syncfix-dir", "/tmp/S",
+                                               "--syncfix-batch", "0"]), views=7)
+        assert full[full.index("--n_per_pass") + 1] == "7", "0 表示不限"
+        assert cmd[cmd.index("--model_path") + 1] == "/tmp/w.pt"
+        assert "--foo=1" in cmd
+        assert "{views}" in cmd and "{refs}" in cmd and "{raw}" in cmd
+    finally:
+        m._detect_conda_env = orig
 
 
 def test_syncfix_command_requires_dir() -> None:
@@ -420,17 +427,27 @@ def test_render_and_defect_metrics_extraction() -> None:
 def test_syncfix_prefix_selection() -> None:
     """解释器优先级：显式路径 > 指定环境 > 自动检测 > 当前 python。"""
     m = load_script("enhance_model.py")
+    orig = m._detect_conda_env
+    # 这台机器上是否真的存在名为 `syncfix` 的 env 不应影响断言
+    m._detect_conda_env = lambda name: None
+    try:
+        base = ["--subject", "a", "--work-name", "b", "--syncfix-dir", "/tmp/S"]
+        assert m.syncfix_prefix(m.parse_args(base)) == ["python"]
 
-    base = ["--subject", "a", "--work-name", "b", "--syncfix-dir", "/tmp/S"]
-    assert m.syncfix_prefix(m.parse_args(base)) == ["python"]
+        env = m.parse_args(base + ["--syncfix-env", "syncfix"])
+        assert m.syncfix_prefix(env) == ["conda", "run", "--no-capture-output",
+                                         "-n", "syncfix", "python"]
 
-    env = m.parse_args(base + ["--syncfix-env", "syncfix"])
-    assert m.syncfix_prefix(env) == ["conda", "run", "--no-capture-output",
-                                     "-n", "syncfix", "python"]
+        # 自动检测分支单独覆盖（返回与真实环境无关的固定值）
+        m._detect_conda_env = lambda name: name
+        assert m.syncfix_prefix(m.parse_args(base)) == [
+            "conda", "run", "--no-capture-output", "-n", "syncfix", "python"]
 
-    both = m.parse_args(base + ["--syncfix-env", "syncfix",
-                                "--syncfix-python", "/x/python"])
-    assert m.syncfix_prefix(both) == ["/x/python"], "显式解释器优先级最高"
+        both = m.parse_args(base + ["--syncfix-env", "syncfix",
+                                    "--syncfix-python", "/x/python"])
+        assert m.syncfix_prefix(both) == ["/x/python"], "显式解释器优先级最高"
+    finally:
+        m._detect_conda_env = orig
 
 
 def test_clear_images_removes_pngs_keeps_others(tmp_path) -> None:
