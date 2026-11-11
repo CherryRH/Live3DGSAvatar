@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 
 import torch
 
-from .losses import weighted_l1
+from .losses import local_ssim_loss, weighted_l1
 
 
 def _as_mask(mask: torch.Tensor | None, ref: torch.Tensor) -> torch.Tensor | None:
@@ -46,28 +46,12 @@ def _as_mask(mask: torch.Tensor | None, ref: torch.Tensor) -> torch.Tensor | Non
 
 def _ssim(pred: torch.Tensor, target: torch.Tensor,
           mask: torch.Tensor | None) -> torch.Tensor:
-    """`1 - SSIM`。有 mask 时只在 mask 内统计（把外面填成 target 以减少干扰）。"""
-    try:
-        from fused_ssim import fused_ssim
-    except ImportError:                                  # pragma: no cover
-        fused_ssim = None
+    """`1 - SSIM`（纯 PyTorch 局部窗口）。
 
-    p, t = pred, target
-    if mask is not None:
-        # 用 target 填 mask 外：SSIM 是局部窗口量，填 0 会在边界造成假结构
-        p = torch.where(mask, p, t)
-        t = torch.where(mask, t, t)
-    if fused_ssim is not None and p.is_cuda:
-        return 1.0 - fused_ssim(p, t, train=False)
-    # CPU / 无 fused_ssim：退回均值+方差的简化 SSIM（仅用于自检）
-    # `unbiased=False`：与下面的 cov（按均值算）同一口径，否则"完全相同"也会差一点
-    mu_p, mu_t = p.mean(), t.mean()
-    var_p, var_t = p.var(unbiased=False), t.var(unbiased=False)
-    cov = ((p - mu_p) * (t - mu_t)).mean()
-    c1, c2 = 0.01 ** 2, 0.03 ** 2
-    score = ((2 * mu_p * mu_t + c1) * (2 * cov + c2)) / (
-        (mu_p ** 2 + mu_t ** 2 + c1) * (var_p + var_t + c2))
-    return 1.0 - score
+    **不再走 `fused_ssim`**：该算子的 backward 在本机构建上与光栅化 backward
+    同进程时会触发 CUDA illegal memory access（2026-11-11 实测）。
+    """
+    return local_ssim_loss(pred, target, mask)
 
 
 @dataclass

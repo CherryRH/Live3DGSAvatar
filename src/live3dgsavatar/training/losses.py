@@ -12,6 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import torch
+import torch.nn.functional as F
 
 from ..core.types import RenderOutput
 
@@ -87,6 +88,55 @@ def masked_l1(prediction: torch.Tensor, target: torch.Tensor,
               mask: torch.Tensor | None = None) -> torch.Tensor:
     """掩码内的平均绝对误差（= `weighted_l1` 的默认参数情形）。"""
     return weighted_l1(prediction, target, mask)
+
+
+def local_ssim_loss(prediction: torch.Tensor, target: torch.Tensor,
+                    mask: torch.Tensor | None = None, *,
+                    window_size: int = 11,
+                    sigma: float = 1.5) -> torch.Tensor:
+    """`1 − SSIM` 的纯 PyTorch 实现（11×11 高斯窗，逐通道）。
+
+    为什么不用 vendored 的 `fused_ssim`：它在本机这套构建上 backward 会
+    触发 `CUDA illegal memory access`（2026-11-11 实测；单独跑算子不复现，
+    与光栅化 backward 同进程时必崩）。GAF 的 L_img 需要 SSIM 项，所以这里
+    用 conv2d 实现，慢一些但可靠，且不依赖 CUDA 扩展。
+
+    Args:
+        prediction / target: `[B, 3, H, W]`，值域 `[0, 1]`
+        mask: `[B, 1, H, W]`；只在这些像素上平均（`None` 表示全图）
+    """
+    if prediction.shape != target.shape:
+        raise ValueError(
+            f"prediction {tuple(prediction.shape)} 与 target "
+            f"{tuple(target.shape)} 形状不一致")
+    b, c, h, w = prediction.shape
+    window_size = min(int(window_size), h, w)
+    if window_size % 2 == 0:
+        window_size = max(3, window_size - 1)
+    device, dtype = prediction.device, prediction.dtype
+    coords = (torch.arange(window_size, device=device, dtype=dtype)
+              - (window_size - 1) / 2.0)
+    g = torch.exp(-(coords ** 2) / (2.0 * sigma ** 2))
+    g = g / g.sum()
+    win = (g[:, None] @ g[None, :]).expand(c, 1, window_size, window_size)
+    win = win.contiguous()
+    pad = window_size // 2
+
+    mu_p = F.conv2d(prediction, win, padding=pad, groups=c)
+    mu_t = F.conv2d(target, win, padding=pad, groups=c)
+    mu_pp, mu_tt, mu_pt = mu_p * mu_p, mu_t * mu_t, mu_p * mu_t
+    var_p = F.conv2d(prediction * prediction, win, padding=pad, groups=c) - mu_pp
+    var_t = F.conv2d(target * target, win, padding=pad, groups=c) - mu_tt
+    cov = F.conv2d(prediction * target, win, padding=pad, groups=c) - mu_pt
+    c1, c2 = 0.01 ** 2, 0.03 ** 2
+    ssim_map = (((2.0 * mu_pt + c1) * (2.0 * cov + c2))
+                / ((mu_pp + mu_tt + c1) * (var_p + var_t + c2)))
+    if mask is None:
+        return 1.0 - ssim_map.mean()
+    m = mask.to(dtype)
+    if m.shape[1] == 1 and c > 1:
+        m = m.expand(-1, c, -1, -1)
+    return 1.0 - (ssim_map * m).sum() / m.sum().clamp_min(1.0)
 
 
 def masked_psnr(

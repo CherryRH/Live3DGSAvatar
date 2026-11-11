@@ -170,6 +170,25 @@ def test_objective_ssim_runs_on_cpu() -> None:
     assert parts["ssim"] < 1e-3, parts      # 完全一致 → 损失接近 0
 
 
+def test_local_ssim_is_zero_on_identical_and_differentiable() -> None:
+    """纯 torch SSIM：相同图损失为 0、能反传、mask 生效（替代会崩的 fused-ssim）。"""
+    from live3dgsavatar.training.losses import local_ssim_loss
+
+    x = torch.rand(1, 3, 32, 32, requires_grad=True)
+    assert float(local_ssim_loss(x, x.detach())) == pytest.approx(0.0, abs=1e-6)
+    y = torch.zeros_like(x)
+    assert float(local_ssim_loss(x, y)) > 0.1
+    loss = local_ssim_loss(x, y)
+    loss.backward()
+    assert x.grad is not None and torch.isfinite(x.grad).all()
+
+    mask = torch.zeros(1, 1, 32, 32, dtype=torch.bool)
+    mask[..., 8:24, 8:24] = True
+    assert float(local_ssim_loss(x.detach(), x.detach(), mask)) == pytest.approx(
+        0.0, abs=1e-6)
+    assert float(local_ssim_loss(x.detach(), y, mask)) > 0.1
+
+
 def test_objective_reports_per_term_values() -> None:
     __, parts = Objective(l1=1.0, alpha=0.5)(
         pred=torch.zeros(1, 3, 4, 4), target=torch.zeros(1, 3, 4, 4),
