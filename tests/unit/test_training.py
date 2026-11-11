@@ -204,6 +204,55 @@ def test_local_ssim_is_zero_on_identical_and_differentiable() -> None:
     assert float(local_ssim_loss(x.detach(), y, mask)) > 0.1
 
 
+def test_alpha_geometry_losses() -> None:
+    from live3dgsavatar.training.losses import (alpha_hole_loss,
+                                               background_spill_loss)
+
+    alpha = torch.zeros(1, 1, 8, 8)
+    observed = torch.ones(1, 1, 8, 8, dtype=torch.bool)
+    assert float(alpha_hole_loss(alpha, observed)) == pytest.approx(0.5)
+    assert float(alpha_hole_loss(torch.ones_like(alpha), observed)) == 0.0
+    assert float(alpha_hole_loss(alpha,
+                                 torch.zeros_like(observed))) == 0.0
+    a = alpha.clone().requires_grad_(True)
+    alpha_hole_loss(a, observed).backward()
+    assert a.grad is not None and torch.isfinite(a.grad).all()
+
+    ones = torch.ones(1, 1, 8, 8)
+    fg_all = torch.ones(1, 1, 8, 8, dtype=torch.bool)
+    assert float(background_spill_loss(ones, fg_all)) == 0.0
+    fg_none = torch.zeros(1, 1, 8, 8, dtype=torch.bool)
+    assert float(background_spill_loss(ones, fg_none)) == pytest.approx(0.5)
+    # 前景内的 alpha 不计入；背景外的 alpha 才计
+    alpha_one = torch.zeros(1, 1, 8, 8)
+    alpha_one[..., 0, 0] = 1.0
+    fg_one = fg_none.clone()
+    fg_one[..., 0, 0] = True
+    assert float(background_spill_loss(alpha_one, fg_one)) == 0.0
+    # 膨胀把更多像素排除出背景，归一化分母变小 → 均值变大
+    fg_away = fg_none.clone()
+    fg_away[..., 4, 4] = True
+    l0 = float(background_spill_loss(alpha_one, fg_away, dilate=0))
+    l1 = float(background_spill_loss(alpha_one, fg_away, dilate=1))
+    assert l0 > 0.0 and l1 > l0
+    a2 = torch.ones(1, 1, 8, 8, requires_grad=True)
+    background_spill_loss(a2, fg_none).backward()
+    assert a2.grad is not None and torch.isfinite(a2.grad).all()
+
+
+def test_objective_hole_spill_terms() -> None:
+    pred = torch.zeros(1, 3, 4, 4)
+    total, parts = Objective(l1=0.0, hole=2.0, spill=3.0)(
+        pred=pred, target=pred.clone(),
+        extras={"hole": torch.tensor(0.1), "spill": torch.tensor(0.2)})
+    assert float(total) == pytest.approx(0.8)
+    assert parts["hole"] == pytest.approx(0.1)
+    assert parts["spill"] == pytest.approx(0.2)
+    _, parts0 = Objective(l1=0.0)(pred=pred, target=pred.clone(),
+                                  extras={"hole": torch.tensor(0.1)})
+    assert "hole" not in parts0
+
+
 def test_objective_reports_per_term_values() -> None:
     __, parts = Objective(l1=1.0, alpha=0.5)(
         pred=torch.zeros(1, 3, 4, 4), target=torch.zeros(1, 3, 4, 4),
