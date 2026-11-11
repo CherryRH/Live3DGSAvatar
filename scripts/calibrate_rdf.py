@@ -132,7 +132,7 @@ def main() -> int:
 
     # RDF 用原生 FLAME（5023 顶点），我们的模型带 60 个牙齿顶点（5083）。
     # 两者的**公共前缀**是同一套拓扑（FLAME 2020/2023 的 `f` 逐位相同），
-    # 所以对齐只用前缀；多出来的牙齿顶点单独处理（见 docs 的"牙齿"一节）。
+    # 所以对齐只用前缀；多出来的牙齿顶点单独处理。
     n_rdf, n_gt = verts_rdf.shape[1], gt_mesh.shape[1]
     n_common = min(n_rdf, n_gt)
     if n_gt - n_rdf == 60:
