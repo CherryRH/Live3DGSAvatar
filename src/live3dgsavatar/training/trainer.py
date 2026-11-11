@@ -214,8 +214,6 @@ class Trainer:
         extras = {}
         for name, attr in (("sparsity_loss", "sparsity_loss"),
                            ("orth_loss", "orth_loss"),
-                           ("hole", "hole_loss"),
-                           ("spill", "spill_loss"),
                            ("nv_hole", "nv_hole_loss"),
                            ("nv_spill", "nv_spill_loss")):
             value = getattr(out, attr, None)

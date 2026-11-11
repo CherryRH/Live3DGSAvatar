@@ -1,30 +1,31 @@
 # Live3DGSAvatar
 
-**面向视频通话的 3DGS 头部重建：训练、增强、实时渲染。**
+**面向视频通话的 3DGS 头部重建：训练、后训练、实时渲染。**
 
 给定一段单目视频（RDF 跟踪出逐帧网格与驱动参数），训练一个可驱动的高斯头像；
-需要进一步提升观感时，用"找缺陷 → 外部精修 → 微调"再修一遍外观；最后在浏览器里
-实时驱动、调整视角查看。
+基础训练默认带新视角 spill 几何监督。需要继续修大角度时，开启**后训练**：
+用生成伪标签做数据驱动的迭代修复。最后在浏览器里实时驱动、调整视角查看。
 
 ## 能力
 
 | 能力 | 入口 | 说明 |
 |---|---|---|
 | 数据构建 | `bash build_dataset.sh` | 自动跑 RDF 跟踪，烘焙成训练格式 |
-| 训练 | `bash train.sh` | 单目视频 → 可驱动高斯头像 |
-| 增强微调 | `bash enhance.sh` | 找缺陷 → 外部精修 → 微调 → 落地评测 |
+| 训练 | `bash train.sh` | 单目视频 → 可驱动高斯头像（默认 spill 监督） |
+| 后训练（可选） | `bash train.sh ... --post-train` | 生成伪标签 + 迭代修复，按 SSIM/LPIPS 选最佳 |
 | 评测 | `bash eval.sh` | 对比视频 + PSNR/SSIM/LPIPS |
 | 实时渲染 / 前端 | `bash run_gui.sh` | 浏览器预览，可切模型、调整视角、接实时驱动 |
 
 ## 已知边界
 
-- 模型能表示的形变来自驱动参数与预定义的基，**几何本身不可通过微调重建**；
-  增强微调只改善外观（颜色、不透明度、尺度）；
-- 大角度下的表现取决于采集数据覆盖了多少表面。**本阶段不评估数据集本身的
-  质量，因此可用角度范围没有结论**——界面上可拖动到的视角范围是控件范围，
-  不代表可用范围；
-- 对没有真实观测的区域，任何微调都只能给出推测结果。补齐覆盖要靠采集，
-  不是训练技巧。
+- 模型固定 N 与 UV texel 绑定；后训练**不新增点**，只优化现有高斯的颜色、
+  不透明度、尺度与位置。未观测区域依赖生成伪标签，质量受数据覆盖限制；
+- biden 的采集角度不对称（yaw 约 [−3°, +13°]、pitch 约 [−14°, +2°]）。
+  后训练用数据驱动选角；外扩到 ±50° 时可能出现脖子/胸口填充，默认按质量分
+  （`SSIM − LPIPS`）早停并保留最佳轮次；
+- 对没有真实观测的区域，生成伪标签只能给出**推测**；补齐覆盖要靠采集或更强的
+  多视角生成器，不是训练技巧；
+- 后训练不做语义分割（脖子/胸口仍可能被填），验收以正面与既有角度不退化为准。
 
 ## 快速开始
 
@@ -33,48 +34,53 @@ bash setup_env.sh                       # 建环境 + 编译 CUDA 扩展（一�
 conda activate live3dgs
 
 bash build_dataset.sh <图像目录> --name <对象>            # ① 数据集
-bash train.sh --subject <对象> --work-name base             # ② 训练（自动装进 models/）
+bash train.sh --subject <对象> --work-name base             # ② 训练（默认 spill）
+bash train.sh --subject <对象> --work-name base --post-train  # ②' 可选后训练
 bash run_gui.sh --subject <对象> --work-name base          # ③ 预览
 ```
+
+后训练需要额外下载 `emilianJR/epiCRealism`（diffusers）；不开启时基础训练不受影响。
 
 ## 一、训练
 
 ```bash
 bash train.sh --subject <对象> --work-name <版本>
+bash train.sh --subject <对象> --work-name <版本> --no-spill        # 原版无几何监督基线
 ```
 
 - 数据：`datasets/<对象>/`（`images/` + `render_inputs.npz`）；
 - 切分：末尾 30% 作验证（`test_ratio`），验证集只含真实数据；
+- **默认几何监督**：每 4 步采一个 ±10/20/30/40° 新视角，罚 FLAME 表面外
+  12px 之外的半透明 spill（`weight 0.05`；实色头发不罚）。`--no-spill` 可回退；
 - 早停：正脸 PSNR 与大角度缺口的加权指标（`--no-robust-eval` 可关）；
 - 产物：`output/train/<对象>/<版本>/`；训练结束**自动**把最佳检查点装进
-  `models/<对象>/<版本>/`（同名覆盖），无需额外开关。
+  `models/<对象>/<版本>/`（同名覆盖）。
 
-参数与取舍写在训练脚本与 `training/` 的注释里。
+## 二、后训练（生成伪标签 + 迭代修复）
 
-## 二、增强微调
-
-不动模型格式、不动数据：先用缺陷检测挑出模型的薄弱视角并渲染，交给外部精修器
-修好，再以缺陷加权的方式微调，最后按验证指标挑检查点。
-
-精修器有两种：
-
-| `--refiner` | 做法 | 依赖 |
-|---|---|---|
-| `syncfix`（默认） | 多视角同步精修 | 独立的 SyncFix 仓库与环境 |
-| `pseudo` | FLAME 法线 + ControlNet 低强度重绘，几何筛选后当伪标签 | `diffusers`（setup_env 已列出） |
+一条命令串起：**选角 → epiC 伪标签 → 缺陷加权微调 → 质量门 → 早停/最佳**。
 
 ```bash
-bash enhance.sh --subject <对象> --work-name <版本> \
-    --syncfix-dir <SyncFix 目录> \
-    --syncfix-model <权重路径> \
-    --promote-name <版本>_refined
+bash train.sh --subject <对象> --work-name <版本> --post-train
 ```
 
-四个阶段由一条命令串起来：**找缺陷 → 外部精修 → 微调 → 落地 + 评测**。
-每步都能单独重跑（`--skip-find` / `--skip-syncfix` / `--skip-train`），
-状态记在 `<缺陷目录>/enhance_pipeline.json`。
+等价于基础训练落地后运行 `scripts/iterative_repair.py`：
 
-默认参数与验收标准写在 `scripts/enhance_model.py` 的注释里。
+```bash
+python scripts/iterative_repair.py --subject <对象> --base-work <版本> \
+    --prefix <版本>_post --top-n 2 --rings "20,10;30,20;40,30;50,30"
+```
+
+- 视角：`find_defects.py` 在当前角度圈里选**最差的 top-N**（不是固定对称角）；
+- 标签：`pseudo_label.py` 用 epiC + normal ControlNet 只重绘未观测/缺陷区域，
+  过填充、可信区、一致性门后才接受；
+- 监督：累计标签（旧视角继续监督）+ 真实帧 8 : 伪标签 2；
+- 选最佳：**`SSIM − LPIPS`**，不看 PSNR；质量分下降超阈值就早停，保留最佳轮；
+- 产物：`models/<对象>/<版本>_post_r*/`，报告在
+  `output/defects/<对象>/<版本>_post_report.json`（含每轮耗时）。
+
+默认参数见 `configs/train.yaml` 的 `post_train` 段；详细说明见
+[`docs/POSTTRAIN.md`](docs/POSTTRAIN.md)。旧的外部 SyncFix 链路已移除。
 
 ## 三、评测
 
@@ -128,9 +134,9 @@ src/live3dgsavatar/
   app/        GUI 后端（会话、协议、设置）
   tracking/   实时驱动的 RDF 桥
   streaming/  推流（预留，未实现）
-*.sh          一键入口：环境 / 数据集 / 训练 / 增强 / 评测 / 预览 / 追踪服务
+*.sh          一键入口：环境 / 数据集 / 训练 / 评测 / 预览 / 追踪服务
 web/          前端（无构建步骤）
-scripts/      各步骤的实现（也可单独调用）
+scripts/      各步骤的实现（也可单独调用）：train.py、iterative_repair.py 等
 tests/        后端单测（无需 GPU）；web/tests/ 为前端测试
 configs/      系统 / 渲染 / 训练 / 模型配置
 models/       模型（不入库）

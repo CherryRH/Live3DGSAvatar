@@ -449,15 +449,11 @@ def main(argv: list[str] | None = None) -> int:
     print(f"\n产物：{out_dir}")
     print(f"  selected.json  选中的组合与收益")
     print(f"  mass.npz       逐高斯缺陷质量（后续微调权重）")
-    print(f"  views/         选中组合的渲染图（可直接作 SyncFix 的 --input_image）")
-    print(f"  refs/          各候选基帧的真实图（作 --ref_image）")
-    print("\n下一轮精修（把 degraded 与 refs 一起喂给 SyncFix）：")
-    print(f"  python ~/Projects/SyncFix/inference.py \\\n"
-          f"    --input_image {out_dir}/views \\\n"
-          f"    --ref_image   {out_dir}/refs \\\n"
-          f"    --model_path  <SyncFix 权重> --output_dir {out_dir}/refined \\\n"
-          f"    --n_per_pass {len(result.chosen)} --ref_size 1 "
-              f"--height 512 --width 512")
+    print("  views/         选中组合的渲染图（伪标签/后训练输入）")
+    print("  refs/          各候选基帧的真实图（参考）")
+    print("\n下一步（后训练）：")
+    print("  python scripts/iterative_repair.py --subject ... --base-work ... \\")
+    print(f"      --rings ... --seed-defects {out_dir}")
     return 0
 
 

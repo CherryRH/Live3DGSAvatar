@@ -154,26 +154,6 @@ def alpha_hole_loss(alpha: torch.Tensor, observed: torch.Tensor, *,
     return (gap * m).sum() / m.sum().clamp_min(1.0)
 
 
-def background_spill_loss(alpha: torch.Tensor, fg: torch.Tensor, *,
-                          threshold: float = 0.5,
-                          dilate: int = 2) -> torch.Tensor:
-    """真实前景之外的 alpha 软惩罚：`mean(relu(alpha − threshold) · ~fg)`。
-
-    `fg` 是真实前景（数据 mask）；先膨胀 `dilate` 像素，给发丝/抠图边缘留余量。
-    头发在真实前景内，不受罚；这条堵的是"把高斯长大盖洞、铺到背景/脖子"。
-    """
-    if alpha.shape != fg.shape:
-        raise ValueError(f"alpha {tuple(alpha.shape)} 与 fg {tuple(fg.shape)} "
-                         "形状不一致")
-    m = fg.to(dtype=alpha.dtype)
-    k = int(dilate) * 2 + 1
-    if k > 1:
-        m = F.max_pool2d(m, kernel_size=k, stride=1, padding=k // 2)
-    bg = (1.0 - m).clamp_min(0.0)
-    extra = torch.relu(alpha - float(threshold))
-    return (extra * bg).sum() / bg.sum().clamp_min(1.0)
-
-
 def surface_spill_loss(alpha: torch.Tensor, surface: torch.Tensor, *,
                        margin: int = 12, alpha_min: float = 0.05,
                        alpha_max: float = 0.6) -> torch.Tensor:

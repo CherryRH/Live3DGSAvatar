@@ -328,7 +328,7 @@ def main(argv: list[str] | None = None) -> int:
                   f"{summary['ssim_new']['mean']:.3f}")
         if "psnr_delta" in summary:
             print(f"  拟合精修图：{summary['psnr_delta']:+.2f} dB"
-                  "（渲染 vs SyncFix 输出，**不是**真值）")
+                  "（渲染 vs 参考渲染，**不是**真值）")
     print(f"\n产物：{out_dir / 'compare_defects.json'}")
     return 0
 

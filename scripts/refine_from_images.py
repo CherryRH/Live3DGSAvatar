@@ -25,7 +25,7 @@ python scripts/find_defects.py --subject <对象> --work-name <版本> --dataset
 
 # 2) 用外部精修器处理 <缺陷目录>/views/，输出到 <缺陷目录>/refined/
 
-# 3) 微调（一般通过 scripts/enhance_model.py 串起来跑）
+# 3) 微调（一般通过 scripts/iterative_repair.py 串起来跑）
 python scripts/refine_from_images.py --subject <对象> --work-name <版本> \
     --steps 600 --promote --promote-name <版本>_refined --force
 ```
@@ -57,10 +57,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--lr-color", type=float, default=2e-3)
     p.add_argument("--lr-opacity", type=float, default=1e-2)
     p.add_argument("--lr-scaling", type=float, default=2e-3)
+    p.add_argument("--lr-xyz", type=float, default=0.0,
+                   help="切空间位置偏移的学习率；0 = 不动几何（默认）。"
+                        "几何档建议 1e-5 ~ 5e-5（600 步约 6–30 mm）")
     p.add_argument("--weight-floor", type=float, default=0.05)
     p.add_argument("--ssim-weight", type=float, default=0.0,
                    help="SSIM 项权重（默认 0 = 关闭）。开启需要 fused-ssim 的 CUDA "
                         "算子；若 backward 报 illegal memory access 就保持 0")
+    p.add_argument("--lpips-weight", type=float, default=0.0,
+                   help="LPIPS 项权重；GAF 的 L_img 用 0.1。默认 0")
+    p.add_argument("--lpips-from", type=int, default=0,
+                   help="第几步开始启用 LPIPS（默认 0 = 一开始就开）")
     p.add_argument("--eval-every", type=int, default=100)
     p.add_argument("--eval-frames", type=int, default=64,
                    help="选点用的帧数（从训练段随机取，且这些帧不参与锚定）")
@@ -147,6 +154,30 @@ def sharpness_ratio(render, gt, mask) -> float:
     return float(grad(render)) / ref if ref > 0 else 1.0
 
 
+def build_plan(args):
+    """按命令行参数组装参数计划：默认只动外观，`--lr-xyz > 0` 才动位置。"""
+    from live3dgsavatar.training.plans import GroupPlan, ParameterPlan
+
+    groups = {
+        "f_dc": GroupPlan(lr=args.lr_color, max_steps=args.steps),
+        "opacity": GroupPlan(lr=args.lr_opacity, max_steps=args.steps),
+        "scaling": GroupPlan(lr=args.lr_scaling, max_steps=args.steps),
+    }
+    if args.lr_xyz > 0:
+        # 位置是切空间偏移（米），600 步 × lr 的累积量级要控制在毫米级
+        groups["xyz"] = GroupPlan(lr=float(args.lr_xyz), max_steps=args.steps)
+    return ParameterPlan(groups=groups)
+
+
+def build_objective(args):
+    """损失：L1 + 可选 SSIM / LPIPS（GAF 的 L_img 权重是 0.2 / 0.1）。"""
+    from live3dgsavatar.training.objectives import Objective
+
+    return Objective(l1=1.0, ssim=args.ssim_weight,
+                     lpips=args.lpips_weight,
+                     lpips_from=int(args.lpips_from), mask_weight=0.0)
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     import numpy as np
@@ -198,6 +229,11 @@ def main(argv: list[str] | None = None) -> int:
           f"{args.real_per_batch} 真实")
     print(f"SSIM    : {args.ssim_weight:g}" +
           ("（关闭）" if args.ssim_weight <= 0 else ""))
+    print(f"损失    : L1 1.0 + SSIM {args.ssim_weight:g}"
+          f" + LPIPS {args.lpips_weight:g}" +
+          ("" if (args.ssim_weight > 0 or args.lpips_weight > 0) else "（仅 L1）"))
+    print(f"几何    : xyz lr {args.lr_xyz:g}" +
+          ("（不动位置）" if args.lr_xyz <= 0 else "（位置也参与微调）"))
     if args.dry_run:
         print("\n[dry-run] 未执行")
         return 0
@@ -221,8 +257,6 @@ def main(argv: list[str] | None = None) -> int:
     from live3dgsavatar.data.scene import load_scene
     from live3dgsavatar.data.sources import Batch, ManifestSource
     from live3dgsavatar.evaluation import refine_weight_map
-    from live3dgsavatar.training.objectives import Objective
-    from live3dgsavatar.training.plans import GroupPlan, ParameterPlan
     from live3dgsavatar.training.trainer import LogHook, Trainer
 
     torch.manual_seed(args.seed)
@@ -521,12 +555,8 @@ def main(argv: list[str] | None = None) -> int:
     for stale in (out_dir / "model_best.ply", out_dir / "model.ply"):
         if stale.is_file():
             stale.unlink()
-    plan = ParameterPlan(groups={
-        "f_dc": GroupPlan(lr=args.lr_color, max_steps=args.steps),
-        "opacity": GroupPlan(lr=args.lr_opacity, max_steps=args.steps),
-        "scaling": GroupPlan(lr=args.lr_scaling, max_steps=args.steps),
-    })
-    objective = Objective(l1=1.0, ssim=args.ssim_weight, mask_weight=0.0)
+    plan = build_plan(args)
+    objective = build_objective(args)
     evaluator = _Eval(out_dir)
     trainer = Trainer(
         source=source, plan=plan, objective=objective, render_fn=render_fn,
@@ -561,7 +591,9 @@ def main(argv: list[str] | None = None) -> int:
         "before": before, "after": after,
         "holdout_before": before_holdout, "holdout_after": after_holdout,
         "score_history": evaluator.history,
-        "ssim_weight": args.ssim_weight, "sharp_guard": args.sharp_guard,
+        "ssim_weight": args.ssim_weight,
+        "lpips_weight": args.lpips_weight, "lpips_from": args.lpips_from,
+        "lr_xyz": args.lr_xyz, "sharp_guard": args.sharp_guard,
         "gates": {"sharp_min": guard, "ssim_min": ssim_min,
                   "lpips_max": lpips_max},
         "passed_any": (out_dir / "model_best.ply").is_file(),

@@ -329,158 +329,25 @@ def test_sharpness_ratio_of_same_image_is_one() -> None:
     assert m.sharpness_ratio(img, img, mask) == pytest.approx(1.0, abs=1e-6)
 
 
-# ------------------------------------------------ 增强流程（顶层脚本） --
+def test_refine_plan_and_objective_follow_flags() -> None:
+    """默认只动外观；只有显式给 --lr-xyz / --ssim-weight / --lpips-weight 才变。"""
+    m = load_script("refine_from_images.py")
+    base = ["--subject", "a", "--work-name", "b"]
+    a = m.parse_args(base)
+    p = m.build_plan(a)
+    assert "xyz" not in p.groups, "默认不该动位置"
+    assert p.groups["f_dc"].lr > 0 and p.groups["opacity"].lr > 0
+    o = m.build_objective(a)
+    assert (o.l1, o.ssim, o.lpips) == (1.0, 0.0, 0.0)
 
-
-def test_syncfix_command_places_paths_and_extra_args() -> None:
-    m = load_script("enhance_model.py")
-    # 隔离本机的 conda 环境：自动探测到同名 `syncfix` env 时，默认前缀会变成
-    # `conda run ...`，断言就会随机器而变。这里固定成"探测不到"。
-    orig = m._detect_conda_env
-    m._detect_conda_env = lambda name: None
-    try:
-        args = m.parse_args(["--subject", "a", "--work-name", "b",
-                             "--syncfix-dir", "/tmp/SyncFix",
-                             "--syncfix-model", "/tmp/w.pt",
-                             "--syncfix-arg=--foo=1"])
-        cmd = m.syncfix_command(args, views=7)
-        assert cmd[0] == "python" and cmd[1].endswith("SyncFix/inference.py")
-        # 默认 --syncfix-batch 4：批量不能超过它
-        assert cmd[cmd.index("--n_per_pass") + 1] == "4"
-        full = m.syncfix_command(m.parse_args(["--subject", "a", "--work-name", "b",
-                                               "--syncfix-dir", "/tmp/S",
-                                               "--syncfix-batch", "0"]), views=7)
-        assert full[full.index("--n_per_pass") + 1] == "7", "0 表示不限"
-        assert cmd[cmd.index("--model_path") + 1] == "/tmp/w.pt"
-        assert "--foo=1" in cmd
-        assert "{views}" in cmd and "{refs}" in cmd and "{raw}" in cmd
-    finally:
-        m._detect_conda_env = orig
-
-
-def test_syncfix_command_requires_dir() -> None:
-    m = load_script("enhance_model.py")
-    args = m.parse_args(["--subject", "a", "--work-name", "b"])
-    with pytest.raises(RuntimeError, match="syncfix-dir"):
-        m.syncfix_command(args, views=1)
-
-
-def test_collect_refined_matches_by_stem(tmp_path) -> None:
-    from PIL import Image
-
-    m = load_script("enhance_model.py")
-    raw = tmp_path / "raw"
-    (raw / "sub").mkdir(parents=True)
-    labels = ["v1", "v2"]
-    for lab in labels:
-        Image.new("RGB", (4, 4), (10, 20, 30)).save(raw / "sub" / f"{lab}.png")
-    out = tmp_path / "refined"
-    got = m.collect_refined(raw, out, labels)
-    assert got == labels
-    assert (out / "v1.png").is_file() and (out / "v2.png").is_file()
-
-
-def test_collect_refined_falls_back_to_order(tmp_path) -> None:
-    from PIL import Image
-
-    m = load_script("enhance_model.py")
-    raw = tmp_path / "raw"
-    raw.mkdir()
-    for i in range(2):
-        Image.new("RGB", (4, 4)).save(raw / f"result_{i}.png")
-    out = tmp_path / "refined"
-    got = m.collect_refined(raw, out, ["a", "b"])
-    assert got == ["a", "b"]
-    assert (out / "a.png").is_file() and (out / "b.png").is_file()
-
-
-def test_collect_refined_rejects_incomplete_output(tmp_path) -> None:
-    from PIL import Image
-
-    m = load_script("enhance_model.py")
-    raw = tmp_path / "raw"
-    raw.mkdir()
-    Image.new("RGB", (4, 4)).save(raw / "x.png")
-    with pytest.raises(RuntimeError, match="少于"):
-        m.collect_refined(raw, tmp_path / "refined", ["a", "b"])
-
-
-def test_render_and_defect_metrics_extraction() -> None:
-    m = load_script("enhance_model.py")
-    report = {"quality": {"psnr_masked": {"median": 27.1, "min": 25.0,
-                                          "max": 30.0, "n": 286},
-                          "sharpness": {"ratio": 0.86}},
-              "summary": {"hole_base": {"mean": 0.17}, "hole_new": {"mean": 0.05},
-                          "hole_rel": -0.7,
-                          "outside_base": {"mean": 0.28},
-                          "outside_new": {"mean": 0.29},
-                          "sharp_rel": -0.02}}
-    rm = m.render_metrics(report)
-    assert rm["psnr"] == 27.1 and rm["sharp_ratio"] == 0.86
-    dm = m.defect_metrics(report)
-    assert dm["hole_before"] == 0.17 and dm["hole_after"] == 0.05
-    assert dm["outside_after"] == 0.29
-    assert m.render_metrics(None) == {}
-    assert m.defect_metrics(None) == {}
-
-
-def test_syncfix_prefix_selection() -> None:
-    """解释器优先级：显式路径 > 指定环境 > 自动检测 > 当前 python。"""
-    m = load_script("enhance_model.py")
-    orig = m._detect_conda_env
-    # 这台机器上是否真的存在名为 `syncfix` 的 env 不应影响断言
-    m._detect_conda_env = lambda name: None
-    try:
-        base = ["--subject", "a", "--work-name", "b", "--syncfix-dir", "/tmp/S"]
-        assert m.syncfix_prefix(m.parse_args(base)) == ["python"]
-
-        env = m.parse_args(base + ["--syncfix-env", "syncfix"])
-        assert m.syncfix_prefix(env) == ["conda", "run", "--no-capture-output",
-                                         "-n", "syncfix", "python"]
-
-        # 自动检测分支单独覆盖（返回与真实环境无关的固定值）
-        m._detect_conda_env = lambda name: name
-        assert m.syncfix_prefix(m.parse_args(base)) == [
-            "conda", "run", "--no-capture-output", "-n", "syncfix", "python"]
-
-        both = m.parse_args(base + ["--syncfix-env", "syncfix",
-                                    "--syncfix-python", "/x/python"])
-        assert m.syncfix_prefix(both) == ["/x/python"], "显式解释器优先级最高"
-    finally:
-        m._detect_conda_env = orig
-
-
-def test_clear_images_removes_pngs_keeps_others(tmp_path) -> None:
-    """清理旧产物：只删图片，保留 json 等。"""
-    from PIL import Image
-
-    m = load_script("enhance_model.py")
-    d = tmp_path / "refined"
-    d.mkdir()
-    Image.new("RGB", (2, 2)).save(d / "a.png")
-    Image.new("RGB", (2, 2)).save(d / "b.png")
-    (d / "keep.json").write_text("{}", encoding="utf-8")
-
-    assert m.clear_images(d) == 2
-    assert not list(d.glob("*.png"))
-    assert (d / "keep.json").is_file()
-    assert m.clear_images(tmp_path / "nope") == 0
-
-
-def test_syncfix_pass_size_limits_batch() -> None:
-    """一次前向不能塞全部视角：84 张会 OOM，必须按批切。"""
-    m = load_script("enhance_model.py")
-    assert m._pass_size(84, 8) == 8
-    assert m._pass_size(4, 8) == 4
-    assert m._pass_size(84, 0) == 84, "0 表示不限（保持旧行为）"
-
-    args = m.parse_args(["--subject", "a", "--work-name", "b",
-                         "--syncfix-dir", "/tmp/S", "--syncfix-batch", "8"])
-    cmd = m.syncfix_command(args, views=84)
-    assert cmd[cmd.index("--n_per_pass") + 1] == "8"
-    # 显式覆盖（重试时用）
-    cmd2 = m.syncfix_command(args, views=84, batch=2)
-    assert cmd2[cmd2.index("--n_per_pass") + 1] == "2"
+    a2 = m.parse_args(base + ["--lr-xyz", "2e-5", "--ssim-weight", "0.2",
+                              "--lpips-weight", "0.1"])
+    p2 = m.build_plan(a2)
+    assert "xyz" in p2.groups
+    assert p2.groups["xyz"].lr == pytest.approx(2e-5)
+    o2 = m.build_objective(a2)
+    assert o2.ssim == pytest.approx(0.2)
+    assert o2.lpips == pytest.approx(0.1)
 
 
 # ------------------------------------------------ 伪标签脚本的小工具 --
@@ -549,3 +416,75 @@ def test_build_defect_mask_covers_ghosting() -> None:
     assert holes[15, 15] == 0, "holes 模式不该因为 face mass 扩进来"
     assert full[27, 27] and holes[27, 27], "两者都应包含内部洞"
     assert st["mask_ratio"] > float(holes.mean())
+
+
+def test_build_defect_mask_respects_observed_faces() -> None:
+    """未观测表面（脖子/肩部）不补：即使 alpha 有洞也不进掩码。"""
+    import numpy as np
+
+    m = load_script("pseudo_label.py")
+    a = np.ones((60, 60), np.float32)
+    a[20:25, 20:25] = 0.0                 # 观测过的洞：要补
+    a[40:45, 40:45] = 0.0                 # 未观测的洞：不补
+    surf = np.zeros((60, 60), bool)
+    surf[10:50, 10:50] = True
+    ids = np.full((60, 60), -1, np.int32)
+    ids[10:50, 10:50] = 1
+    observed = np.zeros((60, 60), bool)
+    observed[10:50, 10:50] = True
+    observed[40:45, 40:45] = False
+
+    mask, _, st = m.build_defect_mask(
+        a, surf, ids, None, observed=observed, mode="holes", dilate_px=0)
+    assert mask[22, 22], "观测面的洞应保留"
+    assert not mask[42, 42], "未观测面（缺失解剖结构）不该补"
+    assert st["observed_px"] == int(observed.sum())
+
+
+def test_build_defect_mask_rejects_bool_ids() -> None:
+    """面 id 被误写成布尔掩码时必须报错，而不是用布尔数组索引 face_mass。"""
+    import numpy as np
+
+    m = load_script("pseudo_label.py")
+    with pytest.raises(ValueError, match="面 id"):
+        m.build_defect_mask(np.ones((8, 8), np.float32),
+                            np.ones((8, 8), bool),
+                            np.ones((8, 8), bool),
+                            np.zeros(4, np.float32))
+
+
+def test_observed_pixels_maps_face_ids() -> None:
+    import numpy as np
+
+    m = load_script("pseudo_label.py")
+    ids = np.array([[-1, 0], [1, 2]])
+    out = m.observed_pixels(ids, np.array([True, False, True]))
+    assert out.tolist() == [[False, True], [False, True]]
+    assert m.observed_pixels(ids).tolist() == [[False, True], [True, True]]
+
+
+def test_composite_labels_keeps_render_outside_mask() -> None:
+    """掩码外必须逐像素等于渲染图，否则 SD 的整图色偏会被学进去。"""
+    import numpy as np
+
+    m = load_script("pseudo_label.py")
+    render = np.zeros((4, 4, 3), np.uint8)
+    gen = np.full((4, 4, 3), 200, np.uint8)
+    mask = np.zeros((4, 4), bool)
+    mask[1:3, 1:3] = True
+    out = m.composite_labels(render, gen, mask)
+    assert out[0, 0].tolist() == [0, 0, 0]
+    assert out[2, 2].tolist() == [200, 200, 200]
+
+
+def test_unsharp_restores_gradient_energy() -> None:
+    import numpy as np
+
+    m = load_script("pseudo_label.py")
+    img = np.full((32, 32, 3), 60.0, np.float32)
+    img[:, 16:] = 200.0                     # 一个边缘
+    full = np.ones((32, 32), bool)
+    before = m.gradient_energy(img, full)
+    after = m.gradient_energy(m.unsharp(img, 0.5), full)
+    assert after > before * 1.1, "unsharp 应把梯度能量提上来"
+    assert m.unsharp(img, 0.0).shape == img.shape

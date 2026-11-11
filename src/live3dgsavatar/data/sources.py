@@ -101,7 +101,8 @@ class ManifestSource:
                  seed: int = 0,
                  use_cache: bool = True,
                  preload: bool = True,
-                 exclude: set[int] | None = None) -> None:
+                 exclude: set[int] | None = None,
+                 max_frames: int | None = None) -> None:
         if split not in ("train", "test", "all"):
             raise ValueError(f"split 只能是 train/test/all，实际 {split!r}")
         self.root = Path(data_dir)
@@ -150,6 +151,13 @@ class ManifestSource:
             # 把用于评估的帧从训练切分里剔掉，避免"自己考自己"
             dropped = set(int(i) for i in exclude)
             self._index = [i for i in self._index if i not in dropped]
+        if max_frames is not None:
+            mf = int(max_frames)
+            if mf <= 0:
+                raise ValueError(f"max_frames 应为正整数，实际 {max_frames}")
+            if mf < len(self._index):
+                pick = np.linspace(0, len(self._index) - 1, mf).round().astype(int)
+                self._index = [self._index[i] for i in pick]
         if not self._index:
             raise ValueError(f"{self.root} 的 {split} 切分为空")
 

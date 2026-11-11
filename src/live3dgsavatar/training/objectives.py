@@ -68,9 +68,7 @@ class Objective:
     ssim: float = 0.0
     lpips: float = 0.0
     alpha: float = 0.0
-    # FLAME 几何监督（默认 0 = 关闭；由 train.py 按配置打开）
-    hole: float = 0.0
-    spill: float = 0.0
+    # 新视角几何监督（默认 0 = 关闭；由 train.py 按配置打开）
     nv_hole: float = 0.0
     nv_spill: float = 0.0
     mask_weight: float = 0.0
@@ -127,7 +125,7 @@ class Objective:
             total = total + self.lpips * v
             parts["lpips"] = float(v.detach())
 
-        for key in ("hole", "spill", "nv_hole", "nv_spill"):
+        for key in ("nv_hole", "nv_spill"):
             if extras and key in extras:
                 weight = float(getattr(self, key, 0.0))
                 if weight > 0:
@@ -142,7 +140,7 @@ class Objective:
             parts["alpha"] = float(v.detach())
 
         for name, value in (extras or {}).items():
-            if name in ("hole", "spill", "nv_hole", "nv_spill"):
+            if name in ("nv_hole", "nv_spill"):
                 continue  # 已在上面按字段处理，避免重复计入
             weight = getattr(self, name, 0.0)
             if weight > 0:

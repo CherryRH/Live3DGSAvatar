@@ -5,6 +5,7 @@
 #   bash train.sh --subject crh_1 --work-name run
 #   bash train.sh --subject crh_1 --work-name run --iterations 20000
 #   bash train.sh --subject crh_1 --work-name run -- --dry-run    # `--` 之后原样透传
+#   bash train.sh --subject crh_1 --work-name run --post-train     # 训练后接迭代修复
 #
 # 环境变量：
 #   MAIN_ENV   本项目的 conda 环境（默认 live3dgs）
@@ -21,7 +22,7 @@ MAIN_ENV="${MAIN_ENV:-live3dgs}"
 die() { echo "[error] $*" >&2; exit 1; }
 info() { echo "[train] $*"; }
 
-usage() { sed -n '2,16p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0; }
+usage() { sed -n '2,17p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0; }
 
 SUBJECT=""
 WORK=""

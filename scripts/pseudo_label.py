@@ -30,7 +30,7 @@ python scripts/pseudo_label.py ... --dry-run
 
 产物：`<缺陷目录>/pseudo/{accepted/,debug/,report.json}`。
 `--install-refined` 会把通过的图复制到 `<缺陷目录>/refined/`，
-之后 `bash enhance.sh ... --skip-syncfix` 即可直接微调。
+之后交给 `refine_from_images.py` / `iterative_repair.py` 微调。
 """
 
 from __future__ import annotations
@@ -81,7 +81,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--raster-flip", choices=("auto", "true", "false"),
                    default="auto",
                    help="光栅化是否翻转 y。auto = 用 alpha 轮廓自动判定（推荐）")
-    p.add_argument("--mask-mode", choices=("holes", "full"), default="full",
+    p.add_argument("--mask-mode", choices=("holes", "full", "unsupported"),
+                   default="full",
                    help="holes=只修 alpha 不足的洞；full=洞 + 破碎/虚影（默认）")
     p.add_argument("--defect-quantile", type=float, default=0.7,
                    help="full 模式下，缺陷质量高于该分位的区域也算进掩码")
@@ -89,15 +90,45 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="alpha 梯度超过该值视为破碎/虚影")
     p.add_argument("--mask-dilate", type=int, default=6,
                    help="洞掩码向外扩多少像素（防止接缝）")
+    p.add_argument("--coverage-min", type=int, default=1,
+                   help="面被真实数据观测的最少次数；低于此视为缺失解剖结构，不补。"
+                        "0 或 --no-observed 关闭该限制（消融用）")
+    p.add_argument("--photometric-frames", type=int, default=60,
+                   help="用多少帧真实图统计'面被前景支持过'（alpha>127）。"
+                        "0 = 退回 find_defects 的几何可见性")
+    p.add_argument("--photometric-min-px", type=int, default=16,
+                   help="一个面累计至少多少前景像素才算被数据支持")
+    p.add_argument("--no-observed", action="store_true",
+                   help="关闭观测面限制（默认只补被数据看过的表面）")
+    p.add_argument("--sharpen", type=float, default=0.30,
+                   help="unsharp 增益，补偿 SD 往返的梯度损失。实测 SD 往返把标签"
+                        "梯度压到渲染的 0.935，0.30 可回到约 0.99；0 关闭")
     p.add_argument("--trusted-tol", type=float, default=2.0,
                    help="可信区域允许的平均改动（0-255）")
     p.add_argument("--min-iou", type=float, default=0.90,
-                   help="伪标签前景与**渲染轮廓**的最小 IoU（不与 FLAME 比："
-                        "脖子/锁骨这些区域 FLAME 有、数据和模型没有）")
+                   help="整幅轮廓 IoU 的参考下限（只记录，不拒绝：补洞会改轮廓）")
+    p.add_argument("--min-outside-iou", type=float, default=0.97,
+                   help="**掩码外**轮廓召回率下限（渲染的前景有多少还在）；"
+                        "掩码内允许改轮廓。用召回而不是 IoU：SD 会把背景抬亮，"
+                        "IoU 会把背景噪声算进去")
+    p.add_argument("--max-outside-extra", type=float, default=0.10,
+                   help="掩码外新增前景（诊断项；合成后掩码外会被换回渲染图，"
+                        "不再作为拒绝理由）")
+    p.add_argument("--min-fill", type=float, default=0.85,
+                   help="掩码内生成前景（>8）占比下限；低于此说明扩散没补上，"
+                        "这样的标签喂给微调只会教出噪声")
+    p.add_argument("--min-sharp", type=float, default=0.97,
+                   help="伪标签/渲染的**整幅**前景梯度能量比下限")
+    p.add_argument("--min-mask-sharp", type=float, default=0.98,
+                   help="伪标签/渲染在**掩码内**的梯度能量比下限。整幅比会被"
+                        "掩码外的渲染图主导，这条才反映补出来的区域够不够锐")
     p.add_argument("--max-hole-area", type=float, default=0.15,
                    help="单个洞连通域的像素占比上限；更大的块是缺失解剖结构，不修")
     p.add_argument("--border-margin", type=int, default=2,
                    help="碰到图像边缘的洞不修（通常是画面外的脖子/肩膀）")
+    p.add_argument("--head-cut-margin", type=int, default=0,
+                   help="unsupported 模式：把掩码裁到'最低支持像素+margin'以上，"
+                        "排除脖子/胸口（0 = 不裁）")
     p.add_argument("--min-std", type=float, default=3.0,
                    help="洞内像素标准差下限（太平坦说明糊了）")
     p.add_argument("--consistency", type=int, default=2,
@@ -145,36 +176,181 @@ def _erode(mask, radius: int):
     return out
 
 
+def observed_pixels(ids_np, observed_face=None):
+    """面 id 图 → 像素级"该表面被真实数据看过"掩码。
+
+    `observed_face` 是逐面 bool；`None` 表示不限制。**缺失解剖结构**
+    （脖子/肩部：FLAME 有面、数据从未拍到）在这里被排除，扩散不去补。
+    """
+    import numpy as np
+
+    ids = np.asarray(ids_np)
+    if ids.dtype == bool:
+        raise ValueError("observed_pixels 需要面 id（int），不是布尔掩码")
+    out = np.zeros(ids.shape, bool)
+    if observed_face is None:
+        out[...] = ids >= 0
+        return out
+    valid = ids >= 0
+    if valid.any():
+        out[valid] = np.asarray(observed_face, bool)[ids[valid].astype(np.int64)]
+    return out
+
+
+def gradient_energy(img, mask) -> float:
+    """前景内平均梯度幅值（锐度的代理）。"""
+    import numpy as np
+
+    m = np.asarray(mask, bool)
+    if not m.any():
+        return 0.0
+    grey = np.asarray(img, np.float32).mean(axis=-1)
+    gy, gx = np.gradient(grey)
+    return float(np.hypot(gx, gy)[m].mean())
+
+
+def unsharp(img, gain: float, sigma: float = 1.0):
+    """固定增益 unsharp；只补救 SD 往返造成的低通（标定见模块注释）。"""
+    import numpy as np
+    from scipy.ndimage import gaussian_filter
+
+    g = np.asarray(img, np.float32)
+    if gain <= 0:
+        return g.copy()
+    blur = gaussian_filter(g, sigma=(float(sigma), float(sigma), 0.0))
+    return np.clip(g + float(gain) * (g - blur), 0.0, 255.0)
+
+
+def composite_labels(render, gen, mask):
+    """掩码内用生成图、掩码外保留渲染图。
+
+    SD 的整图输出在可信区也有 ~1.3/255 的色偏；直接当标签会让微调把色偏
+    也学进去（实测只调颜色时 PSNR −0.63 dB）。合成后可信区严格不变。
+    """
+    import numpy as np
+
+    out = np.array(render, copy=True)
+    m = np.asarray(mask, bool)
+    if m.any():
+        out[m] = np.asarray(gen)[m]
+    return out
+
+
+def photometric_coverage(scene, data_dir, faces, glctx, *,
+                         n_frames: int = 60,
+                         device: str = "cuda") -> tuple:
+    """逐面统计"落在真实图像前景（alpha>127）里的次数"。
+
+    与 `find_defects` 的 `coverage` 不同：后者是**几何可见性**——网格被投影到
+    就算看见。脖子/胸口在正面视图里几何可见、但图像是黑底，会被误当成"看过"。
+    这里要求像素真的落在前景里，才算"数据支持过这块表面"。
+    """
+    import numpy as np
+    import torch
+    from PIL import Image
+
+    from live3dgsavatar.core.render.faceid import detect_flip, face_id_map
+    from live3dgsavatar.core.types import Camera
+
+    total = int(scene.num_frames)
+    n = max(1, min(int(n_frames), total))
+    idx = np.linspace(0, total - 1, n).astype(int).tolist()
+    n_faces = int(scene.faces.shape[0])
+    counts = np.zeros(n_faces, np.int64)
+    w2c = torch.eye(4, dtype=torch.float32)
+    w2c[:3, :3] = scene.R.detach().cpu()
+    w2c[:3, 3] = scene.T.detach().cpu()
+    flip = None
+    for i in idx:
+        frame = scene.frames[i]
+        verts = frame["mesh"].unsqueeze(0).to(device)
+        cam = Camera(K=scene.K, w2c=w2c.unsqueeze(0).to(device),
+                     width=scene.width, height=scene.height).to(device)
+        rgba = np.asarray(Image.open(data_dir / "images" / f"{i:05d}.png")
+                          .convert("RGBA"))
+        fg = rgba[..., 3] > 127
+        if flip is None:
+            flip, _ = detect_flip(verts, faces, cam, glctx, fg)
+        ids = face_id_map(verts, faces, cam, glctx, flip_y=flip)
+        ids_np = ids.detach().cpu().numpy()
+        sel = fg & (ids_np >= 0)
+        if sel.any():
+            counts += np.bincount(ids_np[sel].reshape(-1), minlength=n_faces)
+    return counts, bool(flip)
+
+
 def build_defect_mask(alpha, surf, ids_np, face_mass=None, *,
-                      mode: str = "full", spike: float = 0.15,
+                      observed=None, mode: str = "full", spike: float = 0.15,
                       defect_quantile: float = 0.7, max_hole_area: float = 0.15,
                       border: int = 2, dilate_px: int = 6):
     """构造"要重绘"的像素掩码，返回 `(mask, dropped, stats)`。
 
     - `holes`：只修 alpha 不足的内部小洞；
-    - `full`（默认）：再并入 alpha 梯度破碎区与模型自评的高缺陷面。
+    - `full`（默认）：再并入 alpha 梯度破碎区与模型自评的高缺陷面；
+    - `observed`：像素级"该表面被数据看过"掩码。给了就只在这些像素里找缺陷，
+      于是 `alpha≈0` 的缺失解剖结构（脖子/肩膀）不会被重绘。
     """
     import numpy as np
 
+    ids = np.asarray(ids_np)
+    if ids.dtype == bool:
+        raise ValueError(
+            "build_defect_mask 需要面 id（int），不是布尔掩码；"
+            "面 id 才能索引 face_mass")
     a = np.asarray(alpha, np.float32)
     s = np.asarray(surf, bool)
+    obs = None if observed is None else np.asarray(observed, bool)
     gy, gx = np.gradient(a)
     broken = s & (np.hypot(gx, gy) > spike)
-    hole = s & (a < 0.5)
-    if mode == "full":
-        hole = hole | dilate(broken, 3)
-        if face_mass is not None:
-            pm = np.zeros_like(a)
-            vv = np.asarray(ids_np) >= 0
-            pm[vv] = np.asarray(face_mass)[np.asarray(ids_np)[vv]]
-            vis = np.asarray(face_mass)[np.asarray(ids_np)[vv]]
-            if vis.size:
-                cut = float(np.quantile(vis, defect_quantile))
-                hole = hole | (s & (pm > cut))
-    limit = max_hole_area if mode == "holes" else 0.5
-    keepped, dropped = keep_interior_holes(hole, max_area=limit, border=border)
+    if mode == "unsupported":
+        if obs is None:
+            raise ValueError("unsupported 模式需要 observed（逐面数据支持）")
+        # 生成目标：FLAME 有面、但真实数据从未支持过的区域
+        hole = s & ~obs
+        # 脖子/胸口通常连到图像底边：去掉碰底边的连通域，只留头部/后脑
+        from scipy.ndimage import label as _label
+        lab, nlab = _label(hole)
+        kept = np.zeros_like(hole)
+        for k in range(1, nlab + 1):
+            comp = lab == k
+            if comp[-1].any():
+                continue
+            kept |= comp
+        hole = kept
+        limit, use_border = 1.0, 0
+    else:
+        hole = s & (a < 0.5)
+        if obs is not None:
+            hole &= obs
+            broken &= obs
+        if mode == "full":
+            hole = hole | dilate(broken, 3)
+            if face_mass is not None:
+                fm = np.asarray(face_mass, np.float64)
+                valid = ids >= 0
+                if valid.any():
+                    vis = fm[ids[valid]]
+                    cut = float(np.quantile(vis, defect_quantile))
+                    pm = np.zeros_like(a)
+                    pm[valid] = fm[ids[valid]]
+                    extra = s & (pm > cut)
+                    if obs is not None:
+                        extra &= obs
+                    hole = hole | extra
+        limit = max_hole_area if mode == "holes" else 0.5
+        use_border = border
+    if mode == "unsupported":
+        # 生成目标本来就是"大块未观测表面"（含轮廓/脖子），不做内部小洞过滤
+        keepped, dropped = hole, 1 if hole.any() else 0
+    else:
+        keepped, dropped = keep_interior_holes(hole, max_area=limit,
+                                               border=use_border)
     mask = dilate(keepped, dilate_px)
+    if obs is not None and mode != "unsupported":
+        # 膨胀不能越界到未观测表面（否则又会把脖子带进来）
+        mask &= dilate(obs, dilate_px)
     stats = {"hole_px": int((s & (a < 0.5)).sum()),
+             "observed_px": int(obs.sum()) if obs is not None else int(s.sum()),
              "mask_ratio": round(float(mask.mean()), 4)}
     return mask, dropped, stats
 
@@ -300,7 +476,13 @@ def main(argv: list[str] | None = None) -> int:
     dbg_dir = out_dir / "debug"
     for d in (acc_dir, dbg_dir):
         d.mkdir(parents=True, exist_ok=True)
-
+    if not args.dry_run:
+        # 上一次跑通过、这一次被拒的视角不能留在 accepted/ 里（会混进 refined/）
+        stale = len(list(acc_dir.glob("*.png")))
+        for p in acc_dir.glob("*.png"):
+            p.unlink()
+        if stale:
+            print(f"  清理旧 accepted {stale} 张", flush=True)
     payload = json.loads(selected.read_text(encoding="utf-8"))
     labels = list(payload["views"]["chosen"])
     if args.limit:
@@ -342,22 +524,43 @@ def main(argv: list[str] | None = None) -> int:
             best = max(ious, key=ious.get)
         return best, ious
 
-    # 逐面缺陷质量：把 mass.npz 的逐高斯质量平均到三角面，
-    # 再按面 id 图映射到像素 —— 这是"模型自己认为哪里差"的直接信号。
+    # 逐面缺陷质量与观测次数：mass.npz 是"模型自己认为哪里差"与
+    # "哪些表面真的被数据看过"的直接信号。观测次数用来排除缺失解剖结构。
     face_mass = None
+    observed_face = None
     mass_path = defects_dir / "mass.npz"
     if mass_path.is_file():
         with np.load(mass_path, allow_pickle=True) as d:
             gmass = np.asarray(d["mass"], np.float32)
+            gcov = (np.asarray(d["coverage"], np.float32)
+                    if "coverage" in d.files else None)
         fmap = avatar.binding_face_id.detach().cpu().numpy()
-        acc = np.zeros(scene.faces.shape[0], np.float64)
-        cnt = np.zeros(scene.faces.shape[0], np.float64)
+        n_faces = int(scene.faces.shape[0])
+        acc = np.zeros(n_faces, np.float64)
+        cnt = np.zeros(n_faces, np.float64)
         np.add.at(acc, fmap, gmass)
         np.add.at(cnt, fmap, 1.0)
         nz = cnt > 0
         face_mass = np.zeros_like(acc)
         face_mass[nz] = acc[nz] / cnt[nz]
         print(f"  缺陷质量：{mass_path.name}（逐面中位 {np.median(face_mass):.3f}）")
+        if (gcov is not None and args.photometric_frames <= 0
+                and not args.no_observed and args.coverage_min > 0):
+            fcov = np.zeros(n_faces, np.float64)
+            np.maximum.at(fcov, fmap, gcov)
+            observed_face = fcov >= int(args.coverage_min)
+            print(f"  观测面：{observed_face.mean():.1%} 的面被数据看过"
+                  f"（coverage ≥ {args.coverage_min}；其余不补）")
+    if args.photometric_frames > 0 and not args.no_observed:
+        print(f"  前景覆盖统计（{args.photometric_frames} 帧）…", flush=True)
+        fg_counts, flip_cov = photometric_coverage(
+            scene, data_dir, faces, glctx, n_frames=args.photometric_frames)
+        observed_face = fg_counts >= int(args.photometric_min_px)
+        print(f"  前景支持的面：{observed_face.mean():.1%}"
+              f"（≥{args.photometric_min_px} px；脖子/胸口不补，"
+              f"光栅 y 翻转={flip_cov}）")
+    if observed_face is None and not args.no_observed and args.coverage_min > 0:
+        print("  [warn] 无法建立观测面限制——会补缺失解剖结构", flush=True)
 
     pipe = None if args.dry_run else build_pipeline(args)
     records = []
@@ -380,32 +583,44 @@ def main(argv: list[str] | None = None) -> int:
             alpha_np = out.alpha[0, 0].detach().cpu().numpy()
             flip, ious = pick_flip(alpha_np, mesh.verts, cam)
             ids = face_id_map(mesh.verts, faces, cam, glctx, flip_y=flip)
-            ids_np = ids.detach().cpu().numpy() >= 0
+            ids_int = ids.detach().cpu().numpy()
+            ids_np = ids_int >= 0
             normal, surf = normal_map(mesh.verts, faces, cam, glctx,
                                       flip_y=flip,
                                       convention=args.normal_convention)
         img = (out.color[0].clamp(0, 1).permute(1, 2, 0).cpu().numpy()
                * 255.0).astype(np.uint8)
         surf_np = surf.detach().cpu().numpy()
+        obs_px = (observed_pixels(ids_int, observed_face)
+                  if observed_face is not None else None)
         print(f"  {label:40s} 光栅 y 翻转={flip}"
               f"（IoU: 翻 {ious[True]:.3f} / 不翻 {ious[False]:.3f}）", flush=True)
         mask, dropped, mstats = build_defect_mask(
-            alpha_np, surf_np, ids_np, face_mass, mode=args.mask_mode,
+            alpha_np, surf_np, ids_int, face_mass, observed=obs_px,
+            mode=args.mask_mode,
             spike=args.spike_threshold, defect_quantile=args.defect_quantile,
             max_hole_area=args.max_hole_area, border=args.border_margin,
             dilate_px=args.mask_dilate)
+        if (args.mask_mode == "unsupported" and args.head_cut_margin > 0
+                and obs_px is not None and obs_px.any()):
+            rows = np.arange(mask.shape[0])[:, None]
+            y_cut = int(np.where(obs_px)[0].max()) + int(args.head_cut_margin)
+            mask = mask & (rows <= y_cut)
         if dropped:
             print(f"  {label:40s} 丢弃 {dropped} 块大洞（缺失解剖结构/画面外）",
                   flush=True)
         if mask.any():
-            print(f"  {label:40s} 掩码 {100.0 * mstats['mask_ratio']:.1%}"
-                  f"（洞 {mstats['hole_px']} px）", flush=True)
+            print(f"  {label:40s} 掩码 {mstats['mask_ratio']:.1%}"
+                  f"（alpha<0.5 的面 {mstats['hole_px']} px）", flush=True)
         normal_u8 = (normal.detach().cpu().numpy() * 255).astype(np.uint8)
 
         Image.fromarray(img).save(dbg_dir / f"{label}.render.png")
         Image.fromarray(normal_u8).save(dbg_dir / f"{label}.normal.png")
         Image.fromarray((mask * 255).astype(np.uint8)).save(
             dbg_dir / f"{label}.mask.png")
+        if obs_px is not None:
+            Image.fromarray((obs_px * 255).astype(np.uint8)).save(
+                dbg_dir / f"{label}.observed.png")
         # 叠加图：在渲染图上画出掩码边界，便于**直接检查是否上下颠倒**
         overlay = img.copy()
         edge = mask ^ _erode(mask, 2)
@@ -417,8 +632,18 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  [warn] {label}: 法线掩码与面 id 掩码一致性 {agree:.3f}"
                   "（若明显偏低说明光栅化方向不一致）", flush=True)
         if args.dry_run:
-            records.append({"label": label, "hole_px": int(mask.sum()),
-                            "status": "dry-run"})
+            records.append({"label": label, "status": "dry-run",
+                            "mask_px": int(mask.sum()),
+                            "mask_ratio": mstats["mask_ratio"],
+                            "observed_px": mstats["observed_px"]})
+            continue
+        if not mask.any():
+            # 没有可修区域：不跑扩散，也不产出标签（否则等于拿渲染图监督自己）
+            records.append({"label": label, "accepted": False,
+                            "status": "no-defect", "reasons": [], "mask_px": 0,
+                            "observed_px": (int(obs_px.sum())
+                                            if obs_px is not None else None)})
+            print(f"  {label:40s} - 无缺陷（掩码为空，不跑扩散）", flush=True)
             continue
 
         pseudo_list = []
@@ -434,62 +659,107 @@ def main(argv: list[str] | None = None) -> int:
                 guidance_scale=float(args.guidance),
                 generator=g).images[0]
             pseudo_list.append(np.asarray(res.convert("RGB"), np.float32))
-        pseudo = pseudo_list[0]
+        raw = pseudo_list[0]
+        # 只补 SD 往返的低通，再把掩码外换回渲染图：色偏不会被学进去
+        pseudo = composite_labels(img, unsharp(raw, args.sharpen), mask)
+        Image.fromarray(raw.astype(np.uint8)).save(dbg_dir / f"{label}.gen.png")
+        Image.fromarray(pseudo.astype(np.uint8)).save(
+            dbg_dir / f"{label}.pseudo.png")
 
         # ---- 筛选 ----
         reasons = []
-        iou = inside = tdiff = cons = iou_flame = 0.0
-        out_m = mask
-        if out_m.any():
-            gen = pseudo
-            trusted = ~out_m
-            if trusted.any():
-                diff = np.abs(gen - img.astype(np.float32)).mean(axis=-1)
-                tdiff = float(diff[trusted].mean())
-                if tdiff > args.trusted_tol:
-                    reasons.append(f"可信区域改动 {tdiff:.2f} > {args.trusted_tol}")
-            gen_fg = gen.max(axis=-1) > 8
-            render_fg = alpha_np > 0.5
-            # 与**渲染**比：这才是"生成有没有改轮廓"的度量。
-            # 与 FLAME 比会一直偏低——脖子/锁骨在 FLAME 里有、数据和模型里没有。
-            iou = foreground_iou(gen_fg, render_fg)
-            iou_flame = foreground_iou(gen_fg, surf_np)
-            if iou < args.min_iou:
-                reasons.append(f"轮廓 IoU {iou:.3f} < {args.min_iou}")
-            inside = float(gen[out_m].std())
-            if inside < args.min_std:
-                reasons.append(f"洞内过平 std {inside:.2f} < {args.min_std}")
-            if len(pseudo_list) > 1:
-                cons = masked_ssim(pseudo_list[0], pseudo_list[1], out_m)
-                if cons < args.min_consistency:
-                    reasons.append(
-                        f"多次采样不一致 SSIM {cons:.3f} < {args.min_consistency}")
-        else:
-            iou, inside, tdiff, cons = 1.0, 0.0, 0.0, 1.0
-        accepted = not reasons
-        if accepted:
+        cons = 1.0
+        trusted = ~mask
+        if trusted.any():
+            diff = np.abs(raw - img.astype(np.float32)).mean(axis=-1)
+            tdiff = float(diff[trusted].mean())
+            if tdiff > args.trusted_tol:
+                reasons.append(f"可信区域改动 {tdiff:.2f} > {args.trusted_tol}")
+        gen_fg = raw.max(axis=-1) > 8
+        render_fg = alpha_np > 0.5
+        iou = foreground_iou(gen_fg, render_fg)
+        iou_flame = foreground_iou(gen_fg, surf_np)
+        # 掩码外只要求"渲染的轮廓还在"，不要求背景逐像素一致：
+        # SD 的 img2img 会把整幅背景抬亮 1–2/255，用"前景并集/整幅图"算 IoU
+        # 会把背景噪声算进去（实测大角度因此被误杀到 0.83）。
+        outside_zone = ~dilate(mask, 2)
+        rf_zone = render_fg & outside_zone
+        gf_zone = gen_fg & outside_zone
+        outside_iou = foreground_iou(gf_zone, rf_zone)
+        outside_recall = (float((rf_zone & gf_zone).sum()) / rf_zone.sum()
+                          if rf_zone.any() else 1.0)
+        outside_extra = (float((gf_zone & ~render_fg).sum()) / rf_zone.sum()
+                         if rf_zone.any() else 0.0)
+        fill = float(gen_fg[mask].mean())
+        inside = float(raw[mask].std())
+        e_ref = gradient_energy(img, render_fg)
+        sharp_ratio = (gradient_energy(pseudo, render_fg) / e_ref
+                       if e_ref > 0 else 1.0)
+        e_mask = gradient_energy(img, mask)
+        mask_sharp = (gradient_energy(pseudo, mask) / e_mask
+                      if e_mask > 0 else 1.0)
+        if outside_recall < args.min_outside_iou:
+            reasons.append(f"掩码外轮廓召回 {outside_recall:.3f} < "
+                           f"{args.min_outside_iou}")
+        if fill < args.min_fill:
+            reasons.append(f"掩码内填充率 {fill:.2f} < {args.min_fill}")
+        if mask_sharp < args.min_mask_sharp:
+            reasons.append(f"掩码内锐度比 {mask_sharp:.3f} < "
+                           f"{args.min_mask_sharp}")
+        if sharp_ratio < args.min_sharp:
+            reasons.append(f"锐度比 {sharp_ratio:.3f} < {args.min_sharp}")
+        if inside < args.min_std:
+            reasons.append(f"洞内过平 std {inside:.2f} < {args.min_std}")
+        if len(pseudo_list) > 1:
+            cons = masked_ssim(pseudo_list[0], pseudo_list[1], mask)
+            if cons < args.min_consistency:
+                reasons.append(
+                    f"多次采样不一致 SSIM {cons:.3f} < {args.min_consistency}")
+        status = "accepted" if not reasons else "rejected"
+        if status == "accepted":
             Image.fromarray(pseudo.astype(np.uint8)).save(
                 acc_dir / f"{label}.png")
-        records.append({"label": label, "accepted": accepted,
-                        "reasons": reasons, "hole_px": int(mask.sum()),
+        records.append({"label": label, "status": status,
+                        "accepted": status == "accepted",
+                        "reasons": reasons,
+                        "mask_px": int(mask.sum()),
+                        "observed_px": (int(obs_px.sum())
+                                        if obs_px is not None else None),
                         "silhouette_iou": round(float(iou), 4),
+                        "silhouette_iou_outside": round(float(outside_iou), 4),
+                        "outside_recall": round(float(outside_recall), 4),
+                        "outside_extra": round(float(outside_extra), 4),
                         "silhouette_iou_flame": round(float(iou_flame), 4),
+                        "fill_ratio": round(float(fill), 4),
+                        "sharp_ratio": round(float(sharp_ratio), 4),
+                        "mask_sharp_ratio": round(float(mask_sharp), 4),
                         "trusted_diff": round(float(tdiff), 3),
                         "hole_std": round(float(inside), 2),
                         "consistency": round(float(cons), 4)})
-        print(f"  {label:40s} {'✓' if accepted else '✗ ' + '; '.join(reasons)}",
+        print(f"  {label:40s} {'✓' if status == 'accepted' else '✗ ' + '; '.join(reasons)}",
               flush=True)
 
     report = {"subject": subject, "work_name": work, "dataset": dataset,
               "defects": str(defects_dir), "dry_run": bool(args.dry_run),
-              "gates": {"trusted_tol": args.trusted_tol, "min_iou": args.min_iou,
+              "gates": {"trusted_tol": args.trusted_tol,
+                        "min_iou": args.min_iou,
+                        "min_outside_recall": args.min_outside_iou,
+                        "min_fill": args.min_fill,
+                        "min_sharp": args.min_sharp,
+                        "min_mask_sharp": args.min_mask_sharp,
                         "min_std": args.min_std,
                         "min_consistency": args.min_consistency},
+              "observed": {"enabled": observed_face is not None,
+                           "coverage_min": int(args.coverage_min)},
+              "sharpen": float(args.sharpen),
               "views": records}
     (out_dir / "report.json").write_text(
         json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
-    ok = sum(1 for r in records if r.get("accepted"))
-    print(f"\n完成：{len(records)} 个视角，通过 {ok} 个")
+    ok = sum(1 for r in records if r.get("status") == "accepted")
+    n_defect = sum(1 for r in records if r.get("status") == "no-defect")
+    n_reject = sum(1 for r in records if r.get("status") == "rejected")
+    print(f"\n完成：{len(records)} 个视角，通过 {ok}，无缺陷 {n_defect}，"
+          f"拒绝 {n_reject}")
     print(f"产物：{out_dir}")
 
     if args.install_refined and ok:
@@ -497,15 +767,20 @@ def main(argv: list[str] | None = None) -> int:
 
         refined = defects_dir / "refined"
         refined.mkdir(parents=True, exist_ok=True)
+        # 与 accepted/ 同一理由：本次没通过的视角不能沿用上一轮的文件
+        labels_set = set(labels)
+        for p in refined.glob("*.png"):
+            if p.stem in labels_set:
+                p.unlink()
         n = 0
         for r in records:
-            if not r.get("accepted"):
+            if r.get("status") != "accepted":
                 continue
             shutil.copyfile(acc_dir / f"{r['label']}.png",
                             refined / f"{r['label']}.png")
             n += 1
-        print(f"已装入 refined/：{n} 张（之后 `bash enhance.sh ... --skip-syncfix`）")
-    return 0 if (args.dry_run or ok) else 1
+        print(f"已装入 refined/：{n} 张（可交给 refine_from_images.py / iterative_repair.py）")
+    return 0 if (args.dry_run or ok or n_defect) else 1
 
 
 if __name__ == "__main__":

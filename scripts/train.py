@@ -130,6 +130,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="新视角的 yaw 候选（默认 ±10/20/30/40）")
     p.add_argument("--robust-spill-weight", type=float, default=None,
                    help="早停指标里 面外溢出 的权重（默认 0 = 不计）")
+    p.add_argument("--no-spill", action="store_true",
+                   help="关闭新视角 spill（原版无几何监督基线）")
+    p.add_argument("--post-train", dest="post_train", action="store_true",
+                   default=None,
+                   help="训练后接迭代修复（默认取配置 post_train.enabled）")
+    p.add_argument("--no-post-train", dest="post_train", action="store_false",
+                   help="强制关闭后训练")
     p.add_argument("--output-dir", type=Path, default=None)
     p.add_argument("--promote-name", default=None,
                    help="装进 models/ 时用的名字（默认与 --work-name 相同）")
@@ -144,6 +151,9 @@ def main(argv: list[str] | None = None) -> int:
     from live3dgsavatar.data.models import promote_model
 
     cfg = load_config()
+    if not bool(cfg.get("train.pipeline.enabled", True)):
+        raise SystemExit(
+            "[error] train.pipeline.enabled=false：训练入口已关闭（configs/train.yaml）")
     subject = args.subject or str(cfg.get("subject") or "").strip()
     work = args.work_name or str(cfg.get("work_name") or "").strip()
     if not subject or not work:
@@ -212,15 +222,35 @@ def main(argv: list[str] | None = None) -> int:
     robust_spill = float(args.robust_spill_weight
                          if args.robust_spill_weight is not None
                          else _nv("robust_spill_weight", 0.0))
+    if args.no_spill:
+        nv_spill = 0.0
     nv_enabled = nv_every > 0 and (nv_hole > 0 or nv_spill > 0)
     if nv_enabled and not nv_yaws:
         raise SystemExit("[error] 新视角监督需要至少一个 --nv-yaws")
     need_support = nv_enabled and nv_hole > 0
 
+    def _pt(key, default):
+        return cfg.get(f"train.pipeline.post_train.{key}", default)
+
+    post_enabled = bool(args.post_train if args.post_train is not None
+                        else _pt("enabled", False))
+    post_top_n = int(_pt("top_n", 2))
+    post_rings = str(_pt("rings", "20,10;30,20;40,30;50,30"))
+    post_steps = int(_pt("steps", 200))
+    post_refined = int(_pt("refined_per_batch", 2))
+    post_real = int(_pt("real_per_batch", 8))
+    post_quality_tol = float(_pt("quality_tol", 0.002))
+    post_base_model = str(_pt("base_model", "emilianJR/epiCRealism"))
+
     from live3dgsavatar.data.sources import ManifestSource
 
+    max_frames = cfg.get("train.pipeline.max_frames", None)
+    if max_frames is not None and int(max_frames) <= 0:
+        max_frames = None
     train_src = ManifestSource(data_dir, split="train", test_ratio=test_ratio,
-                               device="cpu", seed=args.seed)
+                               device="cpu", seed=args.seed,
+                               max_frames=(None if max_frames is None
+                                           else int(max_frames)))
     val_src = ManifestSource(data_dir, split="test", test_ratio=test_ratio,
                              device="cpu")
 
@@ -270,6 +300,9 @@ def main(argv: list[str] | None = None) -> int:
                   f"hole {nv_hole:g} + spill {nv_spill:g}"
                   f"（margin {nv_margin}px, alpha "
                   f"{nv_alpha_min:g}–{nv_alpha_max:g}）")
+        if post_enabled:
+            print(f"  [dry-run] 后训练: top{post_top_n} rings {post_rings}，"
+                  f"{post_steps} 步/轮（默认关，需 epiC 模型）")
         print(f"  [dry-run] 产物目录 {out_dir}")
         print("  [dry-run] 未执行训练（需要 GPU）")
         return 0
@@ -317,6 +350,7 @@ def main(argv: list[str] | None = None) -> int:
                                 device=device)
         avatar = GaussianAvatar(avatar_cfg, binding).to(device)
     rasterizer = SimpleRasterizer()
+
     camera = Camera.from_intrinsics_extrinsics(
         K=scene.K, R=scene.R, T=scene.T,
         width=scene.width, height=scene.height).to(str(device))
@@ -351,7 +385,6 @@ def main(argv: list[str] | None = None) -> int:
               f"（margin {nv_margin}px, alpha {nv_alpha_min:g}–{nv_alpha_max:g}）")
     else:
         print("  新视角 : 关闭")
-
     def render_fn(mesh_verts, weight, batch, iteration):
         mesh = Mesh(verts=mesh_verts.to(device), faces=scene.faces.to(device),
                     uvs=scene.uvs.to(device), uv_faces=scene.uv_faces.to(device))
@@ -505,7 +538,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  [best] 第 {iteration} 步 验证 {metric:.2f} dB → model_best.ply",
                   flush=True)
 
-    hooks = (
+    hooks = [
         LogHook(every=100),
         ValidationHook(source=val_src, evaluate=evaluate, every=eval_every,
                        early_stop=EarlyStopping(patience=patience,
@@ -513,8 +546,7 @@ def main(argv: list[str] | None = None) -> int:
                        metric="robust" if robust_cfg is not None else "psnr",
                        on_improve=save_best),
         CheckpointHook(save=save, every=save_every),
-    )
-
+    ]
     if need_support:
         def sample_face_stats(n_frames: int):
             """逐面真实前景像素数（只统计真实数据，给新视角 hole 用）。
@@ -617,6 +649,22 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     print(f"已装入：{target}")
     print(f"  评测：bash eval.sh --subject {subject} --work-name {name}")
+    if post_enabled:
+        import subprocess
+        prefix = f"{work}_post"
+        cmd = [sys.executable, "scripts/iterative_repair.py",
+               "--subject", subject, "--base-work", name,
+               "--prefix", prefix, "--top-n", str(post_top_n),
+               "--rings", post_rings, "--steps", str(post_steps),
+               "--refined-per-batch", str(post_refined),
+               "--real-per-batch", str(post_real),
+               "--quality-tol", str(post_quality_tol),
+               "--base-model", post_base_model]
+        print(f"\n后训练：{' '.join(cmd)}", flush=True)
+        rc = subprocess.run(cmd, cwd=str(Path(__file__).resolve().parents[1]),
+                            check=False).returncode
+        if rc != 0:
+            print("[warn] 后训练失败；基础模型已保留", file=sys.stderr)
     return 0
 
 

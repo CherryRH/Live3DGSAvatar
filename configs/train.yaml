@@ -44,15 +44,15 @@ train:
     # 训练产物写到 <output_dir>/train/<subject>/<work_name>/
     max_frames: null
 
-    # 新视角几何监督（默认全关；spill-only 已验证）。
+    # 新视角几何监督（默认开启：spill-only 已验证；--no-spill 可回退原版）。
     # 每 every 步随机采一个 ±yaw 视角：
     # - spill：在 FLAME 表面外扩 margin 像素之外，罚 alpha∈(alpha_min, alpha_max)
-    #   的半透明溢出（薄雾）；实色头发不罚。推荐 weight 0.05。
+    #   的半透明溢出（薄雾）；实色头发不罚。已验证 weight 0.05。
     # - hole：只在"表面 ∩ 数据支持过的面"上罚 alpha<0.5。未采纳：会显著增加
-    #   碎裂（spike +15%），需要额外的平滑守卫。
+    #   碎裂（spike +15%），保持 0。
     novel_view:
       every: 4
-      spill_weight: 0.0
+      spill_weight: 0.05
       hole_weight: 0.0
       # 表面外扩像素：给头发/发丝留余量
       spill_margin: 12
@@ -63,6 +63,20 @@ train:
       yaws: [-40, -30, -20, -10, 10, 20, 30, 40]
       # 早停指标里"面外溢出"的权重；0 = 不计（保持旧行为）
       robust_spill_weight: 0.0
+
+    # 后训练（迭代修复）：默认关闭。开启后，train.py 在基础训练落地后调用
+    # scripts/iterative_repair.py：数据驱动 top-N 选角、累计伪标签、
+    # 真实帧 8 : 伪标签 2、按 SSIM-LPIPS 选最佳并早停。
+    # 需要 diffusers + epiCRealism 权重；基础模型不依赖它。
+    post_train:
+      enabled: false
+      top_n: 2
+      rings: "20,10;30,20;40,30;50,30"
+      steps: 200
+      refined_per_batch: 2
+      real_per_batch: 8
+      quality_tol: 0.002
+      base_model: emilianJR/epiCRealism
 
   # 在线更新（热更新）：通话开始时用一小段观测微调外观。
   # 见 docs/ONLINE_UPDATE.md。
