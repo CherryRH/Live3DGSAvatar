@@ -179,11 +179,10 @@ def main(argv: list[str] | None = None) -> int:
     import nvdiffrast.torch as dr
     from PIL import Image
 
-    from live3dgsavatar.core.camera import orbit_w2c
-    from live3dgsavatar.core.metrics import ssim, roll_w2c
+    from live3dgsavatar.core.camera import orbit_w2c, roll_w2c
     from live3dgsavatar.core.io import load_ply
     from live3dgsavatar.core.io.ply import read_embedded_config
-    from live3dgsavatar.core.metrics import psnr_masked
+    from live3dgsavatar.core.metrics import psnr_masked, ssim
     from live3dgsavatar.core.render import SimpleRasterizer
     from live3dgsavatar.core.render.faceid import face_id_map
     from live3dgsavatar.core.types import Camera, Mesh
