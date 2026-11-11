@@ -82,6 +82,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         "环境则自动使用，否则用当前 python")
     p.add_argument("--syncfix-out", type=Path, default=None,
                    help="SyncFix 的原始输出目录（默认 <缺陷目录>/syncfix_raw）")
+    p.add_argument("--refiner", choices=("syncfix", "pseudo"), default="syncfix",
+                   help="外部精修器：syncfix（默认）或 pseudo（几何条件扩散伪标签）")
     p.add_argument("--syncfix-batch", type=int, default=4,
                    help="SyncFix 每次前向处理多少张（显存不够就调小；"
                         "84 张一次过约需 11 GiB）")
@@ -390,11 +392,20 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit(f"[error] 找不到 {selected}（先跑 find_defects.py）")
 
     # ---- 2. 外部精修 ----
-    if args.skip_syncfix or done("syncfix"):
+    if args.skip_syncfix or done("refine_inputs"):
         print("\n[2/4] 外部精修：跳过（" +
               ("--skip-syncfix" if args.skip_syncfix else "已完成") + "）")
+    elif args.refiner == "pseudo":
+        # 几何条件扩散：法线来自 FLAME，只重绘不可靠区域，筛选后落到 refined/
+        print(f"\n[2/4] 伪标签生成（{len(labels)} 个视角，pseudo）")
+        run([py, str(scripts / "pseudo_label.py"),
+             "--subject", subject, "--work-name", work,
+             "--dataset", dataset, "--defects", str(defects_dir),
+             "--install-refined"], dry_run=args.dry_run)
+        if not args.dry_run:
+            mark("refine_inputs", refiner="pseudo", refined=str(refined_dir))
     else:
-        print(f"\n[2/4] 外部精修（{len(labels)} 个视角）")
+        print(f"\n[2/4] 外部精修（{len(labels)} 个视角，syncfix）")
         if args.dry_run and args.syncfix_dir is None:
             print("  （dry-run：未提供 --syncfix-dir，跳过命令拼装）")
             prefix = None
@@ -402,7 +413,7 @@ def main(argv: list[str] | None = None) -> int:
             prefix = syncfix_prefix(args)
         if prefix is not None:
             print(f"  解释器：{' '.join(prefix)}", flush=True)
-        if not args.dry_run:
+        if prefix is not None and not args.dry_run:
             probe = prefix + ["-c", "import imageio"]
             if subprocess.run(probe, capture_output=True).returncode != 0:
                 raise SystemExit(
@@ -435,8 +446,9 @@ def main(argv: list[str] | None = None) -> int:
         if not args.dry_run:
             got = collect_refined(syncfix_raw, refined_dir, labels)
             print(f"  整理出 {len(got)} 张精修图 → {refined_dir}")
-            mark("syncfix", raw=str(syncfix_raw), refined=str(refined_dir),
-                 count=len(got))
+            mark("refine_inputs", refiner="syncfix", raw=str(syncfix_raw),
+                 refined=str(refined_dir), count=len(got))
+
 
     # ---- 3. 微调 + 落地 ----
     if args.skip_train or done("refine", work_match=new_work):

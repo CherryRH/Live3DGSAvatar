@@ -54,7 +54,14 @@ bash train.sh --subject <对象> --work-name <版本>
 ## 二、增强微调
 
 不动模型格式、不动数据：先用缺陷检测挑出模型的薄弱视角并渲染，交给外部精修器
-（当前用 SyncFix）修好，再以缺陷加权的方式微调，最后按验证指标挑检查点。
+修好，再以缺陷加权的方式微调，最后按验证指标挑检查点。
+
+精修器有两种：
+
+| `--refiner` | 做法 | 依赖 |
+|---|---|---|
+| `syncfix`（默认） | 多视角同步精修 | 独立的 SyncFix 仓库与环境 |
+| `pseudo` | FLAME 法线 + ControlNet 低强度重绘，几何筛选后当伪标签 | `diffusers`（setup_env 已列出） |
 
 ```bash
 bash enhance.sh --subject <对象> --work-name <版本> \

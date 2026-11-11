@@ -611,3 +611,20 @@ def test_matrix_to_quaternion_matches_branchwise_reference() -> None:
     nrm = vectorized(m).norm(dim=-1)
     assert torch.allclose(nrm, torch.ones_like(nrm), atol=1e-6), "输出应为单位四元数"
     assert seen_choices == {0, 1, 2, 3}
+
+
+# ------------------------------------------------- 屏幕空间法线（伪标签用） --
+
+
+def test_vertex_normals_point_outward() -> None:
+    """一个朝向 +z 的平面，四个顶点法线都应是 +z。"""
+    import torch
+
+    from live3dgsavatar.core.render.normals import vertex_normals
+
+    verts = torch.tensor([[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0],
+                           [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]]])
+    faces = torch.tensor([[0, 1, 2], [0, 2, 3]])
+    n = vertex_normals(verts, faces)[0]
+    assert torch.allclose(n, torch.tensor([[0.0, 0.0, 1.0]]).expand(4, 3),
+                          atol=1e-6)

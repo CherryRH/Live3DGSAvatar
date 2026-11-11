@@ -46,3 +46,10 @@ imageio-ffmpeg==0.6.0
 # 环境与编译步骤以 setup_env.sh 为准。
 lpips==0.1.4
 pygame==2.6.1
+
+# ---------- 可选：伪标签（GAF 轻量版）----------
+# scripts/pseudo_label.py 用它跑「FLAME 法线 + ControlNet 的低强度修复」。
+# 不跑伪标签可以不装；首次使用会下载 SD1.5 与 ControlNet 权重（约 3 GB）。
+diffusers==0.31.0
+transformers==4.46.3
+accelerate==1.1.1

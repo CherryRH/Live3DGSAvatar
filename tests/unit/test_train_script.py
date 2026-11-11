@@ -340,7 +340,12 @@ def test_syncfix_command_places_paths_and_extra_args() -> None:
                          "--syncfix-arg=--foo=1"])
     cmd = m.syncfix_command(args, views=7)
     assert cmd[0] == "python" and cmd[1].endswith("SyncFix/inference.py")
-    assert cmd[cmd.index("--n_per_pass") + 1] == "7"
+    # 默认 --syncfix-batch 4：批量不能超过它
+    assert cmd[cmd.index("--n_per_pass") + 1] == "4"
+    full = m.syncfix_command(m.parse_args(["--subject", "a", "--work-name", "b",
+                                           "--syncfix-dir", "/tmp/S",
+                                           "--syncfix-batch", "0"]), views=7)
+    assert full[full.index("--n_per_pass") + 1] == "7", "0 表示不限"
     assert cmd[cmd.index("--model_path") + 1] == "/tmp/w.pt"
     assert "--foo=1" in cmd
     assert "{views}" in cmd and "{refs}" in cmd and "{raw}" in cmd
@@ -459,3 +464,23 @@ def test_syncfix_pass_size_limits_batch() -> None:
     # 显式覆盖（重试时用）
     cmd2 = m.syncfix_command(args, views=84, batch=2)
     assert cmd2[cmd2.index("--n_per_pass") + 1] == "2"
+
+
+# ------------------------------------------------ 伪标签脚本的小工具 --
+
+
+def test_pseudo_label_mask_helpers() -> None:
+    import numpy as np
+
+    m = load_script("pseudo_label.py")
+    hole = np.zeros((9, 9), bool)
+    hole[4, 4] = True
+    grown = m.dilate(hole, 2)
+    assert grown.sum() > 1 and grown[2, 4] and grown[6, 4]
+
+    a = np.zeros((4, 4), bool); a[:2] = True
+    b = np.zeros((4, 4), bool); b[1:3] = True
+    assert m.foreground_iou(a, b) == pytest.approx(1 / 3)
+    assert m.masked_ssim(np.zeros((8, 8, 3), np.uint8),
+                         np.zeros((8, 8, 3), np.uint8),
+                         np.ones((8, 8), bool)) == pytest.approx(1.0)
