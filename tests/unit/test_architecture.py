@@ -634,6 +634,10 @@ def _use_before_assignment(source: str) -> list[str]:
     problems: list[str] = []
 
     def binds(stmt: ast.stmt) -> set[str]:
+        # `def` / `class` 语句本身绑定名字；不把它们算进去就抓不到
+        # "调用了一个稍后才定义的嵌套函数"（真实故障：find_defects 的 mesh_input）
+        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            return {stmt.name}
         names: set[str] = set()
         for node in ast.walk(stmt):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
@@ -714,18 +718,23 @@ def _use_before_assignment(source: str) -> list[str]:
 
 
 def test_no_use_before_local_assignment() -> None:
-    """全仓库不得有"函数内先用后赋值"（会抛 `UnboundLocalError`）。
+    """仓库不得有"先用后定义/赋值"（会抛 `UnboundLocalError`）。
 
-    真实故障：`find_defects.py` 里 `hit_rate` 在第 272 行被使用、却在第 280 行
-    才赋值。这类错误只在那条 GPU 分支上才炸，本机跑不到。
+    真实故障（两次）：
+    - `find_defects.py` 的 `hit_rate` 先使用、几十行后才赋值；
+    - 同文件的 `mesh_input` 在覆盖统计里被调用，但它的 `def` 在下一节。
+    这类错误只在那条 GPU 分支上才炸，本机跑不到，所以静态查一遍。
+    **脚本也要查** —— 上面第二个故障就在 `scripts/` 里。
     """
     problems: list[str] = []
-    for path in sorted(SRC.rglob("*.py")):
-        if "__pycache__" in path.parts:
-            continue
-        problems.extend(f"{path.relative_to(SRC)}: {p}"
-                        for p in _use_before_assignment(
-                            path.read_text(encoding="utf-8")))
+    roots = [SRC, REPO_ROOT / "scripts"]
+    for root in roots:
+        for path in sorted(root.rglob("*.py")):
+            if "__pycache__" in path.parts:
+                continue
+            problems.extend(f"{path.relative_to(REPO_ROOT)}: {p}"
+                            for p in _use_before_assignment(
+                                path.read_text(encoding="utf-8")))
     assert not problems, "存在先用后赋值：\n  " + "\n  ".join(problems)
 
 

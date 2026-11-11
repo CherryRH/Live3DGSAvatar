@@ -208,6 +208,10 @@ def main(argv: list[str] | None = None) -> int:
         return Camera(K=scene.K, w2c=view.unsqueeze(0).to(device),
                       width=scene.width, height=scene.height).to(device)
 
+    def mesh_input(verts):
+        return Mesh(verts=verts, faces=scene.faces.to(device),
+                    uvs=scene.uvs.to(device), uv_faces=scene.uv_faces.to(device))
+
     # ---- 1) 覆盖统计 ----
     # 光栅化方向：用 alpha 轮廓自动判定（见 core/render/faceid.detect_flip）。
     # 之前按"投影是 +y 向下"推导成必须翻 y，真机上这是错的（上下镜像）。
@@ -247,10 +251,6 @@ def main(argv: list[str] | None = None) -> int:
             idx = int(spec.name[5:])
             return idx, scene.frames[idx]
         return neutral_i, scene.frames[neutral_i]
-
-    def mesh_input(verts):
-        return Mesh(verts=verts, faces=scene.faces.to(device),
-                    uvs=scene.uvs.to(device), uv_faces=scene.uv_faces.to(device))
 
     candidates = []
     view_metrics: list[dict] = []
