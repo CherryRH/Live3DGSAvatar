@@ -191,11 +191,14 @@ def main(argv: list[str] | None = None) -> int:
             if "coverage" in d.files:
                 coverage = np.asarray(d["coverage"])
 
+    active = opacity >= 0.5
     stats = {
         "n_gaussians": int(opacity.size),
         "n_faces": n_faces,
         "dead_share": float(dead.mean()),
         "dead_n": int(dead.sum()),
+        "active_share": float(active.mean()),
+        "offset_mm_active": summarize(off_mm[active]),
         "faces_without_gaussians": int(missing.sum()),
         "faces_without_gaussians_share": float(missing.mean()),
         "opacity": {"summary": summarize(opacity),
