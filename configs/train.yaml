@@ -60,7 +60,7 @@ train:
       alpha_max: 0.6
       min_px: 16
       frames: 80
-      yaws: [-40, -30, -20, -10, 10, 20, 30, 40]
+      yaws: [-50, -40, -30, -20, -10, 10, 20, 30, 40, 50]
       # 早停指标里"面外溢出"的权重；0 = 不计（保持旧行为）
       robust_spill_weight: 0.0
 
@@ -76,6 +76,10 @@ train:
       refined_per_batch: 2
       real_per_batch: 8
       quality_tol: 0.002
+      # 伪标签掩码向周围扩多少像素：范围太小扩散补不全眼睛/头顶/嘴巴
+      mask_dilate: 24
+      # 大掩码下填充率会下降，门限相应放宽
+      min_fill: 0.45
       base_model: emilianJR/epiCRealism
 
   # 在线更新（热更新）：通话开始时用一小段观测微调外观。

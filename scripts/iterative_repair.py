@@ -97,7 +97,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--lr-xyz", type=float, default=1e-5)
     ap.add_argument("--base-model", default="emilianJR/epiCRealism")
     ap.add_argument("--trusted-tol", type=float, default=3.0)
-    ap.add_argument("--min-fill", type=float, default=0.5)
+    ap.add_argument("--mask-dilate", type=int, default=24,
+                    help="伪标签掩码向周围扩多少像素（默认 24；太小扩散补不全）")
+    ap.add_argument("--min-fill", type=float, default=0.45,
+                    help="大掩码下填充率门限（默认 0.45）")
     ap.add_argument("--sharp-tolerance", type=float, default=0.12)
     ap.add_argument("--ssim-tolerance", type=float, default=0.03)
     ap.add_argument("--lpips-tolerance", type=float, default=0.08)
@@ -167,7 +170,7 @@ def main(argv: list[str] | None = None) -> int:
                           "--dataset", dataset,
                           "--defects", str(rdir), "--out", str(gendir),
                           "--limit", "0", "--mask-mode", "unsupported",
-                          "--mask-dilate", "8", "--strength", "0.85",
+                          "--mask-dilate", str(args.mask_dilate), "--strength", "0.85",
                           "--steps", "40", "--consistency", "2",
                           "--photometric-frames", "80",
                           "--photometric-min-px", "16", "--sharpen", "0.3",

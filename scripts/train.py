@@ -218,7 +218,7 @@ def main(argv: list[str] | None = None) -> int:
     nv_frames = int(args.nv_frames if args.nv_frames is not None
                     else _nv("frames", 80))
     nv_yaws = list(args.nv_yaws if args.nv_yaws is not None
-                   else _nv("yaws", [-40, -30, -20, -10, 10, 20, 30, 40]))
+                   else _nv("yaws", [-50, -40, -30, -20, -10, 10, 20, 30, 40, 50]))
     robust_spill = float(args.robust_spill_weight
                          if args.robust_spill_weight is not None
                          else _nv("robust_spill_weight", 0.0))
@@ -240,6 +240,8 @@ def main(argv: list[str] | None = None) -> int:
     post_refined = int(_pt("refined_per_batch", 2))
     post_real = int(_pt("real_per_batch", 8))
     post_quality_tol = float(_pt("quality_tol", 0.002))
+    post_mask_dilate = int(_pt("mask_dilate", 24))
+    post_min_fill = float(_pt("min_fill", 0.45))
     post_base_model = str(_pt("base_model", "emilianJR/epiCRealism"))
 
     from live3dgsavatar.data.sources import ManifestSource
@@ -659,6 +661,8 @@ def main(argv: list[str] | None = None) -> int:
                "--refined-per-batch", str(post_refined),
                "--real-per-batch", str(post_real),
                "--quality-tol", str(post_quality_tol),
+               "--mask-dilate", str(post_mask_dilate),
+               "--min-fill", str(post_min_fill),
                "--base-model", post_base_model]
         print(f"\n后训练：{' '.join(cmd)}", flush=True)
         rc = subprocess.run(cmd, cwd=str(Path(__file__).resolve().parents[1]),

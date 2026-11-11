@@ -50,7 +50,7 @@ bash train.sh --subject <对象> --work-name <版本> --no-spill        # 原版
 
 - 数据：`datasets/<对象>/`（`images/` + `render_inputs.npz`）；
 - 切分：末尾 30% 作验证（`test_ratio`），验证集只含真实数据；
-- **默认几何监督**：每 4 步采一个 ±10/20/30/40° 新视角，罚 FLAME 表面外
+- **默认几何监督**：每 4 步采一个 ±10..50° 新视角，罚 FLAME 表面外
   12px 之外的半透明 spill（`weight 0.05`；实色头发不罚）。`--no-spill` 可回退；
 - 早停：正脸 PSNR 与大角度缺口的加权指标（`--no-robust-eval` 可关）；
 - 产物：`output/train/<对象>/<版本>/`；训练结束**自动**把最佳检查点装进
@@ -74,6 +74,7 @@ python scripts/iterative_repair.py --subject <对象> --base-work <版本> \
 - 视角：`find_defects.py` 在当前角度圈里选**最差的 top-N**（不是固定对称角）；
 - 标签：`pseudo_label.py` 用 epiC + normal ControlNet 只重绘未观测/缺陷区域，
   过填充、可信区、一致性门后才接受；
+- 掩码：向缺陷区外扩 24px（`mask_dilate`），给扩散模型足够上下文；
 - 监督：累计标签（旧视角继续监督）+ 真实帧 8 : 伪标签 2；
 - 选最佳：**`SSIM − LPIPS`**，不看 PSNR；质量分下降超阈值就早停，保留最佳轮；
 - 产物：`models/<对象>/<版本>_post_r*/`，报告在
