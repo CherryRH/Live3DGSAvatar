@@ -86,7 +86,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--trusted-tol", type=float, default=2.0,
                    help="可信区域允许的平均改动（0-255）")
     p.add_argument("--min-iou", type=float, default=0.90,
-                   help="伪标签前景与 FLAME 轮廓的最小 IoU")
+                   help="伪标签前景与**渲染轮廓**的最小 IoU（不与 FLAME 比："
+                        "脖子/锁骨这些区域 FLAME 有、数据和模型没有）")
+    p.add_argument("--max-hole-area", type=float, default=0.15,
+                   help="单个洞连通域的像素占比上限；更大的块是缺失解剖结构，不修")
+    p.add_argument("--border-margin", type=int, default=2,
+                   help="碰到图像边缘的洞不修（通常是画面外的脖子/肩膀）")
     p.add_argument("--min-std", type=float, default=3.0,
                    help="洞内像素标准差下限（太平坦说明糊了）")
     p.add_argument("--consistency", type=int, default=2,
@@ -132,6 +137,37 @@ def _erode(mask, radius: int):
                 continue
             out &= np.roll(np.roll(m, dy, axis=0), dx, axis=1)
     return out
+
+
+def keep_interior_holes(mask, *, max_area: float = 0.15,
+                        border: int = 2):
+    """只保留"内部的小洞"，返回 `(mask, 丢弃的连通域数)`。
+
+    大块空洞（脖子、锁骨、画面外）不是"漏画"，而是**模型本来就没有的解剖结构**；
+    让扩散去补它，等于给伪标签注入想象，微调学到的也是想象。这里按两条规则筛：
+    碰图像边缘的丢掉、面积超过 `max_area` 的丢掉。
+    """
+    import numpy as np
+    from scipy.ndimage import label
+
+    m = np.asarray(mask, bool)
+    if not m.any():
+        return m, 0
+    lab, n = label(m)
+    keep = np.zeros_like(m)
+    dropped = 0
+    for k in range(1, n + 1):
+        comp = lab == k
+        if comp.sum() > max_area * m.size:
+            dropped += 1
+            continue
+        b = max(1, int(border))
+        if (comp[:b].any() or comp[-b:].any()
+                or comp[:, :b].any() or comp[:, -b:].any()):
+            dropped += 1
+            continue
+        keep |= comp
+    return keep, dropped
 
 
 def foreground_iou(a, b) -> float:
@@ -295,12 +331,17 @@ def main(argv: list[str] | None = None) -> int:
         surf_np = surf.detach().cpu().numpy()
         print(f"  {label:40s} 光栅 y 翻转={flip}"
               f"（IoU: 翻 {ious[True]:.3f} / 不翻 {ious[False]:.3f}）", flush=True)
-        # 洞：网格说"有表面"但 alpha 不足
+        # 洞：网格说"有表面"但 alpha 不足；只保留内部小洞
         hole = surf_np & (alpha_np < 0.5)
         if not bool(hole.any()):
             gy, gx = np.gradient(alpha_np.astype(np.float32))
             spur = np.hypot(gx, gy) > 0.08
             hole = surf_np & spur
+        hole, dropped = keep_interior_holes(
+            hole, max_area=args.max_hole_area, border=args.border_margin)
+        if dropped:
+            print(f"  {label:40s} 丢弃 {dropped} 块大洞（缺失解剖结构/画面外）",
+                  flush=True)
         mask = dilate(hole, args.mask_dilate)
         normal_u8 = (normal.detach().cpu().numpy() * 255).astype(np.uint8)
 
@@ -341,7 +382,7 @@ def main(argv: list[str] | None = None) -> int:
 
         # ---- 筛选 ----
         reasons = []
-        iou = inside = tdiff = cons = 0.0
+        iou = inside = tdiff = cons = iou_flame = 0.0
         out_m = mask
         if out_m.any():
             gen = pseudo
@@ -352,7 +393,11 @@ def main(argv: list[str] | None = None) -> int:
                 if tdiff > args.trusted_tol:
                     reasons.append(f"可信区域改动 {tdiff:.2f} > {args.trusted_tol}")
             gen_fg = gen.max(axis=-1) > 8
-            iou = foreground_iou(gen_fg, surf_np)
+            render_fg = alpha_np > 0.5
+            # 与**渲染**比：这才是"生成有没有改轮廓"的度量。
+            # 与 FLAME 比会一直偏低——脖子/锁骨在 FLAME 里有、数据和模型里没有。
+            iou = foreground_iou(gen_fg, render_fg)
+            iou_flame = foreground_iou(gen_fg, surf_np)
             if iou < args.min_iou:
                 reasons.append(f"轮廓 IoU {iou:.3f} < {args.min_iou}")
             inside = float(gen[out_m].std())
@@ -372,6 +417,7 @@ def main(argv: list[str] | None = None) -> int:
         records.append({"label": label, "accepted": accepted,
                         "reasons": reasons, "hole_px": int(mask.sum()),
                         "silhouette_iou": round(float(iou), 4),
+                        "silhouette_iou_flame": round(float(iou_flame), 4),
                         "trusted_diff": round(float(tdiff), 3),
                         "hole_std": round(float(inside), 2),
                         "consistency": round(float(cons), 4)})

@@ -484,3 +484,19 @@ def test_pseudo_label_mask_helpers() -> None:
     assert m.masked_ssim(np.zeros((8, 8, 3), np.uint8),
                          np.zeros((8, 8, 3), np.uint8),
                          np.ones((8, 8), bool)) == pytest.approx(1.0)
+
+
+def test_keep_interior_holes_drops_border_and_large() -> None:
+    """只保留内部小洞：碰边界的、面积过大的都丢掉。"""
+    import numpy as np
+
+    m = load_script("pseudo_label.py")
+    hole = np.zeros((40, 40), bool)
+    hole[18:22, 18:22] = True          # 内部小洞：保留
+    hole[0:4, 10:14] = True            # 碰上边界：丢
+    hole[25:39, 25:39] = True          # 大片：丢（>15%）
+
+    kept, dropped = m.keep_interior_holes(hole, max_area=0.15, border=2)
+    assert dropped == 2
+    assert kept[19, 19] and kept.sum() == 16
+    assert not kept[1, 11] and not kept[30, 30]
