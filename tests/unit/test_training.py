@@ -817,3 +817,26 @@ def test_angle_weights_favours_large_yaw() -> None:
     w = angle_weights(np.array([0.0, 10.0, 40.0]), scale=20.0, floor=1.0)
     assert w[0] == 1.0
     assert w[2] > w[1] > w[0]
+
+
+def test_train_cli_exposes_warm_start_and_novel_view() -> None:
+    from script_loader import load_script
+
+    m = load_script("train.py")
+    a = m.parse_args(["--subject", "a", "--work-name", "b"])
+    assert a.init_ply is None
+    assert a.lr_scale == 1.0
+    assert a.no_overwrite is False
+    assert a.nv_every is None and a.nv_spill_weight is None
+    b = m.parse_args(["--subject", "a", "--work-name", "b",
+                      "--init-ply", "x.ply", "--lr-scale", "0.2",
+                      "--no-overwrite", "--nv-every", "4",
+                      "--nv-spill-weight", "0.05", "--nv-spill-margin", "12",
+                      "--nv-yaws", "-40", "40"])
+    assert str(b.init_ply) == "x.ply"
+    assert b.lr_scale == 0.2
+    assert b.no_overwrite is True
+    assert b.nv_every == 4
+    assert b.nv_spill_weight == 0.05
+    assert b.nv_spill_margin == 12
+    assert b.nv_yaws == [-40.0, 40.0]

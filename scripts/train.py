@@ -104,6 +104,32 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--model-config", type=Path, default=None,
                    help="模型结构配置（默认：模型目录里的 config.yaml，"
                         "没有就用仓库模板 configs/model.yaml）")
+    p.add_argument("--init-ply", type=Path, default=None,
+                   help="从已有 PLY warm start（默认从 UV 绑定新建）")
+    p.add_argument("--lr-scale", type=float, default=1.0,
+                   help="所有参数组学习率乘该系数（warm start 微调用，默认 1）")
+    p.add_argument("--no-overwrite", action="store_true",
+                   help="目标模型已存在则直接退出（保护旧模型做基线）")
+    p.add_argument("--nv-every", type=int, default=None,
+                   help="每 N 步做一次新视角几何监督；0 关闭（默认取配置）")
+    p.add_argument("--nv-hole-weight", type=float, default=None,
+                   help="新视角 supported 面上的 alpha 孔洞权重（默认 0）")
+    p.add_argument("--nv-spill-weight", type=float, default=None,
+                   help="新视角表面外半透明溢出权重（默认 0）")
+    p.add_argument("--nv-spill-margin", type=int, default=None,
+                   help="FLAME 表面外扩多少像素后仍允许（给头发留余量）")
+    p.add_argument("--nv-alpha-min", type=float, default=None,
+                   help="溢出惩罚的 alpha 下限（默认 0.05）")
+    p.add_argument("--nv-alpha-max", type=float, default=None,
+                   help="溢出惩罚的 alpha 上限（默认 0.6；实色头发不罚）")
+    p.add_argument("--nv-min-px", type=int, default=None,
+                   help="面至少多少真实前景像素才算 supported")
+    p.add_argument("--nv-frames", type=int, default=None,
+                   help="统计逐面支持时抽多少帧真实图（默认 80）")
+    p.add_argument("--nv-yaws", type=float, nargs="+", default=None,
+                   help="新视角的 yaw 候选（默认 ±10/20/30/40）")
+    p.add_argument("--robust-spill-weight", type=float, default=None,
+                   help="早停指标里 面外溢出 的权重（默认 0 = 不计）")
     p.add_argument("--output-dir", type=Path, default=None)
     p.add_argument("--promote-name", default=None,
                    help="装进 models/ 时用的名字（默认与 --work-name 相同）")
@@ -158,6 +184,39 @@ def main(argv: list[str] | None = None) -> int:
                           if args.robust_eval_weight is not None
                           else cfg.get("train.pipeline.robust_eval_weight", 10.0))
 
+    lr_scale = float(args.lr_scale)
+    if lr_scale <= 0:
+        raise SystemExit(f"[error] --lr-scale 必须为正，实际 {args.lr_scale}")
+
+    def _nv(key, default):
+        return cfg.get(f"train.pipeline.novel_view.{key}", default)
+
+    nv_every = int(args.nv_every if args.nv_every is not None
+                   else _nv("every", 0))
+    nv_hole = float(args.nv_hole_weight if args.nv_hole_weight is not None
+                    else _nv("hole_weight", 0.0))
+    nv_spill = float(args.nv_spill_weight if args.nv_spill_weight is not None
+                     else _nv("spill_weight", 0.0))
+    nv_margin = int(args.nv_spill_margin if args.nv_spill_margin is not None
+                    else _nv("spill_margin", 12))
+    nv_alpha_min = float(args.nv_alpha_min if args.nv_alpha_min is not None
+                         else _nv("alpha_min", 0.05))
+    nv_alpha_max = float(args.nv_alpha_max if args.nv_alpha_max is not None
+                         else _nv("alpha_max", 0.6))
+    nv_min_px = int(args.nv_min_px if args.nv_min_px is not None
+                    else _nv("min_px", 16))
+    nv_frames = int(args.nv_frames if args.nv_frames is not None
+                    else _nv("frames", 80))
+    nv_yaws = list(args.nv_yaws if args.nv_yaws is not None
+                   else _nv("yaws", [-40, -30, -20, -10, 10, 20, 30, 40]))
+    robust_spill = float(args.robust_spill_weight
+                         if args.robust_spill_weight is not None
+                         else _nv("robust_spill_weight", 0.0))
+    nv_enabled = nv_every > 0 and (nv_hole > 0 or nv_spill > 0)
+    if nv_enabled and not nv_yaws:
+        raise SystemExit("[error] 新视角监督需要至少一个 --nv-yaws")
+    need_support = nv_enabled and nv_hole > 0
+
     from live3dgsavatar.data.sources import ManifestSource
 
     train_src = ManifestSource(data_dir, split="train", test_ratio=test_ratio,
@@ -170,9 +229,23 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  训练集 : {len(train_src)} 帧    验证集 : {len(val_src)} 帧"
           f"（末尾 {test_ratio:.0%}）")
     models_dir = Path(str(cfg.get("paths.models_dir")))
+    init_path = (Path(args.init_ply).expanduser()
+                 if args.init_ply is not None else None)
+    if init_path is not None and not init_path.is_file():
+        raise SystemExit(f"[error] --init-ply 不存在：{init_path}")
+    target_name = args.promote_name or work
+    target_dir = models_dir / subject / target_name
+    if args.no_overwrite and target_dir.exists():
+        raise SystemExit(
+            f"[error] 目标已存在：{target_dir}\n"
+            "         --no-overwrite：换个 --promote-name，或去掉该开关")
     model_cfg = resolve_structure_config(
         models_dir, subject, work, explicit=args.model_config,
         repo_default=REPO_ROOT / "configs" / "model.yaml")
+    if init_path is not None and args.model_config is None:
+        sibling = init_path.parent / "config.yaml"
+        if sibling.is_file():
+            model_cfg = sibling
     from live3dgsavatar.core.avatar import AvatarConfig
 
     avatar_cfg = AvatarConfig.from_yaml(model_cfg)
@@ -190,10 +263,20 @@ def main(argv: list[str] | None = None) -> int:
         b = train_src.random_batch(min(batch_size, 2))
         print(f"  [dry-run] batch: mesh {tuple(b.mesh.shape)}  "
               f"weight {tuple(b.blend_weight.shape)}  image {tuple(b.image.shape)}")
+        if init_path is not None:
+            print(f"  [dry-run] warm start: {init_path}")
+        if nv_enabled:
+            print(f"  [dry-run] 新视角监督: 每 {nv_every} 步，yaw {nv_yaws}，"
+                  f"hole {nv_hole:g} + spill {nv_spill:g}"
+                  f"（margin {nv_margin}px, alpha "
+                  f"{nv_alpha_min:g}–{nv_alpha_max:g}）")
         print(f"  [dry-run] 产物目录 {out_dir}")
         print("  [dry-run] 未执行训练（需要 GPU）")
         return 0
 
+    import random
+
+    import numpy as np
     import torch
 
     if not torch.cuda.is_available():
@@ -203,9 +286,10 @@ def main(argv: list[str] | None = None) -> int:
 
     from live3dgsavatar.core.avatar import GaussianAvatar
     from live3dgsavatar.core.deform.binding import build_binding
+    from live3dgsavatar.core.io import load_ply
     from live3dgsavatar.core.camera import orbit_w2c
     from live3dgsavatar.core.render import SimpleRasterizer
-    from live3dgsavatar.core.render.faceid import face_id_map
+    from live3dgsavatar.core.render.faceid import detect_flip, face_id_map
     from live3dgsavatar.evaluation import (RobustConfig, alpha_deficit,
                                            robust_score, robust_views,
                                            subsample, summarise_coverage,
@@ -219,14 +303,19 @@ def main(argv: list[str] | None = None) -> int:
                                                  ValidationHook)
 
     torch.manual_seed(args.seed)
+    random.seed(args.seed)
     device = torch.device(str(cfg.get("runtime.device", "cuda")))
     # ---- 几何与相机 ----
     scene = load_scene(cfg, frames=1, device=str(device))
     glctx = dr.RasterizeCudaContext()
-    binding = build_binding(scene.uvs.to(device), scene.uv_faces.to(device),
-                            tex_size=avatar_cfg.tex_size, glctx=glctx,
-                            device=device)
-    avatar = GaussianAvatar(avatar_cfg, binding).to(device)
+    if init_path is not None:
+        avatar = load_ply(init_path, config=avatar_cfg, device=str(device))
+        print(f"  初始化 : {init_path}（warm start）")
+    else:
+        binding = build_binding(scene.uvs.to(device), scene.uv_faces.to(device),
+                                tex_size=avatar_cfg.tex_size, glctx=glctx,
+                                device=device)
+        avatar = GaussianAvatar(avatar_cfg, binding).to(device)
     rasterizer = SimpleRasterizer()
     camera = Camera.from_intrinsics_extrinsics(
         K=scene.K, R=scene.R, T=scene.T,
@@ -245,11 +334,23 @@ def main(argv: list[str] | None = None) -> int:
 
     plan = ParameterPlan.rgba_avatar_defaults(
         scene_extent=float(cfg.get("render.scene_extent", 1.0)))
+    if lr_scale != 1.0:
+        plan = plan.scaled(lr_scale)
+        print(f"  lr 缩放 : {lr_scale:g}")
     mask_weight = float(args.mask_weight if args.mask_weight is not None
                         else cfg.get("train.pipeline.mask_weight", 1.0))
     objective = Objective.rgba_avatar_defaults()
     objective.mask_weight = mask_weight
+    objective.nv_hole = nv_hole
+    objective.nv_spill = nv_spill
+    supported_face = None
     print(f"  损失   : L1（背景权重 {mask_weight:.2f}）")
+    if nv_enabled:
+        print(f"  新视角 : 每 {nv_every} 步，yaw {nv_yaws}，"
+              f"hole {nv_hole:g} + spill {nv_spill:g}"
+              f"（margin {nv_margin}px, alpha {nv_alpha_min:g}–{nv_alpha_max:g}）")
+    else:
+        print("  新视角 : 关闭")
 
     def render_fn(mesh_verts, weight, batch, iteration):
         mesh = Mesh(verts=mesh_verts.to(device), faces=scene.faces.to(device),
@@ -257,6 +358,42 @@ def main(argv: list[str] | None = None) -> int:
         gs = avatar.deform(mesh, None if weight is None else weight.to(device))
         bg = torch.zeros(batch.image.shape[0], 3, 1, 1, device=device)
         out = rasterizer.render(gs, camera, bg, target_image=batch.image.to(device))
+
+        if nv_enabled and int(iteration) % int(nv_every) == 0:
+            from live3dgsavatar.training.losses import (alpha_hole_loss,
+                                                       surface_spill_loss)
+            i = random.randrange(int(mesh_verts.shape[0]))
+            yaw = float(random.choice(nv_yaws))
+            verts_nv = mesh_verts[i:i + 1].to(device)
+            weight_nv = None if weight is None else weight[i:i + 1].to(device)
+            center_nv = verts_nv[0].mean(dim=0).detach().cpu()
+            view_nv = orbit_w2c(w2c_data, center_nv, yaw, 0.0)
+            cam_nv = Camera(K=scene.K, w2c=view_nv.unsqueeze(0).to(device),
+                            width=scene.width,
+                            height=scene.height).to(device)
+            mesh_nv = Mesh(verts=verts_nv, faces=scene.faces.to(device),
+                           uvs=scene.uvs.to(device),
+                           uv_faces=scene.uv_faces.to(device))
+            with torch.no_grad():
+                ids_nv = face_id_map(verts_nv, scene.faces.to(device),
+                                     cam_nv, glctx, flip_y=False)
+                surface_nv = ids_nv >= 0
+                supported_nv = None
+                if supported_face is not None:
+                    supported_nv = (surface_nv
+                                    & supported_face[ids_nv.clamp(min=0)]
+                                    & surface_nv)
+            out_nv = rasterizer.render(
+                avatar.deform(mesh_nv, weight_nv), cam_nv,
+                torch.zeros(1, 3, 1, 1, device=device))
+            if nv_hole > 0 and supported_nv is not None:
+                out.nv_hole_loss = alpha_hole_loss(
+                    out_nv.alpha, supported_nv.unsqueeze(0).unsqueeze(0))
+            if nv_spill > 0:
+                out.nv_spill_loss = surface_spill_loss(
+                    out_nv.alpha, surface_nv.unsqueeze(0).unsqueeze(0),
+                    margin=nv_margin, alpha_min=nv_alpha_min,
+                    alpha_max=nv_alpha_max)
 
         return out
 
@@ -296,6 +433,7 @@ def main(argv: list[str] | None = None) -> int:
             picked = set(subsample(n, robust_cfg.frames))
             holes: list[float] = []
             deficits: list[float] = []
+            spills: list[float] = []
             frame = 0
             for batch in batches:
                 for i in range(batch.mesh.shape[0]):
@@ -326,15 +464,22 @@ def main(argv: list[str] | None = None) -> int:
                                 holes.append(float((alpha[surface] < 0.5).float()
                                                    .mean()))
                                 deficits.append(alpha_deficit(alpha, surface))
+                                filled = alpha > 0.5
+                                spills.append(float((filled & ~surface).sum())
+                                              / max(1, int(filled.sum())))
                     frame += 1
             summary = summarise_holes(holes)
             metrics.update(summary)
             metrics.update(summarise_coverage(deficits))
+            metrics["outside_mean"] = (float(np.mean(spills)) if spills else 0.0)
             # 早停用阈值孔洞：与离线评估（compare_defects）同一口径。
             # 连续缺口只作为诊断量记录 —— 实测它与阈值口径几乎同值。
-            metrics["robust"] = robust_score(metrics["psnr"],
-                                             metrics["hole_mean"],
-                                             weight=robust_cfg.weight)
+            # 面外溢出按 robust_spill 权重计入（默认 0，保持旧行为）。
+            metrics["robust"] = (robust_score(metrics["psnr"],
+                                              metrics["hole_mean"],
+                                              weight=robust_cfg.weight)
+                                 - float(robust_spill)
+                                 * metrics["outside_mean"])
         last_eval.clear()
         last_eval.update(metrics)
         return metrics
@@ -353,7 +498,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  [best] 第 {iteration} 步 robust {metric:.2f}"
                   f"（PSNR {last_eval.get('psnr', float('nan')):.2f}，"
                   f"缺口 {last_eval.get('deficit_mean', float('nan')):.3f}，"
-                  f"阈值孔洞 {last_eval.get('hole_mean', float('nan')):.1%}）"
+                  f"阈值孔洞 {last_eval.get('hole_mean', float('nan')):.1%}，"
+                  f"面外溢出 {last_eval.get('outside_mean', float('nan')):.1%}）"
                   " → model_best.ply", flush=True)
         else:
             print(f"  [best] 第 {iteration} 步 验证 {metric:.2f} dB → model_best.ply",
@@ -368,6 +514,52 @@ def main(argv: list[str] | None = None) -> int:
                        on_improve=save_best),
         CheckpointHook(save=save, every=save_every),
     )
+
+    if need_support:
+        def sample_face_stats(n_frames: int):
+            """逐面真实前景像素数（只统计真实数据，给新视角 hole 用）。
+
+            脖子/胸口在图像里是背景，mask 会排除，所以不会被当成"看到过"。
+            """
+            n_faces = int(scene.faces.shape[0])
+            counts = np.zeros(n_faces, np.int64)
+            flip = None
+            seen = 0
+            bg_stats = torch.zeros(1, 3, 1, 1, device=device)
+            for batch in train_src.iter_batches(batch_size):
+                for i in range(batch.mesh.shape[0]):
+                    if seen >= n_frames:
+                        break
+                    verts = batch.mesh[i:i + 1].to(device)
+                    weight_i = batch.blend_weight[i:i + 1].to(device)
+                    if flip is None:
+                        mesh = Mesh(verts=verts, faces=scene.faces.to(device),
+                                    uvs=scene.uvs.to(device),
+                                    uv_faces=scene.uv_faces.to(device))
+                        with torch.no_grad():
+                            gs = avatar.deform(mesh, weight_i)
+                            out = rasterizer.render(gs, camera, bg_stats)
+                        flip, _ = detect_flip(
+                            verts, scene.faces, camera, glctx,
+                            out.alpha[0, 0].detach().cpu().numpy())
+                    ids = face_id_map(verts, scene.faces, camera, glctx,
+                                      flip_y=flip).detach().cpu().numpy()
+                    fg = batch.mask[i, 0].numpy() > 0.5
+                    sel = fg & (ids >= 0)
+                    if bool(sel.any()):
+                        np.add.at(counts, ids[sel], 1)
+                    seen += 1
+                if seen >= n_frames:
+                    break
+            print(f"  逐面前景统计: {seen} 帧，"
+                  f"{int((counts > 0).sum())} 个面被看到", flush=True)
+            return counts
+
+        counts = sample_face_stats(nv_frames)
+        supported_face = torch.as_tensor(counts >= int(nv_min_px),
+                                         device=device)
+        print(f"  新视角支持面: {int(supported_face.sum())}/"
+              f"{supported_face.numel()}（≥{nv_min_px} px）", flush=True)
 
     from live3dgsavatar.data.sources import PrefetchSource
 
