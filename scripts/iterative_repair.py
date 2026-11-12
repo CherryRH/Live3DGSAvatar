@@ -11,7 +11,15 @@
     python scripts/iterative_repair.py --subject biden \
         --base-work train1_repair_r1 --prefix top2 --top-n 2 \
         --rings "30,20;40,30;50,30" --round-offset 1 \
-        --seed-defects output/defects/biden/repair_r1
+        --seed-defects output/post/biden/top2/r1/defects
+
+产物（每次运行一个目录）：
+    output/post/<subject>/<prefix>/
+        report.json
+        cum/            （累计伪标签 + finetune 产物）
+        r1/defects/     （find_defects：views/refs/selected.json）
+        r1/pseudo/      （pseudo_label：accepted/debug/report.json）
+        r2/ ...
 """
 
 from __future__ import annotations
@@ -155,9 +163,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--psnr-weight", type=float, default=0.002,
                     help="PSNR 在质量分中的小权重（默认 0.002/dB）")
     ap.add_argument("--out-root", type=Path, default=None,
-                    help="默认 output/defects/<subject>")
-    ap.add_argument("--gen-root", type=Path,
-                    default=REPO_ROOT / "output")
+                    help="运行根目录；默认 output/post。"
+                         "每次运行落在 <out-root>/<subject>/<prefix>/")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args(argv)
 
@@ -166,8 +173,15 @@ def main(argv: list[str] | None = None) -> int:
     if not rings:
         raise SystemExit("[error] --rings 为空")
     out_root = (args.out_root if args.out_root is not None
-                else REPO_ROOT / "output" / "defects" / args.subject)
-    cum = out_root / f"{args.prefix}_cum"
+                else REPO_ROOT / "output" / "post")
+    run_dir = out_root / args.subject / args.prefix
+    # 全新运行先清掉同名目录，避免上一次多出来的 r3/r4 残留；
+    # 续跑（--round-offset / --seed-defects）则只重建 cum。
+    if (run_dir.exists() and not args.dry_run
+            and args.round_offset == 0 and args.seed_defects is None):
+        shutil.rmtree(run_dir)
+    run_dir.mkdir(parents=True, exist_ok=True)
+    cum = run_dir / "cum"
     if cum.exists() and not args.dry_run:
         shutil.rmtree(cum)
     cum.mkdir(parents=True, exist_ok=True)
@@ -191,8 +205,8 @@ def main(argv: list[str] | None = None) -> int:
     for i, (yaw, pitch) in enumerate(rings):
         k = args.round_offset + i + 1
         rtag = f"r{k}"
-        rdir = out_root / f"{args.prefix}_{rtag}"
-        gendir = args.gen_root / f"gen_{args.prefix}_{rtag}"
+        rdir = run_dir / rtag / "defects"
+        gendir = run_dir / rtag / "pseudo"
         if rdir.exists() and not args.dry_run:
             shutil.rmtree(rdir)
         if gendir.exists() and not args.dry_run:
@@ -397,7 +411,8 @@ def main(argv: list[str] | None = None) -> int:
                        (f"{args.prefix}_{best_round['round']}"
                         if best_round else None)),
     }
-    (out_root / f"{args.prefix}_report.json").write_text(
+    report_path = run_dir / "report.json"
+    report_path.write_text(
         json.dumps(out, ensure_ascii=False, indent=1), encoding="utf-8")
     print(f"\n完成 {args.prefix}：{len(rounds)} 轮，总 {total:.1f}s", flush=True)
     if in_place:
@@ -409,7 +424,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  最佳 {best_round['round']}：{best_round['best']}"
               + (f"，最佳累计 {best_secs:.1f}s" if best_secs is not None else ""),
               flush=True)
-    print(f"  报告：{out_root / (args.prefix + '_report.json')}", flush=True)
+    print(f"  报告：{report_path}", flush=True)
     return 0
 
 

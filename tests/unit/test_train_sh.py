@@ -105,8 +105,10 @@ def test_post_flags_toggle_the_second_stage() -> None:
     assert in_place["post_in_place"] == "1"
     # 原地更新时 prefix 就是 work 名（报告叫 best_report.json，不是 best_post_*）
     assert in_place["post_prefix"] == "w"
+    assert in_place["post_dir"] == "output/post/s/w"
     # 默认 prefix 跟随 work 名；显式 --prefix 覆盖
     assert plan["post_prefix"] == "w_post"
+    assert plan["post_dir"] == "output/post/s/w_post"
     plan = _plan("--post-train", "--prefix", "mix")
     assert plan["post_prefix"] == "mix"
 

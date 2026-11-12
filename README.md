@@ -100,8 +100,20 @@ python scripts/iterative_repair.py --subject <对象> --base-work <版本> \
 - 监督：累计标签（旧视角继续监督）+ 真实帧 8 : 伪标签 2；
 - 选最佳：**`SSIM − LPIPS + 0.002·PSNR`**（PSNR 权重很小，避免选到
   「PSNR 高但脖子起雾」的轮）；质量分比最佳低 0.01 就早停，保留最佳轮；
-- 产物：`models/<对象>/<版本>_post_r*/`，报告在
-  `output/defects/<对象>/<版本>_post_report.json`（含每轮耗时）。
+- 产物：模型在 `models/<对象>/<版本>_post_r*/`；一次后训练的全部中间产物都在
+  一个目录里，不再散落：
+
+  ```text
+  output/post/<对象>/<版本>_post/
+    report.json              汇总（每轮耗时、最佳轮）
+    r1/defects/              选角结果（渲染视角 + 真实参考帧）
+    r1/pseudo/               扩散生成的伪标签
+    r2/ ...                  下一圈
+    cum/                     累计伪标签 + finetune 产物
+  ```
+
+  `rN/defects` 是**输入**（选出来的缺陷视角），`rN/pseudo` 是**输出**（扩散伪标签），
+  不是重复；以前它们分别叫 `<版本>_post_rN` 和 `gen_<版本>_post_rN`。
 
 默认参数见 `configs/train.yaml` 的 `post_train` 段；详细说明见
 [`docs/POSTTRAIN.md`](docs/POSTTRAIN.md)。旧的外部 SyncFix 链路已移除。

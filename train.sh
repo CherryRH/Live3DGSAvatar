@@ -26,7 +26,7 @@
 # 产物：
 #   models/<对象>/<版本>/             基础模型（train.py 自动装入）
 #   models/<对象>/<版本>_post_r*/     后训练每轮的最佳检查点
-#   output/defects/<对象>/<版本>_post_report.json
+#   output/post/<对象>/<版本>_post/    后训练运行目录（report.json + r*/ + cum/）
 #   --in-place 时不产生 *_post_r*：每轮更好的结果直接写回 models/<对象>/<版本>/
 #
 # 注意：train.sh 自己编排后训练，调用 train.py 时固定加 --no-post-train，
@@ -118,6 +118,7 @@ print_plan() {
 subject=$SUBJECT
 work=$WORK
 post_prefix=$PREFIX
+post_dir=output/post/$SUBJECT/$PREFIX
 post_enabled=$DO_POST
 post_only=$POST_ONLY
 post_in_place=$IN_PLACE
@@ -212,7 +213,7 @@ post_train() {
 }
 
 post_report() {
-  local report="output/defects/$SUBJECT/${PREFIX}_report.json"
+  local report="output/post/$SUBJECT/$PREFIX/report.json"
   [[ -f "$report" ]] || die "后训练没有产出报告：$report"
   "${PY_RUN[@]}" -c '
 import json
