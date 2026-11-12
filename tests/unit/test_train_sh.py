@@ -93,6 +93,7 @@ def test_plan_defaults_to_base_only() -> None:
     plan = _plan()
     assert plan["post_enabled"] == "0"
     assert plan["post_only"] == "0"
+    assert plan["post_in_place"] == "0"
 
 
 def test_post_flags_toggle_the_second_stage() -> None:
@@ -100,6 +101,10 @@ def test_post_flags_toggle_the_second_stage() -> None:
     assert plan["post_enabled"] == "1" and plan["post_only"] == "0"
     plan = _plan("--post-only")
     assert plan["post_enabled"] == "1" and plan["post_only"] == "1"
+    in_place = _plan("--post-train", "--in-place")
+    assert in_place["post_in_place"] == "1"
+    # 原地更新时 prefix 就是 work 名（报告叫 best_report.json，不是 best_post_*）
+    assert in_place["post_prefix"] == "w"
     # 默认 prefix 跟随 work 名；显式 --prefix 覆盖
     assert plan["post_prefix"] == "w_post"
     plan = _plan("--post-train", "--prefix", "mix")

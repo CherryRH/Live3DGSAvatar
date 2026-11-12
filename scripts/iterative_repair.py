@@ -54,6 +54,17 @@ def run(cmd: list[str], *, dry: bool = False) -> tuple[int, float]:
     return p.returncode, dt
 
 
+def install_in_place(models_root: Path, subject: str, name: str,
+                     src_ply: Path, report_src: Path | None = None) -> Path:
+    """把改进后的模型写回同名目录（如 `best`），config 保持不动。"""
+    target = models_root / subject / name
+    target.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(src_ply, target / "model.ply")
+    if report_src is not None and report_src.is_file():
+        shutil.copy2(report_src, target / "report.json")
+    return target
+
+
 def _merge_selected(dst: Path, src: Path, *, keep: set[str]) -> None:
     """把 src 的 selected.json 合并到 dst，只保留累计 chosen。"""
     sd = json.loads((src / "selected.json").read_text(encoding="utf-8"))
@@ -84,6 +95,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--base-work", required=True,
                     help="当前模型名（models/<subject>/<name>）")
     ap.add_argument("--prefix", required=True, help="输出前缀，如 top2 / top1")
+    ap.add_argument("--in-place", action="store_true",
+                    help="每轮只把改进后的模型写回 --base-work（如 best），"
+                         "不产生 <prefix>_rN；基座 checkpoint 仍在 output/train/")
     ap.add_argument("--top-n", type=int, default=2)
     ap.add_argument("--rings", required=True,
                     help="每轮 (yaw,pitch) 上限，如 '30,20;40,30;50,30'")
@@ -157,6 +171,9 @@ def main(argv: list[str] | None = None) -> int:
     if cum.exists() and not args.dry_run:
         shutil.rmtree(cum)
     cum.mkdir(parents=True, exist_ok=True)
+
+    in_place = bool(args.in_place)
+    models_root = REPO_ROOT / "models"
 
     keep: set[str] = set()
     if args.seed_defects is not None:
@@ -246,12 +263,13 @@ def main(argv: list[str] | None = None) -> int:
             break
 
         promote = f"{args.prefix}_{rtag}"
+        promote_args = ([] if in_place else
+                        ["--promote", "--promote-name", promote, "--force"])
         rc, dt_ft = run([PY, "scripts/refine_from_images.py",
                          "--subject", args.subject, "--work-name", base,
                          "--dataset", dataset, "--defects", str(cum),
                          "--steps", str(args.steps), "--eval-every", "50",
-                         "--eval-frames", "64", "--promote",
-                         "--promote-name", promote, "--force",
+                         "--eval-frames", "64", *promote_args,
                          "--lr-xyz", f"{args.lr_xyz:g}",
                          "--ssim-weight", "0.2", "--lpips-weight", "0.1",
                          "--refined-per-batch", str(args.refined_per_batch),
@@ -276,7 +294,8 @@ def main(argv: list[str] | None = None) -> int:
         rounds.append({
             "round": rtag, "yaw": yaw, "pitch": pitch,
             "views": sorted(new), "labels": labels,
-            "model": promote,
+            "model": args.base_work if in_place else promote,
+            "promoted": False,
             "best_seconds": best_secs,
             "before": (rep.get("before") if rep is not None else None),
             "best": best,
@@ -295,6 +314,9 @@ def main(argv: list[str] | None = None) -> int:
         if best is None:
             print("[stop] 没有通过的检查点", flush=True)
             break
+        if not in_place:
+            # refine 内部已经把本轮模型装进 models/<subject>/<prefix>_rN
+            rounds[-1]["promoted"] = True
         before = rep.get("before") if rep is not None else None
         # 绝对阈值只是兜底：不同对象/基座的 SSIM 本来就不一样（biden 0.95，
         # 别的对象可能 0.92），只按绝对值会把"正常但偏低"当成崩坏。
@@ -313,14 +335,29 @@ def main(argv: list[str] | None = None) -> int:
             break
         q = (best.get("ssim", 0.0) - best.get("lpips", 1.0)
              + args.psnr_weight * best.get("psnr", 0.0))
-        if best_quality is None or q > best_quality:
+        improved = best_quality is None or q > best_quality
+        if improved:
             best_quality = q
             best_round_tag = rtag
-        elif q < best_quality - args.quality_tol:
-            print(f"[stop] 质量分 {q:.4f} 低于最佳 {best_quality:.4f} "
-                  f"超过 {args.quality_tol:g}，早停", flush=True)
-            break
-        base = promote
+        if in_place:
+            # 只有更好才覆盖，避免后一轮退化把 best 写坏
+            if improved:
+                install_in_place(models_root, args.subject, args.base_work,
+                                 cum / "finetune" / "model.ply",
+                                 cum / "finetune" / "report.json")
+                rounds[-1]["promoted"] = True
+                print(f"  写回 models/{args.subject}/{args.base_work}"
+                      "（本轮质量更好）", flush=True)
+            elif q < best_quality - args.quality_tol:
+                print(f"[stop] 质量分 {q:.4f} 低于最佳 {best_quality:.4f} "
+                      f"超过 {args.quality_tol:g}，早停（不动 best）", flush=True)
+                break
+        else:
+            if not improved and q < best_quality - args.quality_tol:
+                print(f"[stop] 质量分 {q:.4f} 低于最佳 {best_quality:.4f} "
+                      f"超过 {args.quality_tol:g}，早停", flush=True)
+                break
+            base = promote
         print(f"  下一轮 base={base}", flush=True)
 
     total = time.perf_counter() - start
@@ -353,13 +390,20 @@ def main(argv: list[str] | None = None) -> int:
             "feather": args.feather,
         },
         "rounds": rounds, "total_seconds": round(total, 1),
+        "in_place": in_place,
+        "improved": any(r.get("promoted") for r in rounds),
         "best_round": best_round,
-        "best_model": f"{args.prefix}_{best_round['round']}"
-        if best_round else None,
+        "best_model": (args.base_work if in_place else
+                       (f"{args.prefix}_{best_round['round']}"
+                        if best_round else None)),
     }
     (out_root / f"{args.prefix}_report.json").write_text(
         json.dumps(out, ensure_ascii=False, indent=1), encoding="utf-8")
     print(f"\n完成 {args.prefix}：{len(rounds)} 轮，总 {total:.1f}s", flush=True)
+    if in_place:
+        updated = any(r.get("promoted") for r in rounds)
+        print(f"  模型：models/{args.subject}/{args.base_work}"
+              f"（{'已更新' if updated else '未改进，保持基座'}）", flush=True)
     if best_round:
         best_secs = best_round.get("best_seconds")
         print(f"  最佳 {best_round['round']}：{best_round['best']}"

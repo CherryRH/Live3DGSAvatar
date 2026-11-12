@@ -74,6 +74,18 @@ bash train.sh --subject <对象> --work-name <版本> --post-only
 bash train.sh --subject <对象> --work-name <版本> --plan
 ```
 
+默认每轮保留 `models/<对象>/<版本>_post_rN`，报告里选最佳轮。如果希望后训练
+始终写回当前模型名（例如 `best`），加 `--in-place`：
+
+```bash
+bash train.sh --subject biden --work-name best --post-train --in-place
+# 只有质量更好时才覆盖 models/biden/best；不生成 best_post_rN
+```
+
+`best` 是基础训练装入的验证集最佳检查点（`train.py` 用 `model_best.ply`），
+后训练直接从它继续。基座原始 checkpoint 仍在
+`output/train/<对象>/<版本>/model_best.ply`，需要回滚时用它。
+
 等价于基础训练落地后运行 `scripts/iterative_repair.py`：
 
 ```bash

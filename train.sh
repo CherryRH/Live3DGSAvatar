@@ -5,6 +5,8 @@
 #   bash train.sh --subject biden --work-name base
 #   bash train.sh --subject biden --work-name base --post-train   # 基础 + 后训练
 #   bash train.sh --subject biden --work-name base --post-only    # 只跑后训练
+#   bash train.sh --subject biden --work-name best --post-train --in-place
+#                                                   # 每轮写回 best，不生成 *_post_rN
 #   bash train.sh --subject biden --work-name base --plan         # 只打印稳定路线
 #   bash train.sh --subject biden --work-name base -- --dry-run   # 训练侧 dry-run
 #
@@ -25,6 +27,7 @@
 #   models/<对象>/<版本>/             基础模型（train.py 自动装入）
 #   models/<对象>/<版本>_post_r*/     后训练每轮的最佳检查点
 #   output/defects/<对象>/<版本>_post_report.json
+#   --in-place 时不产生 *_post_r*：每轮更好的结果直接写回 models/<对象>/<版本>/
 #
 # 注意：train.sh 自己编排后训练，调用 train.py 时固定加 --no-post-train，
 # 因此 configs/train.yaml 里的 post_train.enabled 不会在这里重复触发。
@@ -69,8 +72,10 @@ usage() {
 SUBJECT=""
 WORK=""
 PREFIX=""
+PREFIX_SET=0
 DO_POST=0
 POST_ONLY=0
+IN_PLACE=0
 PLAN=0
 PASSTHRU=()
 
@@ -78,9 +83,10 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --subject)    SUBJECT="${2:-}"; shift 2 ;;
     --work-name)  WORK="${2:-}"; shift 2 ;;
-    --prefix)     PREFIX="${2:-}"; shift 2 ;;
+    --prefix)     PREFIX="${2:-}"; PREFIX_SET=1; shift 2 ;;
     --post-train) DO_POST=1; shift ;;
     --post-only)  DO_POST=1; POST_ONLY=1; shift ;;
+    --in-place)   IN_PLACE=1; shift ;;
     --plan|--show-plan) PLAN=1; shift ;;
     -h|--help)    usage ;;
     --)           shift; PASSTHRU+=("$@"); break ;;
@@ -90,7 +96,13 @@ done
 
 [[ -n "$SUBJECT" ]] || die "需要 --subject（例如 --subject biden）"
 [[ -n "$WORK" ]] || die "需要 --work-name（例如 --work-name base）"
-PREFIX="${PREFIX:-${WORK}_post}"
+if (( PREFIX_SET == 0 )); then
+  if (( IN_PLACE == 1 )); then
+    PREFIX="$WORK"          # 原地更新：报告/中间目录也用 work 名
+  else
+    PREFIX="${WORK}_post"
+  fi
+fi
 
 # `--` 之后的 --dry-run 已经透传给 train.py；后训练阶段不再执行。
 DRY=0
@@ -108,6 +120,7 @@ work=$WORK
 post_prefix=$PREFIX
 post_enabled=$DO_POST
 post_only=$POST_ONLY
+post_in_place=$IN_PLACE
 post_base_model=$POST_BASE_MODEL
 post_ip_adapter=$POST_IP_ADAPTER
 post_top_n=$POST_TOP_N
@@ -186,6 +199,7 @@ post_train() {
     --base-model "$POST_BASE_MODEL" --ip-adapter "$POST_IP_ADAPTER"
     --prompt "$POST_PROMPT" --negative "$POST_NEGATIVE"
   )
+  if (( IN_PLACE == 1 )); then args+=(--in-place); fi
   if (( DRY == 1 )); then
     info "后训练（dry-run 不执行）：python scripts/iterative_repair.py ${args[*]}"
     return 0
