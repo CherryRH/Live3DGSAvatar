@@ -73,6 +73,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--eval-frames", type=int, default=64,
                    help="选点用的帧数（从训练段随机取，且这些帧不参与锚定）")
     p.add_argument("--eval-seed", type=int, default=0)
+    p.add_argument("--select-by", choices=("psnr", "quality"), default="psnr",
+                   help="model_best 的选择依据；iterative_repair 用 quality")
+    p.add_argument("--psnr-weight", type=float, default=0.002,
+                   help="quality 模式下 PSNR 的小权重（默认 0.002/dB）")
     p.add_argument("--eval-mode", choices=("angle", "random", "holdout", "both"),
                    default="angle",
                    help="angle=全数据集里挑大角度帧（默认，适合增强阶段）；"
@@ -506,7 +510,7 @@ def main(argv: list[str] | None = None) -> int:
 
         def __init__(self, out_dir: Path):
             self.out_dir = out_dir
-            self.best = -1e9
+            self.best = -1e9          # 当前评分（psnr 或 quality），不是 PSNR
             self.best_seconds: float | None = None
             self._t0: float | None = None
             self.history: list[dict] = []
@@ -530,8 +534,11 @@ def main(argv: list[str] | None = None) -> int:
                     and m["lpips"] > lpips_max:
                 reasons.append(f"LPIPS {m['lpips']:.4f} > {lpips_max:.4f}")
             passed = not reasons and bool(m["n"])
+            score = (m["psnr"] if args.select_by == "psnr" else
+                     (m.get("ssim") or 0.0) - (m.get("lpips") or 1.0)
+                     + args.psnr_weight * m["psnr"])
             self.history.append({
-                "iteration": iteration, "passed": passed,
+                "iteration": iteration, "passed": passed, "score": round(score, 4),
                 "psnr": round(m["psnr"], 3), "sharp": round(m["sharp"], 3),
                 "ssim": (round(m["ssim"], 4) if m.get("ssim") is not None else None),
                 "lpips": (round(m["lpips"], 4) if m.get("lpips") is not None else None),
@@ -544,8 +551,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  [{iteration}] PSNR {m['psnr']:.2f}  锐度比 {m['sharp']:.3f}"
                   f"{extra}" + ("" if passed else f"  ✗ {', '.join(reasons)}"),
                   flush=True)
-            if passed and m["psnr"] > self.best:
-                self.best = m["psnr"]
+            if passed and score > self.best:
+                self.best = score
                 save_ply(avatar, self.out_dir / "model_best.ply")
                 secs = (time.perf_counter() - self._t0
                         if self._t0 is not None else 0.0)
@@ -606,6 +613,7 @@ def main(argv: list[str] | None = None) -> int:
         "ssim_weight": args.ssim_weight,
         "lpips_weight": args.lpips_weight, "lpips_from": args.lpips_from,
         "lr_xyz": args.lr_xyz, "sharp_guard": args.sharp_guard,
+        "select_by": args.select_by, "psnr_weight": args.psnr_weight,
         "gates": {"sharp_min": guard, "ssim_min": ssim_min,
                   "lpips_max": lpips_max},
         "passed_any": (out_dir / "model_best.ply").is_file(),

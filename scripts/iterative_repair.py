@@ -235,6 +235,7 @@ def main(argv: list[str] | None = None) -> int:
     rounds = []
     best_quality = None
     best_round_tag = None
+    best_model_name = args.base_work
     for i, (yaw, pitch) in enumerate(rings):
         k = args.round_offset + i + 1
         rtag = f"r{k}"
@@ -323,7 +324,10 @@ def main(argv: list[str] | None = None) -> int:
                          "--subject", args.subject, "--work-name", base,
                          "--dataset", dataset, "--defects", str(cum),
                          "--steps", str(args.steps), "--eval-every", "50",
-                         "--eval-frames", "64", *promote_args,
+                         "--eval-frames", "64",
+                         "--select-by", "quality",
+                         "--psnr-weight", f"{args.psnr_weight:g}",
+                         *promote_args,
                          "--lr-xyz", f"{args.lr_xyz:g}",
                          "--ssim-weight", "0.2", "--lpips-weight", "0.1",
                          "--refined-per-batch", str(args.refined_per_batch),
@@ -340,9 +344,10 @@ def main(argv: list[str] | None = None) -> int:
             rep = json.loads(report_path.read_text(encoding="utf-8"))
             hist = [h for h in rep.get("score_history", []) if h.get("passed")]
             if hist:
-                # 用户优先级：SSIM 高、LPIPS 低；不按 PSNR 选
-                best = max(hist, key=lambda h: h.get("ssim", 0.0)
-                           - h.get("lpips", 1.0))
+                # 与 model_best 的选择一致：quality = SSIM − LPIPS + w·PSNR
+                best = max(hist, key=lambda h: (
+                    h.get("ssim", 0.0) - h.get("lpips", 1.0)
+                    + args.psnr_weight * h.get("psnr", 0.0)))
         dt_round = time.perf_counter() - t_round
         best_secs = rep.get("best_seconds") if rep is not None else None
         rounds.append({
@@ -350,6 +355,7 @@ def main(argv: list[str] | None = None) -> int:
             "views": sorted(new), "labels": labels,
             "model": args.base_work if in_place else promote,
             "promoted": False,
+            "improved": False,
             "best_seconds": best_secs,
             "before": (rep.get("before") if rep is not None else None),
             "best": best,
@@ -390,9 +396,12 @@ def main(argv: list[str] | None = None) -> int:
         q = (best.get("ssim", 0.0) - best.get("lpips", 1.0)
              + args.psnr_weight * best.get("psnr", 0.0))
         improved = best_quality is None or q > best_quality
+        rounds[-1]["improved"] = bool(improved)
         if improved:
             best_quality = q
             best_round_tag = rtag
+            if not in_place:
+                best_model_name = promote
         if in_place:
             # 只有更好才覆盖，避免后一轮退化把 best 写坏
             if improved:
@@ -411,7 +420,9 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"[stop] 质量分 {q:.4f} 低于最佳 {best_quality:.4f} "
                       f"超过 {args.quality_tol:g}，早停", flush=True)
                 break
-            base = promote
+            # 只有更好的轮次才作为下一轮起点；更差但仍可接受的轮次
+            # 不接进链里，避免 LPIPS/感知质量逐轮累积退化
+            base = promote if improved else best_model_name
         print(f"  下一轮 base={base}", flush=True)
 
     total = time.perf_counter() - start
@@ -450,11 +461,9 @@ def main(argv: list[str] | None = None) -> int:
         },
         "rounds": rounds, "total_seconds": round(total, 1),
         "in_place": in_place,
-        "improved": any(r.get("promoted") for r in rounds),
+        "improved": any(r.get("improved") for r in rounds),
         "best_round": best_round,
-        "best_model": (args.base_work if in_place else
-                       (f"{args.prefix}_{best_round['round']}"
-                        if best_round else None)),
+        "best_model": best_model_name,
     }
     report_path = run_dir / "report.json"
     report_path.write_text(
