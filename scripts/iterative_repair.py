@@ -73,8 +73,14 @@ def install_in_place(models_root: Path, subject: str, name: str,
     return target
 
 
-def _merge_selected(dst: Path, src: Path, *, keep: set[str]) -> None:
-    """把 src 的 selected.json 合并到 dst，只保留累计 chosen。"""
+def _merge_selected(dst: Path, src: Path, *, keep: set[str],
+                    refined_src: Path | None = None) -> None:
+    """把 src 的 selected.json 合并到 dst，只保留累计 chosen。
+
+    `refined_src` 指定这一轮通过门控的标签目录。新流程用
+    `pseudo/accepted/`，不再往 `defects/refined/` 复制一份；旧目录
+    （`src/refined`）仍然兼容。
+    """
     sd = json.loads((src / "selected.json").read_text(encoding="utf-8"))
     sd["views"]["chosen"] = [v for v in sd["views"]["chosen"] if v in keep]
     for sub in ("views", "refs"):
@@ -82,8 +88,20 @@ def _merge_selected(dst: Path, src: Path, *, keep: set[str]) -> None:
             shutil.copytree(src / sub, dst / sub, dirs_exist_ok=True)
     if (src / "mass.npz").is_file():
         shutil.copy2(src / "mass.npz", dst / "mass.npz")
-    if (src / "refined").is_dir():
-        shutil.copytree(src / "refined", dst / "refined", dirs_exist_ok=True)
+    labels = refined_src if refined_src is not None else src / "refined"
+    if not labels.is_dir():
+        # 新布局：<run>/rN/defects 的兄弟目录 pseudo/accepted
+        alt = src.parent / "pseudo" / "accepted"
+        if alt.is_dir():
+            labels = alt
+    if labels.is_dir():
+        out = dst / "refined"
+        out.mkdir(parents=True, exist_ok=True)
+        for png in labels.glob("*.png"):
+            # 只保留 selected.json 里累计 chosen 的标签，避免 accepted 里
+            # 残留的旧图混进监督集
+            if png.stem in keep:
+                shutil.copy2(png, out / png.name)
     (dst / "selected.json").write_text(
         json.dumps(sd, ensure_ascii=False, indent=1), encoding="utf-8")
 
@@ -275,7 +293,7 @@ def main(argv: list[str] | None = None) -> int:
                           "--ip-adapter-image-encoder",
                           args.ip_adapter_image_encoder,
                           "--ip-adapter-scale", f"{args.ip_adapter_scale:g}",
-                          "--install-refined"], dry=args.dry_run)
+                          ], dry=args.dry_run)
         if rc != 0:
             print("[stop] pseudo_label 失败", flush=True)
             break
@@ -291,7 +309,8 @@ def main(argv: list[str] | None = None) -> int:
             print("[stop] 没有选中视角", flush=True)
             break
         keep |= new
-        _merge_selected(cum, rdir, keep=keep)
+        _merge_selected(cum, rdir, keep=keep,
+                        refined_src=gendir / "accepted")
         labels = len(list((cum / "refined").glob("*.png")))
         if labels == 0:
             print("[stop] 没有可用伪标签", flush=True)
