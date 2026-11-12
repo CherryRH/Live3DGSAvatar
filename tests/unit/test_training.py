@@ -366,6 +366,24 @@ def test_checkpoint_hook_saves_at_intervals_and_end() -> None:
     assert saved == [1, 3, report.iterations], saved
 
 
+def test_validation_hook_does_not_stop_before_start_after() -> None:
+    """形变基暖启动阶段不许早停，但 best 仍要正常记录。"""
+    values = iter([1.0] * 20)
+
+    def evaluate(_source):
+        return {"psnr": next(values, 1.0)}
+
+    t = _trainer(iterations=10, hooks=(
+        ValidationHook(source=_FakeSource(), evaluate=evaluate, every=1,
+                       early_stop=EarlyStopping(patience=1, min_delta=0.0),
+                       start_after=5),))
+    report = t.run()
+    assert report.stopped_early is True
+    # start_after=5 之前不允许停；iteration=5 请求停止，循环在第 7 步退出
+    assert report.iterations == 7
+    assert report.best_metric == pytest.approx(1.0)
+
+
 def test_validation_hook_early_stops_on_plateau() -> None:
     values = iter([1.0, 1.0, 1.0, 1.0, 1.0, 1.0])
 

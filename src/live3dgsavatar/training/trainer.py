@@ -238,12 +238,15 @@ class ValidationHook:
     def __init__(self, *, source, evaluate: Callable, every: int = 2000,
                  early_stop: EarlyStopping | None = None,
                  metric: str = "psnr",
-                 on_improve: Callable[[int, float], None] | None = None) -> None:
+                 on_improve: Callable[[int, float], None] | None = None,
+                 start_after: int = 0) -> None:
         self.source = source
         self.evaluate = evaluate
         self.every = int(every)
         self.early_stop = early_stop
         self.metric = metric
+        #: 该步之前只记录/选最佳，不允许早停（形变基暖启动阶段）
+        self.start_after = int(start_after)
         #: 验证指标刷新最好成绩时调用 `(iteration, value)` —— 存"最佳模型"用
         self.on_improve = on_improve
         self.history: list[tuple[int, dict[str, float]]] = []
@@ -259,10 +262,15 @@ class ValidationHook:
         metrics = self.evaluate(self.source)
         self.history.append((iteration, metrics))
         if self.early_stop is not None and self.metric in metrics:
-            if self.early_stop.update(metrics[self.metric]):
+            stop = self.early_stop.update(metrics[self.metric])
+            improved = self.early_stop.improved
+            if iteration < self.start_after and not improved:
+                # 暖启动阶段不累计"无提升"，否则可能在 blend 打开前就停
+                self.early_stop.bad = 0
+            if stop and iteration >= self.start_after:
                 trainer.request_stop()
                 trainer.report.stopped_early = True
-            elif self.early_stop.improved:
+            elif improved:
                 trainer.report.best_metric = self.early_stop.best
                 trainer.report.best_iteration = iteration
                 self.best_iteration = iteration

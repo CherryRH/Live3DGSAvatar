@@ -53,8 +53,9 @@ bash train.sh --subject <对象> --work-name <版本> --no-spill        # 原版
 - **默认几何监督**：每 4 步采一个 ±10..50° 新视角，罚 FLAME 表面外
   12px 之外的半透明 spill（`weight 0.05`；实色头发不罚）。`--no-spill` 可回退；
 - 早停：正脸 PSNR 与大角度缺口的加权指标（`--no-robust-eval` 可关）；
+  每 500 步验证，连续 2 次提升 < 0.05 dB 就停（平台期不空转）；
 - 计时：每次存盘打印累计耗时（`[save]` / `[best]`），`report.json` 记录
-  `best_seconds` 与 `checkpoints`；训练结束再打印最佳检查点的累计时间；
+  `best_seconds`、`checkpoints` 与逐次验证的 `eval_history`；
 - 产物：`output/train/<对象>/<版本>/`；训练结束**自动**把最佳检查点装进
   `models/<对象>/<版本>/`（同名覆盖）。
 

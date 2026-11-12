@@ -25,9 +25,10 @@ train:
     # 设 0 会让落在人像之外的高斯拿不到梯度，推理时表现为"头周围发散"。
     mask_weight: 1.0
     # 验证频率与早停：每 eval_every 步验证一次，连续 patience 次无提升
-    # （提升幅度小于 min_delta 视为无提升）就停。
-    eval_every: 1000
-    patience: 3
+    # （提升幅度小于 min_delta 视为无提升）就停。500×2 ≈ best 之后
+    # 1000 步内没有 ≥ min_delta 的提升就收，避免在平台期白跑几千步。
+    eval_every: 500
+    patience: 2
     min_delta: 0.05
     # 定期存档间隔（另有一份 model_best.ply 在验证刷新时写）
     save_every: 5000

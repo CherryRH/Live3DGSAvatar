@@ -174,14 +174,16 @@ def main(argv: list[str] | None = None) -> int:
                      else cfg.get("train.pipeline.batch_size", 10))
     blend_start = int(args.blend_start if args.blend_start is not None
                       else cfg.get("train.pipeline.blend_start", 3_000))
+    # 形变基在 blend_start 才打开；早停至少等它生效 1000 步
+    early_stop_after = max(0, blend_start + 1000)
     test_ratio = float(args.test_ratio if args.test_ratio is not None
                        else cfg.get("train.pipeline.test_ratio", 0.3))
     eval_every = int(args.eval_every if args.eval_every is not None
-                     else cfg.get("train.pipeline.eval_every", 1000))
+                     else cfg.get("train.pipeline.eval_every", 500))
     save_every = int(args.save_every if args.save_every is not None
                      else cfg.get("train.pipeline.save_every", 5000))
     patience = int(args.patience if args.patience is not None
-                   else cfg.get("train.pipeline.patience", 3))
+                   else cfg.get("train.pipeline.patience", 2))
     min_delta = float(args.min_delta if args.min_delta is not None
                       else cfg.get("train.pipeline.min_delta", 0.05))
     workers = int(args.prefetch_workers if args.prefetch_workers is not None
@@ -308,6 +310,8 @@ def main(argv: list[str] | None = None) -> int:
           f"K {avatar_cfg.num_basis_blend}")
     print(f"  步数   : {iterations}   batch {batch_size}   "
           f"blend_start {blend_start}")
+    print(f"  早停   : 每 {eval_every} 步验证，连续 {patience} 次 "
+          f"< {min_delta:g} dB；第 {early_stop_after} 步后生效")
     if blend_start >= iterations:
         print(f"  [hint] blend_start({blend_start}) ≥ 步数({iterations})："
               "整段都不会启用形变基，只在拟合静态外观")
@@ -401,7 +405,13 @@ def main(argv: list[str] | None = None) -> int:
     objective.nv_hole = nv_hole
     objective.nv_spill = nv_spill
     supported_face = None
-    print(f"  损失   : L1（背景权重 {mask_weight:.2f}）")
+    loss_terms = [f"L1（背景权重 {mask_weight:.2f}）"]
+    if nv_spill > 0:
+        loss_terms.append(f"nv_spill {nv_spill:g}")
+    if nv_hole > 0:
+        loss_terms.append(f"nv_hole {nv_hole:g}")
+    print(f"  损失   : {' + '.join(loss_terms)}")
+    print("  感知项 : 基础训练关闭（SSIM/LPIPS 只在后训练 refine 启用）")
     if nv_enabled:
         print(f"  新视角 : 每 {nv_every} 步，yaw {nv_yaws}，"
               f"hole {nv_hole:g} + spill {nv_spill:g}"
@@ -415,7 +425,7 @@ def main(argv: list[str] | None = None) -> int:
         bg = torch.zeros(batch.image.shape[0], 3, 1, 1, device=device)
         out = rasterizer.render(gs, camera, bg, target_image=batch.image.to(device))
 
-        if nv_enabled and int(iteration) % int(nv_every) == 0:
+        if nv_enabled and (int(iteration) + 1) % int(nv_every) == 0:
             from live3dgsavatar.training.losses import (alpha_hole_loss,
                                                        surface_spill_loss)
             i = random.randrange(int(mesh_verts.shape[0]))
@@ -576,13 +586,14 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  [best] 第 {iteration} 步 验证 {metric:.2f} dB"
                   f" → model_best.ply（累计 {secs:.1f}s）", flush=True)
 
+    val_hook = ValidationHook(
+        source=val_src, evaluate=evaluate, every=eval_every,
+        early_stop=EarlyStopping(patience=patience, min_delta=min_delta),
+        metric="robust" if robust_cfg is not None else "psnr",
+        on_improve=save_best, start_after=early_stop_after)
     hooks = [
         LogHook(every=100),
-        ValidationHook(source=val_src, evaluate=evaluate, every=eval_every,
-                       early_stop=EarlyStopping(patience=patience,
-                                                min_delta=min_delta),
-                       metric="robust" if robust_cfg is not None else "psnr",
-                       on_improve=save_best),
+        val_hook,
         CheckpointHook(save=save, every=save_every),
     ]
     if need_support:
@@ -667,6 +678,15 @@ def main(argv: list[str] | None = None) -> int:
         suffix = f"，累计 {best_secs:.1f}s" if best_secs is not None else ""
         print(f"  最佳验证 PSNR {report.best_metric:.2f} dB"
               f"（第 {report.best_iteration} 步{suffix}）")
+    if report.stopped_early:
+        print(f"  早停   : 连续 {patience} 次验证提升 < {min_delta:g} dB"
+              f"（每 {eval_every} 步验证）")
+    eval_history = [
+        {"iteration": int(it),
+         **{k: float(v) for k, v in metrics.items()
+            if isinstance(v, (int, float, np.integer, np.floating))}}
+        for it, metrics in val_hook.history
+    ]
     report_path = out_dir / "report.json"
     report_path.write_text(json.dumps({
         "subject": subject, "work_name": work,
@@ -675,6 +695,9 @@ def main(argv: list[str] | None = None) -> int:
         "best_seconds": (round(timing["best"], 1)
                          if timing["best"] is not None else None),
         "checkpoints": timing["saves"],
+        "eval_every": eval_every, "patience": patience,
+        "min_delta": min_delta, "early_stop_after": early_stop_after,
+        "eval_history": eval_history,
         "stopped_early": report.stopped_early,
     }, indent=2, ensure_ascii=False), encoding="utf-8")
 
