@@ -409,8 +409,8 @@ def test_build_defect_mask_covers_ghosting() -> None:
     ids[30:50, 10:50] = 4                 # 正常面
     face_mass = np.array([0.0, 0.0, 0.0, 0.9, 0.1])
 
-    holes, _, _ = m.build_defect_mask(a, surf, ids, None, mode="holes")
-    full, _, st = m.build_defect_mask(
+    holes, _, _, _ = m.build_defect_mask(a, surf, ids, None, mode="holes")
+    full, _, _, st = m.build_defect_mask(
         a, surf, ids, face_mass, mode="full", defect_quantile=0.5)
     assert full[15, 15] == 1, "高缺陷面应被覆盖"
     assert holes[15, 15] == 0, "holes 模式不该因为 face mass 扩进来"
@@ -434,7 +434,7 @@ def test_build_defect_mask_respects_observed_faces() -> None:
     observed[10:50, 10:50] = True
     observed[40:45, 40:45] = False
 
-    mask, _, st = m.build_defect_mask(
+    mask, _, _, st = m.build_defect_mask(
         a, surf, ids, None, observed=observed, mode="holes", dilate_px=0)
     assert mask[22, 22], "观测面的洞应保留"
     assert not mask[42, 42], "未观测面（缺失解剖结构）不该补"

@@ -62,10 +62,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     # ---- 扩散 ----
     p.add_argument("--base-model", default="runwayml/stable-diffusion-v1-5")
+    p.add_argument("--ip-adapter", choices=("none", "faceid", "faceid_plus"),
+                   default="none",
+                   help="身份条件：faceid=简单 FaceID；faceid_plus=Plus v2（CLIP+FaceID）")
+    p.add_argument("--ip-adapter-path", default="h94/IP-Adapter-FaceID")
+    p.add_argument("--ip-adapter-weight", default="ip-adapter-faceid_sd15.bin")
+    p.add_argument("--ip-adapter-image-encoder",
+                   default="h94/IP-Adapter/sdxl_models/image_encoder",
+                   help="faceid_plus 的 CLIP ViT-H image encoder（本地或 HF 目录）")
+    p.add_argument("--ip-adapter-scale", type=float, default=0.7,
+                   help="身份适配器强度（默认 0.7；plus 可试 0.6）")
     p.add_argument("--controlnet", default="lllyasviel/control_v11p_sd15_normalbae")
     p.add_argument("--steps", type=int, default=30)
-    p.add_argument("--strength", type=float, default=0.55,
-                   help="重绘强度；0.4 只改纹理，虚影/错位需要 0.55+ 才动")
+    p.add_argument("--strength", type=float, default=0.85,
+                   help="重绘强度；SD1.5 人脸加强版默认 0.85")
     p.add_argument("--guidance", type=float, default=5.5)
     p.add_argument("--prompt",
                    default="professional photo of a human head, natural skin "
@@ -81,15 +91,36 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--raster-flip", choices=("auto", "true", "false"),
                    default="auto",
                    help="光栅化是否翻转 y。auto = 用 alpha 轮廓自动判定（推荐）")
-    p.add_argument("--mask-mode", choices=("holes", "full", "unsupported"),
+    p.add_argument("--mask-mode",
+                   choices=("holes", "full", "unsupported", "structure"),
                    default="full",
                    help="holes=只修 alpha 不足的洞；full=洞 + 破碎/虚影（默认）")
     p.add_argument("--defect-quantile", type=float, default=0.7,
                    help="full 模式下，缺陷质量高于该分位的区域也算进掩码")
     p.add_argument("--spike-threshold", type=float, default=0.15,
                    help="alpha 梯度超过该值视为破碎/虚影")
-    p.add_argument("--mask-dilate", type=int, default=6,
-                   help="洞掩码向外扩多少像素（防止接缝）")
+    p.add_argument("--mask-dilate", type=int, default=12,
+                   help="洞掩码向外扩多少像素（默认 16）")
+    p.add_argument("--core-dilate", type=int, default=12,
+                   help="真正替换回渲染图的 core 外扩（默认 16 = 整掩码替换）")
+    p.add_argument("--color-match", dest="color_match", action="store_true",
+                   default=False,
+                   help="把生成区域颜色分布对齐到周围渲染图（默认开）")
+    p.add_argument("--no-color-match", dest="color_match",
+                   action="store_false", help="关闭颜色对齐")
+    p.add_argument("--color-ring", type=int, default=8,
+                   help="取渲染图周围多少像素的分布做对齐（默认 8）")
+    p.add_argument("--color-mean-only", action="store_true",
+                   help="只对齐颜色均值，保留生成图对比度（推荐先试）")
+    p.add_argument("--feather", type=int, default=4,
+                   help="core 边界羽化半径（默认 4；0=硬替换）")
+    p.add_argument("--identity-gate", dest="identity_gate", action="store_true",
+                   default=True,
+                   help="用 ArcFace 检查生成图是否保持参考身份（默认开）")
+    p.add_argument("--no-identity-gate", dest="identity_gate",
+                   action="store_false", help="关闭身份门")
+    p.add_argument("--identity-threshold", type=float, default=0.30,
+                   help="ArcFace 余弦相似度下限（默认 0.30）")
     p.add_argument("--coverage-min", type=int, default=1,
                    help="面被真实数据观测的最少次数；低于此视为缺失解剖结构，不补。"
                         "0 或 --no-observed 关闭该限制（消融用）")
@@ -103,7 +134,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--sharpen", type=float, default=0.30,
                    help="unsharp 增益，补偿 SD 往返的梯度损失。实测 SD 往返把标签"
                         "梯度压到渲染的 0.935，0.30 可回到约 0.99；0 关闭")
-    p.add_argument("--trusted-tol", type=float, default=2.0,
+    p.add_argument("--trusted-tol", type=float, default=3.0,
                    help="可信区域允许的平均改动（0-255）")
     p.add_argument("--min-iou", type=float, default=0.90,
                    help="整幅轮廓 IoU 的参考下限（只记录，不拒绝：补洞会改轮廓）")
@@ -114,7 +145,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--max-outside-extra", type=float, default=0.10,
                    help="掩码外新增前景（诊断项；合成后掩码外会被换回渲染图，"
                         "不再作为拒绝理由）")
-    p.add_argument("--min-fill", type=float, default=0.85,
+    p.add_argument("--min-fill", type=float, default=0.45,
                    help="掩码内生成前景（>8）占比下限；低于此说明扩散没补上，"
                         "这样的标签喂给微调只会教出噪声")
     p.add_argument("--min-sharp", type=float, default=0.97,
@@ -236,6 +267,39 @@ def composite_labels(render, gen, mask):
     return out
 
 
+def match_color(src, tgt, src_mask, tgt_mask, *, space: str = "lab",
+                mean_only: bool = False):
+    """把 src 在 src_mask 内的颜色分布对齐到 tgt 在 tgt_mask 内的分布。
+
+    Reinhard 风格：逐通道 (x - μ_s) / σ_s * σ_t + μ_t。
+    只改颜色统计，不改结构；默认在 Lab 空间做，避免 RGB 三通道耦合。
+    """
+    import cv2
+    import numpy as np
+
+    a = np.asarray(src, np.float32)
+    b = np.asarray(tgt, np.float32)
+    if space == "lab":
+        a = cv2.cvtColor(a, cv2.COLOR_RGB2LAB)
+        b = cv2.cvtColor(b, cv2.COLOR_RGB2LAB)
+    sp = a[np.asarray(src_mask, bool)]
+    tp = b[np.asarray(tgt_mask, bool)]
+    if sp.size == 0 or tp.size == 0:
+        return np.asarray(src, np.float32)
+    sm, ss = sp.mean(0), sp.std(0) + 1e-6
+    tm, ts = tp.mean(0), tp.std(0) + 1e-6
+    if mean_only:
+        # 只对齐均值：保留生成图自身对比度，避免被周围平缓区域压平
+        out = (a - sm) + tm
+    else:
+        # std 比值限幅：允许轻微统一色调，但不摧毁结构/纹理对比
+        ratio = np.clip(ts / ss, 0.8, 1.25)
+        out = (a - sm) * ratio + tm
+    if space == "lab":
+        out = cv2.cvtColor(out.astype(np.float32), cv2.COLOR_LAB2RGB)
+    return np.clip(out, 0.0, 255.0)
+
+
 def photometric_coverage(scene, data_dir, faces, glctx, *,
                          n_frames: int = 60,
                          device: str = "cuda") -> tuple:
@@ -282,9 +346,13 @@ def photometric_coverage(scene, data_dir, faces, glctx, *,
 def build_defect_mask(alpha, surf, ids_np, face_mass=None, *,
                       observed=None, mode: str = "full", spike: float = 0.15,
                       defect_quantile: float = 0.7, max_hole_area: float = 0.15,
-                      border: int = 2, dilate_px: int = 6):
-    """构造"要重绘"的像素掩码，返回 `(mask, dropped, stats)`。
+                      border: int = 2, dilate_px: int = 6,
+                      core_dilate: int = 4):
+    """构造"要重绘"的像素掩码，返回 `(mask, core, dropped, stats)`。
 
+    - `mask`：扩散上下文（目标外扩 `dilate_px`，ControlNet/重绘用）；
+    - `core`：真正替换回渲染图的区域（目标外扩 `core_dilate`，默认 4px）；
+      眼睛/嘴巴/脸等已观测结构留在 core 外，由渲染图保留，避免换脸。
     - `holes`：只修 alpha 不足的内部小洞；
     - `full`（默认）：再并入 alpha 梯度破碎区与模型自评的高缺陷面；
     - `observed`：像素级"该表面被数据看过"掩码。给了就只在这些像素里找缺陷，
@@ -302,6 +370,44 @@ def build_defect_mask(alpha, surf, ids_np, face_mass=None, *,
     obs = None if observed is None else np.asarray(observed, bool)
     gy, gx = np.gradient(a)
     broken = s & (np.hypot(gx, gy) > spike)
+    if mode == "structure":
+        # 语义区域：只修耳朵/头发边缘/脖子下端，五官（眼/嘴/鼻）排除。
+        # 用 2D 头部 bbox 做近似，不依赖 FLAME landmark。
+        from scipy.ndimage import binary_erosion
+        ys, xs = np.where(s)
+        if ys.size == 0:
+            z = np.zeros_like(s, bool)
+            return z, z.copy(), 0, {"hole_px": 0,
+                                    "observed_px": (int(obs.sum())
+                                                    if obs is not None
+                                                    else int(s.sum())),
+                                    "mask_ratio": 0.0, "core_ratio": 0.0}
+        y0, y1 = int(ys.min()), int(ys.max())
+        x0, x1 = int(xs.min()), int(xs.max())
+        h = max(1, y1 - y0)
+        w = max(1, x1 - x0)
+        yy, xx = np.mgrid[0:s.shape[0], 0:s.shape[1]]
+        # 五官：脸中央（相对头部 bbox）
+        feat = (s & (xx >= x0 + 0.32 * w) & (xx <= x0 + 0.68 * w)
+                & (yy >= y0 + 0.22 * h) & (yy <= y0 + 0.70 * h))
+        # 耳朵：左右侧带
+        ears = (s & ((xx <= x0 + 0.18 * w) | (xx >= x0 + 0.82 * w))
+                & (yy >= y0 + 0.15 * h) & (yy <= y0 + 0.70 * h))
+        # 脖子下端：下部
+        neck = s & (yy >= y0 + 0.78 * h)
+        # 头发边缘：外轮廓带（1px，避免带进额头）
+        edge = s & ~binary_erosion(s, iterations=1)
+        # 五官保护带 8px：必须大于等于 core 的膨胀，否则 mask 会扩回脸上
+        feat_safe = dilate(feat, 8)
+        target = (ears | neck | edge) & ~feat_safe
+        mask = dilate(target, dilate_px) & ~feat_safe
+        core = dilate(target, core_dilate) & ~feat_safe
+        stats = {"hole_px": int((s & (a < 0.5)).sum()),
+                 "observed_px": (int(obs.sum()) if obs is not None
+                                 else int(s.sum())),
+                 "mask_ratio": round(float(mask.mean()), 4),
+                 "core_ratio": round(float(core.mean()), 4)}
+        return mask, core, 0, stats
     if mode == "unsupported":
         if obs is None:
             raise ValueError("unsupported 模式需要 observed（逐面数据支持）")
@@ -346,13 +452,16 @@ def build_defect_mask(alpha, surf, ids_np, face_mass=None, *,
         keepped, dropped = keep_interior_holes(hole, max_area=limit,
                                                border=use_border)
     mask = dilate(keepped, dilate_px)
+    core = dilate(keepped, core_dilate)
     if obs is not None and mode != "unsupported":
         # 膨胀不能越界到未观测表面（否则又会把脖子带进来）
         mask &= dilate(obs, dilate_px)
+        core &= dilate(obs, core_dilate)
     stats = {"hole_px": int((s & (a < 0.5)).sum()),
              "observed_px": int(obs.sum()) if obs is not None else int(s.sum()),
-             "mask_ratio": round(float(mask.mean()), 4)}
-    return mask, dropped, stats
+             "mask_ratio": round(float(mask.mean()), 4),
+             "core_ratio": round(float(core.mean()), 4)}
+    return mask, core, dropped, stats
 
 
 def keep_interior_holes(mask, *, max_area: float = 0.15,
@@ -432,7 +541,45 @@ def build_pipeline(args):
         safety_checker=None, requires_safety_checker=False)
     pipe = pipe.to("cuda")
     pipe.set_progress_bar_config(disable=True)
-    return pipe
+
+    face_app = None
+    if args.ip_adapter in ("faceid", "faceid_plus"):
+        try:
+            from insightface.app import FaceAnalysis
+        except ImportError as e:  # pragma: no cover
+            raise SystemExit(
+                "[error] IP-Adapter FaceID 需要 insightface/onnxruntime：\n"
+                "        pip install insightface onnxruntime opencv-python-headless\n"
+                f"        原始错误：{e}") from None
+        # faceid 只用 ArcFace embedding；faceid_plus 额外用 CLIP image encoder
+        image_encoder_folder = None
+        if args.ip_adapter == "faceid_plus":
+            from transformers import CLIPVisionModelWithProjection
+            enc = Path(args.ip_adapter_image_encoder)
+            if not enc.is_dir():
+                from huggingface_hub import snapshot_download
+                snap = snapshot_download(
+                    "h94/IP-Adapter",
+                    allow_patterns=["sdxl_models/image_encoder/*"])
+                enc = Path(snap) / "sdxl_models" / "image_encoder"
+            # diffusers 的 image_encoder_folder 是 ip_adapter_path 的子目录；
+            # 本地 CLIP 直接注册到 pipeline，load_ip_adapter 就会跳过加载。
+            image_encoder = CLIPVisionModelWithProjection.from_pretrained(
+                str(enc)).to(pipe.device, dtype=pipe.dtype)
+            pipe.register_modules(image_encoder=image_encoder)
+        pipe.load_ip_adapter(args.ip_adapter_path, subfolder=None,
+                             weight_name=args.ip_adapter_weight,
+                             image_encoder_folder=None)
+        if args.ip_adapter == "faceid_plus":
+            # Plus 必须同时给 CLIP 图 + ArcFace embedding；该互斥校验只适用于
+            # 普通 IP-Adapter，这里跳过（输入由调用处保证）。
+            pipe.check_inputs = lambda *a, **k: None
+        pipe.set_ip_adapter_scale(float(args.ip_adapter_scale))
+        face_app = FaceAnalysis(
+            name="buffalo_l",
+            providers=["CUDAExecutionProvider", "CPUExecutionProvider"])
+        face_app.prepare(ctx_id=0, det_size=(640, 640))
+    return pipe, face_app
 
 
 # ------------------------------------------------------------------ 主流程 --
@@ -562,7 +709,8 @@ def main(argv: list[str] | None = None) -> int:
     if observed_face is None and not args.no_observed and args.coverage_min > 0:
         print("  [warn] 无法建立观测面限制——会补缺失解剖结构", flush=True)
 
-    pipe = None if args.dry_run else build_pipeline(args)
+    pipe, face_app = ((None, None) if args.dry_run
+                      else build_pipeline(args))
     records = []
     for label in labels:
         info = parse_view_label(label)
@@ -595,17 +743,18 @@ def main(argv: list[str] | None = None) -> int:
                   if observed_face is not None else None)
         print(f"  {label:40s} 光栅 y 翻转={flip}"
               f"（IoU: 翻 {ious[True]:.3f} / 不翻 {ious[False]:.3f}）", flush=True)
-        mask, dropped, mstats = build_defect_mask(
+        mask, core, dropped, mstats = build_defect_mask(
             alpha_np, surf_np, ids_int, face_mass, observed=obs_px,
             mode=args.mask_mode,
             spike=args.spike_threshold, defect_quantile=args.defect_quantile,
             max_hole_area=args.max_hole_area, border=args.border_margin,
-            dilate_px=args.mask_dilate)
+            dilate_px=args.mask_dilate, core_dilate=args.core_dilate)
         if (args.mask_mode == "unsupported" and args.head_cut_margin > 0
                 and obs_px is not None and obs_px.any()):
             rows = np.arange(mask.shape[0])[:, None]
             y_cut = int(np.where(obs_px)[0].max()) + int(args.head_cut_margin)
             mask = mask & (rows <= y_cut)
+            core = core & (rows <= y_cut)
         if dropped:
             print(f"  {label:40s} 丢弃 {dropped} 块大洞（缺失解剖结构/画面外）",
                   flush=True)
@@ -646,10 +795,37 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  {label:40s} - 无缺陷（掩码为空，不跑扩散）", flush=True)
             continue
 
+        face_emb = None
+        ref_pil = None
+        if face_app is not None:
+            ref_path = defects_dir / "refs" / f"{idx:05d}.png"
+            if ref_path.is_file():
+                ref_rgb = np.asarray(Image.open(ref_path).convert("RGB"))
+                ref_pil = Image.fromarray(ref_rgb)
+                faces = face_app.get(ref_rgb[:, :, ::-1])  # BGR
+                if faces:
+                    face = max(faces, key=lambda f: float(
+                        (f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1])))
+                    face_emb = torch.from_numpy(face.normed_embedding)
+                    face_emb = (face_emb.unsqueeze(0).unsqueeze(0)
+                                .to(device=device, dtype=pipe.unet.dtype))
+            if face_emb is None:
+                print(f"  {label:40s} [warn] 找不到参考脸，退回无身份条件",
+                      flush=True)
+
+        if args.ip_adapter == "faceid_plus" and ref_pil is not None:
+            with torch.no_grad():
+                clip_embeds, _ = pipe.encode_image(
+                    ref_pil, device=pipe.device, num_images_per_prompt=1)
+            proj = pipe.unet.encoder_hid_proj.image_projection_layers[0]
+            proj.clip_embeds = (clip_embeds.unsqueeze(1).unsqueeze(1)
+                                .repeat(2, 1, 1, 1)
+                                .to(device=pipe.device, dtype=pipe.dtype))
+
         pseudo_list = []
         for k in range(max(1, args.consistency)):
             g = torch.Generator(device="cuda").manual_seed(args.seed + k)
-            res = pipe(
+            kwargs = dict(
                 prompt=args.prompt, negative_prompt=args.negative,
                 image=Image.fromarray(img),
                 mask_image=Image.fromarray((mask * 255).astype(np.uint8)),
@@ -657,17 +833,64 @@ def main(argv: list[str] | None = None) -> int:
                 strength=float(args.strength),
                 num_inference_steps=int(args.steps),
                 guidance_scale=float(args.guidance),
-                generator=g).images[0]
+                generator=g)
+            if face_emb is not None:
+                # CFG：负分支用零 embedding，正分支用真实身份；相同会互相抵消
+                kwargs["ip_adapter_image_embeds"] = [
+                    torch.cat([torch.zeros_like(face_emb), face_emb], dim=0)]
+                if args.ip_adapter == "faceid_plus" and ref_pil is not None:
+                    kwargs["ip_adapter_image"] = ref_pil
+            res = pipe(**kwargs).images[0]
             pseudo_list.append(np.asarray(res.convert("RGB"), np.float32))
         raw = pseudo_list[0]
-        # 只补 SD 往返的低通，再把掩码外换回渲染图：色偏不会被学进去
-        pseudo = composite_labels(img, unsharp(raw, args.sharpen), mask)
+        gen = unsharp(raw, args.sharpen)
+        if args.color_match:
+            from scipy.ndimage import binary_dilation
+            ring = (binary_dilation(core, iterations=max(1, args.color_ring))
+                    & ~core)
+            tgt = ring & (alpha_np > 0.5)   # 只取渲染前景，避开黑背景
+            if tgt.sum() < 64:
+                tgt = ring
+            gen = match_color(gen, img, core, tgt,
+                              mean_only=args.color_mean_only)
+        if args.feather > 0:
+            from scipy.ndimage import gaussian_filter
+            w = gaussian_filter(core.astype(np.float32), float(args.feather))
+            w = np.clip(w, 0.0, 1.0)[..., None]
+            pseudo = img.astype(np.float32) * (1.0 - w) + gen * w
+            pseudo = np.where(mask[..., None], pseudo, img.astype(np.float32))
+        else:
+            pseudo = composite_labels(img, gen, core)
         Image.fromarray(raw.astype(np.uint8)).save(dbg_dir / f"{label}.gen.png")
         Image.fromarray(pseudo.astype(np.uint8)).save(
             dbg_dir / f"{label}.pseudo.png")
 
         # ---- 筛选 ----
         reasons = []
+        # ArcFace 身份门：以**最终标签**为准。core 外的脸来自渲染图，
+        # 生成图的脸只作诊断（保守合成下它本来就不会进入标签）。
+        id_sim = None
+        gen_sim = None
+        if args.identity_gate and face_app is not None and face_emb is not None:
+            re = face_emb.detach().float().cpu().numpy().reshape(-1)
+
+            def _face_sim(im):
+                faces = face_app.get(im.astype(np.uint8)[:, :, ::-1])
+                if not faces:
+                    return None
+                f = max(faces, key=lambda x: float(
+                    (x.bbox[2] - x.bbox[0]) * (x.bbox[3] - x.bbox[1])))
+                ge = np.asarray(f.normed_embedding, np.float32)
+                denom = float(np.linalg.norm(re) * np.linalg.norm(ge)) + 1e-8
+                return float(np.dot(re, ge) / denom)
+
+            gen_sim = _face_sim(raw)
+            id_sim = _face_sim(pseudo)
+            if id_sim is None:
+                reasons.append("身份门：标签里找不到脸")
+            elif id_sim < args.identity_threshold:
+                reasons.append(f"身份相似度 {id_sim:.3f} < "
+                               f"{args.identity_threshold}")
         cons = 1.0
         trusted = ~mask
         if trusted.any():
@@ -735,7 +958,11 @@ def main(argv: list[str] | None = None) -> int:
                         "mask_sharp_ratio": round(float(mask_sharp), 4),
                         "trusted_diff": round(float(tdiff), 3),
                         "hole_std": round(float(inside), 2),
-                        "consistency": round(float(cons), 4)})
+                        "consistency": round(float(cons), 4),
+                        "identity_sim": (None if id_sim is None
+                                         else round(float(id_sim), 4)),
+                        "identity_sim_gen": (None if gen_sim is None
+                                             else round(float(gen_sim), 4))})
         print(f"  {label:40s} {'✓' if status == 'accepted' else '✗ ' + '; '.join(reasons)}",
               flush=True)
 
@@ -748,7 +975,9 @@ def main(argv: list[str] | None = None) -> int:
                         "min_sharp": args.min_sharp,
                         "min_mask_sharp": args.min_mask_sharp,
                         "min_std": args.min_std,
-                        "min_consistency": args.min_consistency},
+                        "min_consistency": args.min_consistency,
+                        "identity_threshold": args.identity_threshold,
+                        "core_dilate": args.core_dilate},
               "observed": {"enabled": observed_face is not None,
                            "coverage_min": int(args.coverage_min)},
               "sharpen": float(args.sharpen),
