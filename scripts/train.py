@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -69,6 +70,18 @@ def resolve_structure_config(models_dir: Path, subject: str, work: str,
         f"{(Path(models_dir) / subject)}/*/config.yaml"
         f"{(', ' + str(repo_default)) if repo_default else ''}。\n"
         "训练新模型时请给一个结构配置（可用 --model-config 指定）。")
+
+
+def snapshot_structure_config(model_cfg: Path, out_dir: Path) -> Path:
+    """把结构配置复制进产物目录，返回快照路径。
+
+    训练期间 `models/<subject>/<version>/` 可能被清理（重训前删旧模型），
+    结束时再回头 copy 源文件就会 FileNotFoundError。开训前先留一份。
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+    target = out_dir / "config.yaml"
+    shutil.copyfile(model_cfg, target)
+    return target
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -333,6 +346,16 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  [dry-run] 产物目录 {out_dir}")
         print("  [dry-run] 未执行训练（需要 GPU）")
         return 0
+
+    # 结构配置可能来自 models/<subject>/ 下的某个兄弟版本；训练期间那个目录
+    # 可能被清理（例如重训时先删旧 best），所以立刻在产物目录留一份快照，
+    # 后面训练/装入都用快照，避免结束时 copyfile 找不到源。
+    try:
+        model_cfg = snapshot_structure_config(model_cfg, out_dir)
+    except FileNotFoundError:
+        raise SystemExit(
+            f"[error] 结构配置在训练开始前已被删除；"
+            "可用 --model-config configs/model.yaml 指定一份")
 
     import random
 
@@ -666,9 +689,7 @@ def main(argv: list[str] | None = None) -> int:
 
     final_ply = out_dir / "model.ply"
     save_ply(avatar, final_ply)
-    import shutil as _shutil
 
-    _shutil.copyfile(model_cfg, out_dir / "config.yaml")
     print(f"\n最终模型：{final_ply}（累计 {_elapsed():.1f}s）")
 
     print(f"\n训练结束：{report.iterations} 步，{report.seconds:.1f} s，"

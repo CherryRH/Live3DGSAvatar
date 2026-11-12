@@ -75,18 +75,17 @@ def test_train_sh_has_valid_shell_syntax() -> None:
 
 
 def test_plan_is_the_stable_epic_route() -> None:
-    """稳定路线 = epiC(SD1.5) + normal ControlNet，无身份/颜色对齐。"""
+    """路线不变量：epiC(SD1.5) + normal ControlNet，无身份/颜色对齐。
+
+    具体数值由 configs/train.yaml 决定（`test_config_matches_train_sh_route`
+    逐项比对），这里只钉住不应该随调参变化的部分。
+    """
     plan = _plan()
     assert plan["post_base_model"] == "emilianJR/epiCRealism"
     assert plan["post_ip_adapter"] == "none"
-    assert plan["post_mask_dilate"] == "12"
-    assert plan["post_core_dilate"] == "12"
-    assert plan["post_strength"] == "0.85"
-    assert plan["post_min_fill"] == "0.45"
-    assert plan["post_color_match"] == "false"
-    assert plan["post_quality_tol"] == "0.01"
-    assert plan["post_psnr_weight"] == "0.002"
-    assert plan["post_rings"] == "20,10;30,20;40,30;50,30"
+    assert plan["post_color_match"].lower() == "false"
+    assert plan["post_controlnet"] == "lllyasviel/control_v11p_sd15_normalbae"
+    assert plan["post_rings"].count(";") == 3, "默认仍是四圈 20/10 → 50/30"
 
 
 def test_plan_defaults_to_base_only() -> None:

@@ -33,6 +33,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--json", action="store_true", help="以 JSON 输出")
     p.add_argument("--sources", action="store_true",
                    help="显示配置文件来源与是否存在")
+    p.add_argument("--shell-post", action="store_true",
+                   help="输出 post_train 的 shell 变量 CFG_POST_*（train.sh 用）")
     p.add_argument("--config-dir", type=Path, default=None)
     return p.parse_args()
 
@@ -59,6 +61,12 @@ def main() -> int:
         print()
 
     data = cfg.resolved()
+    if args.shell_post:
+        import shlex
+        section = data["train"]["pipeline"]["post_train"]
+        for key, value in section.items():
+            print(f"CFG_POST_{key.upper()}={shlex.quote(str(value))}")
+        return 0
     if args.section:
         if args.section not in data:
             print(f"[error] 没有名为 {args.section!r} 的配置节；"

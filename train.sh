@@ -13,15 +13,15 @@
 # 后训练稳定路线（scripts/iterative_repair.py）：
 #   生成器  emilianJR/epiCRealism（SD1.5 底）+ normal ControlNet
 #           不做 FaceID、不做颜色对齐（这两条实测会换脸/压锐度）
-#   掩码    mask 12px / core 12px / strength 0.85
-#           填充率 ≥ 0.45，可信区平均改动 ≤ 3（0-255）
-#   监督    真实帧 8 : 伪标签 2；位置 lr 1e-5；200 步/轮
-#   选角    20/10 → 30/20 → 40/30 → 50/30，每圈按缺陷质量取 top-2
-#   选最佳  SSIM − LPIPS + 0.002·PSNR；比最佳低 0.01 即早停
+#   参数    mask/core/strength、真实帧:伪标签、步数、选角圈、质量门
+#           全部取 configs/train.yaml 的 train.pipeline.post_train；
+#           临时消融用 POST_* 环境变量覆盖（不用改脚本）
+#   选角    逐圈外扩，每圈按缺陷质量取 top-N
+#   选最佳  SSIM − LPIPS + psnr_weight·PSNR；低 quality_tol 即早停
 #
 # 环境变量（默认即稳定路线，一般不用改）：
 #   MAIN_ENV                conda 环境（默认 live3dgs）
-#   POST_*                  见下面“后训练稳定路线”常量
+#   POST_*                  临时覆盖 configs/train.yaml 的 post_train
 #
 # 产物：
 #   models/<对象>/<版本>/             基础模型（train.py 自动装入）
@@ -37,35 +37,37 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$REPO_ROOT"
 
 MAIN_ENV="${MAIN_ENV:-live3dgs}"
+PY_RUN=(conda run -n "$MAIN_ENV" --no-capture-output python)
 
-# ------------------------------------------------- 后训练稳定路线 ----
-# 这些值就是当前跑得最稳的一组（biden：SSIM 0.9495 / LPIPS 0.0357 /
-# PSNR 32.9 @ 50/30）。改环境变量即可做消融，但默认值不要再随手改。
-POST_BASE_MODEL="${POST_BASE_MODEL:-emilianJR/epiCRealism}"
-POST_IP_ADAPTER="${POST_IP_ADAPTER:-none}"
-POST_TOP_N="${POST_TOP_N:-2}"
-POST_RINGS="${POST_RINGS:-20,10;30,20;40,30;50,30}"
-POST_STEPS="${POST_STEPS:-200}"
-POST_REAL_PER_BATCH="${POST_REAL_PER_BATCH:-8}"
-POST_REFINED_PER_BATCH="${POST_REFINED_PER_BATCH:-2}"
-POST_LR_XYZ="${POST_LR_XYZ:-1e-5}"
-POST_MASK_DILATE="${POST_MASK_DILATE:-12}"
-POST_CORE_DILATE="${POST_CORE_DILATE:-12}"
-POST_STRENGTH="${POST_STRENGTH:-0.85}"
-POST_MIN_FILL="${POST_MIN_FILL:-0.45}"
-POST_TRUSTED_TOL="${POST_TRUSTED_TOL:-3.0}"
-POST_QUALITY_TOL="${POST_QUALITY_TOL:-0.01}"
-POST_PSNR_WEIGHT="${POST_PSNR_WEIGHT:-0.002}"
-POST_FEATHER="${POST_FEATHER:-4}"
-POST_COLOR_RING="${POST_COLOR_RING:-8}"
-POST_PROMPT="${POST_PROMPT:-professional photo of a human head, natural skin texture, fine detail, sharp focus}"
-POST_NEGATIVE="${POST_NEGATIVE:-blurry, smooth plastic, deformed, cartoon, extra eyes, low resolution, watermark}"
+# ------------------------------------------------- 后训练参数 ----
+# 默认值以 configs/train.yaml 的 train.pipeline.post_train 为准（下面解析后
+# 填充）；需要临时消融时用 POST_* 环境变量覆盖，不要在这里再抄一份。
+POST_BASE_MODEL="${POST_BASE_MODEL:-}"
+POST_IP_ADAPTER="${POST_IP_ADAPTER:-}"
+POST_TOP_N="${POST_TOP_N:-}"
+POST_RINGS="${POST_RINGS:-}"
+POST_STEPS="${POST_STEPS:-}"
+POST_REAL_PER_BATCH="${POST_REAL_PER_BATCH:-}"
+POST_REFINED_PER_BATCH="${POST_REFINED_PER_BATCH:-}"
+POST_LR_XYZ="${POST_LR_XYZ:-}"
+POST_MASK_DILATE="${POST_MASK_DILATE:-}"
+POST_CORE_DILATE="${POST_CORE_DILATE:-}"
+POST_STRENGTH="${POST_STRENGTH:-}"
+POST_MIN_FILL="${POST_MIN_FILL:-}"
+POST_TRUSTED_TOL="${POST_TRUSTED_TOL:-}"
+POST_QUALITY_TOL="${POST_QUALITY_TOL:-}"
+POST_PSNR_WEIGHT="${POST_PSNR_WEIGHT:-}"
+POST_FEATHER="${POST_FEATHER:-}"
+POST_COLOR_RING="${POST_COLOR_RING:-}"
+POST_COLOR_MATCH="${POST_COLOR_MATCH:-}"
+POST_PROMPT="${POST_PROMPT:-}"
+POST_NEGATIVE="${POST_NEGATIVE:-}"
 
 die() { echo "[error] $*" >&2; exit 1; }
 info() { echo "[train] $*"; }
 
 usage() {
-  sed -n '2,31p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '2,33p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
   exit 0
 }
 
@@ -96,6 +98,31 @@ done
 
 [[ -n "$SUBJECT" ]] || die "需要 --subject（例如 --subject biden）"
 [[ -n "$WORK" ]] || die "需要 --work-name（例如 --work-name base）"
+
+# 读 configs/train.yaml（含 configs/local.yaml 覆盖）里的后训练默认值
+cfg_shell="$("${PY_RUN[@]}" scripts/show_config.py --shell-post)" || \
+  die "读取 configs/train.yaml 的 post_train 失败"
+eval "$cfg_shell"
+POST_BASE_MODEL="${POST_BASE_MODEL:-$CFG_POST_BASE_MODEL}"
+POST_IP_ADAPTER="${POST_IP_ADAPTER:-$CFG_POST_IP_ADAPTER}"
+POST_TOP_N="${POST_TOP_N:-$CFG_POST_TOP_N}"
+POST_RINGS="${POST_RINGS:-$CFG_POST_RINGS}"
+POST_STEPS="${POST_STEPS:-$CFG_POST_STEPS}"
+POST_REAL_PER_BATCH="${POST_REAL_PER_BATCH:-$CFG_POST_REAL_PER_BATCH}"
+POST_REFINED_PER_BATCH="${POST_REFINED_PER_BATCH:-$CFG_POST_REFINED_PER_BATCH}"
+POST_LR_XYZ="${POST_LR_XYZ:-$CFG_POST_LR_XYZ}"
+POST_MASK_DILATE="${POST_MASK_DILATE:-$CFG_POST_MASK_DILATE}"
+POST_CORE_DILATE="${POST_CORE_DILATE:-$CFG_POST_CORE_DILATE}"
+POST_STRENGTH="${POST_STRENGTH:-$CFG_POST_STRENGTH}"
+POST_MIN_FILL="${POST_MIN_FILL:-$CFG_POST_MIN_FILL}"
+POST_TRUSTED_TOL="${POST_TRUSTED_TOL:-$CFG_POST_TRUSTED_TOL}"
+POST_QUALITY_TOL="${POST_QUALITY_TOL:-$CFG_POST_QUALITY_TOL}"
+POST_PSNR_WEIGHT="${POST_PSNR_WEIGHT:-$CFG_POST_PSNR_WEIGHT}"
+POST_FEATHER="${POST_FEATHER:-$CFG_POST_FEATHER}"
+POST_COLOR_RING="${POST_COLOR_RING:-$CFG_POST_COLOR_RING}"
+POST_COLOR_MATCH="${POST_COLOR_MATCH:-$CFG_POST_COLOR_MATCH}"
+POST_PROMPT="${POST_PROMPT:-$CFG_POST_PROMPT}"
+POST_NEGATIVE="${POST_NEGATIVE:-$CFG_POST_NEGATIVE}"
 if (( PREFIX_SET == 0 )); then
   if (( IN_PLACE == 1 )); then
     PREFIX="$WORK"          # 原地更新：报告/中间目录也用 work 名
@@ -139,7 +166,7 @@ post_quality_tol=$POST_QUALITY_TOL
 post_psnr_weight=$POST_PSNR_WEIGHT
 post_feather=$POST_FEATHER
 post_color_ring=$POST_COLOR_RING
-post_color_match=false
+post_color_match=$POST_COLOR_MATCH
 post_controlnet=lllyasviel/control_v11p_sd15_normalbae
 EOF
 }
@@ -148,8 +175,6 @@ if (( PLAN == 1 )); then
   print_plan
   exit 0
 fi
-
-PY_RUN=(conda run -n "$MAIN_ENV" --no-capture-output python)
 
 preflight() {
   command -v conda >/dev/null || die "找不到 conda，请先安装并初始化"
@@ -196,10 +221,14 @@ post_train() {
     --trusted-tol "$POST_TRUSTED_TOL"
     --quality-tol "$POST_QUALITY_TOL" --psnr-weight "$POST_PSNR_WEIGHT"
     --feather "$POST_FEATHER" --color-ring "$POST_COLOR_RING"
-    --no-color-match
     --base-model "$POST_BASE_MODEL" --ip-adapter "$POST_IP_ADAPTER"
     --prompt "$POST_PROMPT" --negative "$POST_NEGATIVE"
   )
+  if [[ "${POST_COLOR_MATCH,,}" == "true" ]]; then
+    args+=(--color-match)
+  else
+    args+=(--no-color-match)
+  fi
   if (( IN_PLACE == 1 )); then args+=(--in-place); fi
   if (( DRY == 1 )); then
     info "后训练（dry-run 不执行）：python scripts/iterative_repair.py ${args[*]}"

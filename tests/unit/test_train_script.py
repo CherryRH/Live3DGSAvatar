@@ -83,6 +83,23 @@ def test_explicit_missing_file_is_reported(tmp_path) -> None:
                                    explicit=tmp_path / "nope.yaml")
 
 
+def test_snapshot_structure_config_survives_source_removal(tmp_path) -> None:
+    """训练期间源模型目录可能被清理；开训前必须留一份结构配置快照。"""
+    m = _load()
+    src = _write(tmp_path / "models" / "s" / "w" / "config.yaml",
+                 "model:\n  tex_size: 128\n")
+    snap = m.snapshot_structure_config(src, tmp_path / "out")
+    src.unlink()
+    assert snap.is_file()
+    assert "tex_size: 128" in snap.read_text(encoding="utf-8")
+
+
+def test_snapshot_structure_config_reports_missing_source(tmp_path) -> None:
+    m = _load()
+    with pytest.raises(FileNotFoundError):
+        m.snapshot_structure_config(tmp_path / "nope.yaml", tmp_path / "out")
+
+
 # --------------------------------------------------------------- 仓库模板 --
 
 
