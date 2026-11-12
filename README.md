@@ -110,10 +110,10 @@ python scripts/iterative_repair.py --subject <对象> --base-work <版本> \
   clothing/jewelry/makeup，`head_cut` 默认排除未观测的脖子/胸口；
 - 掩码：向缺陷区外扩 12px（`mask_dilate`），给扩散模型足够上下文；
 - 监督：累计标签（旧视角继续监督）+ 真实帧 8 : 伪标签 2；
-- 选最佳：**`SSIM − LPIPS + 0.002·PSNR`**（PSNR 权重很小，避免选到
-  「PSNR 高但脖子起雾」的轮）；`refine_from_images` 的 `model_best` 默认也按
-  这个 quality 选（`--select-by quality`）。质量分比最佳低 0.01 就早停，
-  且更差的轮次不再作为下一轮起点；
+- 选最终：默认保留**最后一轮 / 最后一个检查点**，只要质量分比当前最佳
+  低不超过 `quality_tol`（0.01）；小角度留出集测不到大角度变化，所以不按
+  best 挑轮。超出容差才回退到最佳并停止；`refine` 的 `--select-by last`
+  负责单轮内的 last 选择；
 - 产物：模型在 `models/<对象>/<版本>_post_r*/`；一次后训练的全部中间产物都在
   一个目录里，不再散落：
 

@@ -7,9 +7,9 @@
 2. **精修图体检**：前景 IoU 太低或整体色差过大的视角直接跳过，
    避免把坏样本当目标；
 3. **按真值选点**：每若干步在**验证帧**上算 PSNR/SSIM/LPIPS/锐度比。
-   默认 `--select-by quality`：`score = SSIM − LPIPS + w·PSNR`（w=0.002），
-   避免只按 PSNR 选到"PSNR 高但感知更差"的检查点；锐度/SSIM/LPIPS 硬门
-   仍然生效。容差线随训练前锐度自适应，不接受"用模糊换 PSNR"；
+   默认 `--select-by last`：只要最后一版比最佳低不超过 `--quality-tol`，
+   就保留最后一版（小角度留出集测不到大角度变化）；超容差或最后一版
+   没过硬门时才回退到 `model_best`。锐度/SSIM/LPIPS 硬门仍然生效；
 4. **真实帧锚定**：每批混入真实数据，且验证帧从锚定里剔除，避免自己考自己。
 
 `--ssim-weight` 默认 0（单独调用时只做 L1）；后训练流程传 0.2 + LPIPS 0.1。
@@ -73,9 +73,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--eval-frames", type=int, default=64,
                    help="选点用的帧数（从训练段随机取，且这些帧不参与锚定）")
     p.add_argument("--eval-seed", type=int, default=0)
-    p.add_argument("--select-by", choices=("psnr", "quality"),
-                   default="quality",
-                   help="model_best 的选择依据（默认 quality：SSIM−LPIPS+w·PSNR）")
+    p.add_argument("--select-by", choices=("last", "quality", "psnr"),
+                   default="last",
+                   help="最终模型选择：last=最后一次，若比最佳低不超过 "
+                        "--quality-tol 就用 last（默认）；quality/psnr=旧行为")
+    p.add_argument("--quality-tol", type=float, default=0.01,
+                   help="last 模式允许相对最佳下降的容差")
     p.add_argument("--psnr-weight", type=float, default=0.002,
                    help="quality 模式下 PSNR 的小权重（默认 0.002/dB）")
     p.add_argument("--eval-mode", choices=("angle", "random", "holdout", "both"),
@@ -537,7 +540,7 @@ def main(argv: list[str] | None = None) -> int:
             passed = not reasons and bool(m["n"])
             score = (m["psnr"] if args.select_by == "psnr" else
                      (m.get("ssim") or 0.0) - (m.get("lpips") or 1.0)
-                     + args.psnr_weight * m["psnr"])
+                     + args.psnr_weight * m["psnr"])  # last 也用 quality 评分
             self.history.append({
                 "iteration": iteration, "passed": passed, "score": round(score, 4),
                 "psnr": round(m["psnr"], 3), "sharp": round(m["sharp"], 3),
@@ -583,28 +586,59 @@ def main(argv: list[str] | None = None) -> int:
 
     save_ply(avatar, out_dir / "model.ply")
     print(f"  [save] 最终 model.ply（累计 {report.seconds:.1f}s）", flush=True)
-    no_pass = not (out_dir / "model_best.ply").is_file() and bool(evaluator.history)
+    final_metrics = evaluate_frames(eval_ids_final)
+
+    def _score(m):
+        return (m["psnr"] if args.select_by == "psnr" else
+                (m.get("ssim") or 0.0) - (m.get("lpips") or 1.0)
+                + args.psnr_weight * m["psnr"])
+
+    final_score = _score(final_metrics)
+    best_score = evaluator.best
+    final_entry = evaluator.history[-1] if evaluator.history else None
+    final_passed = bool(final_entry and final_entry.get("passed"))
+    best_ply = out_dir / "model_best.ply"
+    if args.select_by in ("quality", "psnr"):
+        use_best = True
+    else:  # last：评分下降在容差内就保留最后一版
+        use_best = (best_score is not None
+                    and (final_score < best_score - args.quality_tol
+                         or not final_passed))
+    use_best = bool(use_best and best_ply.is_file())
+
+    if use_best:
+        best_model = load_ply(best_ply,
+                              config=read_embedded_config(best_ply),
+                              device=device)
+        save_ply(best_model, out_dir / "model.ply")
+        after = evaluate_frames(eval_ids_final)
+        selected = "best"
+        selected_score = best_score
+        selected_seconds = evaluator.best_seconds
+        print("  [save] 最后一版低于容差/未过门限，改用 model_best", flush=True)
+    else:
+        after = final_metrics
+        selected = "last"
+        selected_score = final_score
+        selected_seconds = report.seconds
+
+    no_pass = bool(evaluator.history) and not best_ply.is_file()
     if no_pass:
-        # 没有任何检查点同时守住锐度/SSIM/LPIPS：这次微调视为失败，
-        # 产物保留在 finetune/ 便于排查，但**不落地**（避免替换好模型）
         print("\n  [warn] 没有检查点通过锐度/SSIM/LPIPS 门限；"
               "本次微调判为失败，不落地", flush=True)
-    after = evaluate_frames(eval_ids_final)
     after_holdout = (evaluate_frames(holdout_ids[:args.eval_frames])
                      if before_holdout is not None else None)
-    if (out_dir / "model_best.ply").is_file():
-        # 用最佳检查点覆盖最终产物（若有）
-        best = load_ply(out_dir / "model_best.ply",
-                        config=read_embedded_config(out_dir / "model_best.ply"),
-                        device=device)
-        save_ply(best, out_dir / "model.ply")
-        print(f"  [save] 用 model_best 覆盖 model.ply"
-              f"（累计 {report.seconds:.1f}s）", flush=True)
     payload = {
         "model": str(ply), "steps": int(args.steps),
         "seconds": round(report.seconds, 1),
-        "best_seconds": (round(evaluator.best_seconds, 1)
-                         if evaluator.best_seconds is not None else None),
+        "best_seconds": (round(selected_seconds, 1)
+                         if selected_seconds is not None else None),
+        "best_score": (round(best_score, 4)
+                       if best_score is not None else None),
+        "selected": selected,
+        "selected_score": (round(selected_score, 4)
+                           if selected_score is not None else None),
+        "quality_tol": args.quality_tol,
         "refined_views": len(obs), "skipped": skipped,
         "eval_mode": args.eval_mode,
         "eval_frames": len(eval_ids_final),
@@ -617,14 +651,14 @@ def main(argv: list[str] | None = None) -> int:
         "select_by": args.select_by, "psnr_weight": args.psnr_weight,
         "gates": {"sharp_min": guard, "ssim_min": ssim_min,
                   "lpips_max": lpips_max},
-        "passed_any": (out_dir / "model_best.ply").is_file(),
+        "passed_any": any(h.get("passed") for h in evaluator.history),
     }
     (out_dir / "report.json").write_text(
         json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
 
     print(f"\n完成：{report.iterations} 步，{report.seconds:.1f} s")
-    if evaluator.best_seconds is not None:
-        print(f"  最佳检查点累计：{evaluator.best_seconds:.1f}s")
+    print(f"  选择     ：{selected}"
+          + (f"（score {selected_score:.4f}）" if selected_score is not None else ""))
     print(f"  选点集 PSNR：{before['psnr']:.2f} → {after['psnr']:.2f} dB")
     if "ssim" in after:
         print(f"  选点集 SSIM：{before.get('ssim', float('nan')):.4f} → "

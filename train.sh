@@ -17,7 +17,7 @@
 #           全部取 configs/train.yaml 的 train.pipeline.post_train；
 #           临时消融用 POST_* 环境变量覆盖（不用改脚本）
 #   选角    逐圈外扩，每圈按缺陷质量取 top-N
-#   选最佳  SSIM − LPIPS + psnr_weight·PSNR；低 quality_tol 即早停
+#   选最终  容差内保留最后一轮/最后一个检查点；超 quality_tol 才回退
 #
 # 环境变量（默认即稳定路线，一般不用改）：
 #   MAIN_ENV                conda 环境（默认 live3dgs）
@@ -279,8 +279,8 @@ target = models / best / "model.ply"
 if not target.is_file():
     print("[error] 报告里的最佳模型不存在：{}".format(target), file=sys.stderr)
     raise SystemExit(1)
-if d.get("improved") is False:
-    print("[train] 后训练未改进，保持 {}".format(target.parent))
+if d.get("accepted") is False:
+    print("[train] 后训练没有可接受的轮次，保持 {}".format(target.parent))
     print("[train] 报告：{}".format(report))
     raise SystemExit(0)
 
@@ -291,7 +291,7 @@ def fmt(value, spec):
 
 r = d.get("best_round") or {}
 b = r.get("best") or {}
-print("[train] 后训练最佳：{}（PSNR {} / SSIM {} / LPIPS {}）".format(
+print("[train] 后训练最终：{}（PSNR {} / SSIM {} / LPIPS {}）".format(
     best, fmt(b.get("psnr"), ".2f"), fmt(b.get("ssim"), ".4f"),
     fmt(b.get("lpips"), ".4f")))
 print("[train] 模型：{}".format(target))

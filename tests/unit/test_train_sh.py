@@ -90,7 +90,8 @@ def test_plan_is_the_stable_epic_route() -> None:
     assert plan["post_ip_adapter"] == "none"
     assert plan["post_color_match"].lower() == "false"
     assert plan["post_controlnet"] == "lllyasviel/control_v11p_sd15_normalbae"
-    assert plan["post_rings"].count(";") == 3, "默认仍是四圈 20/10 → 50/30"
+    rings = plan["post_rings"]
+    assert rings == "auto" or rings.count(";") == 3, rings
 
 
 def test_plan_defaults_to_base_only() -> None:

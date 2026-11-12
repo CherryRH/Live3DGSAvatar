@@ -282,6 +282,7 @@ def main(argv: list[str] | None = None) -> int:
     best_quality = None
     best_round_tag = None
     best_model_name = args.base_work
+    last_round = None
     for i, (yaw, pitch) in enumerate(rings):
         k = args.round_offset + i + 1
         rtag = f"r{k}"
@@ -371,7 +372,8 @@ def main(argv: list[str] | None = None) -> int:
                          "--dataset", dataset, "--defects", str(cum),
                          "--steps", str(args.steps), "--eval-every", "50",
                          "--eval-frames", "64",
-                         "--select-by", "quality",
+                         "--select-by", "last",
+                         "--quality-tol", f"{args.quality_tol:g}",
                          "--psnr-weight", f"{args.psnr_weight:g}",
                          *promote_args,
                          "--lr-xyz", f"{args.lr_xyz:g}",
@@ -389,21 +391,28 @@ def main(argv: list[str] | None = None) -> int:
         if report_path.is_file():
             rep = json.loads(report_path.read_text(encoding="utf-8"))
             hist = [h for h in rep.get("score_history", []) if h.get("passed")]
-            if hist:
-                # 直接用 refine 写入的 score（quality = SSIM−LPIPS+w·PSNR），
-                # 避免两处公式各算一遍；旧 report 没有 score 时回退计算。
+            # refine 的最终选择：last（容差内）或 best；after 就是实际落盘的模型
+            best = rep.get("after")
+            if best is None and hist:
                 best = max(hist, key=lambda h: (
                     h["score"] if h.get("score") is not None else
                     h.get("ssim", 0.0) - h.get("lpips", 1.0)
                     + args.psnr_weight * h.get("psnr", 0.0)))
         dt_round = time.perf_counter() - t_round
         best_secs = rep.get("best_seconds") if rep is not None else None
+        q = (rep.get("selected_score") if rep is not None else None)
+        if q is None and best is not None:
+            q = (best.get("ssim", 0.0) - best.get("lpips", 1.0)
+                 + args.psnr_weight * best.get("psnr", 0.0))
         rounds.append({
             "round": rtag, "yaw": yaw, "pitch": pitch,
             "views": sorted(new), "labels": labels,
             "model": args.base_work if in_place else promote,
             "promoted": False,
             "improved": False,
+            "accepted": False,
+            "selected": (rep.get("selected") if rep is not None else None),
+            "score": (round(q, 4) if q is not None else None),
             "best_seconds": best_secs,
             "before": (rep.get("before") if rep is not None else None),
             "best": best,
@@ -414,21 +423,18 @@ def main(argv: list[str] | None = None) -> int:
         })
         print(f"  {rtag} 耗时 {dt_round:.1f}s（选角 {dt_sel:.1f}s / "
               f"生成 {dt_gen:.1f}s / 微调 {dt_ft:.1f}s），标签 {labels} 张"
-              + (f"，最佳 {best_secs:.1f}s" if best_secs is not None else ""),
+              + (f"，选中 {rep.get('selected')}" if rep is not None else ""),
               flush=True)
         if rc != 0:
             print("[stop] refine 失败", flush=True)
             break
-        if best is None:
+        if best is None or q is None:
             print("[stop] 没有通过的检查点", flush=True)
             break
         if not in_place:
             # refine 内部已经把本轮模型装进 models/<subject>/<prefix>_rN
             rounds[-1]["promoted"] = True
         before = rep.get("before") if rep is not None else None
-        # 绝对阈值只是兜底：不同对象/基座的 SSIM 本来就不一样（biden 0.95，
-        # 别的对象可能 0.92），只按绝对值会把"正常但偏低"当成崩坏。
-        # 真正的崩坏 = 既低于绝对阈值，又比本轮基座明显退步。
         degraded = bool(before) and (
             (before.get("psnr") is not None
              and best.get("psnr", 0.0) < before["psnr"] - 1.0)
@@ -441,46 +447,37 @@ def main(argv: list[str] | None = None) -> int:
                 or best["lpips"] > args.gross_lpips) and degraded:
             print(f"[stop] 严重崩坏（低于基座 {before}）：{best}", flush=True)
             break
-        q = (best.get("ssim", 0.0) - best.get("lpips", 1.0)
-             + args.psnr_weight * best.get("psnr", 0.0))
+
         improved = best_quality is None or q > best_quality
+        # 用户策略：小角度留出集测不出大角度变化；只要没超出下降容差，
+        # 就接受"最后一个"模型，而不是挑分数最高的那一轮。
+        accepted = best_quality is None or q >= best_quality - args.quality_tol
         rounds[-1]["improved"] = bool(improved)
+        rounds[-1]["accepted"] = bool(accepted)
+        if not accepted:
+            print(f"[stop] 质量分 {q:.4f} 低于最佳 {best_quality:.4f} "
+                  f"超过 {args.quality_tol:g}，早停（保留上一版）", flush=True)
+            break
         if improved:
             best_quality = q
-            best_round_tag = rtag
-            if not in_place:
-                best_model_name = promote
         if in_place:
-            # 只有更好才覆盖，避免后一轮退化把 best 写坏
-            if improved:
-                install_in_place(models_root, args.subject, args.base_work,
-                                 cum / "finetune" / "model.ply",
-                                 cum / "finetune" / "report.json")
-                rounds[-1]["promoted"] = True
-                print(f"  写回 models/{args.subject}/{args.base_work}"
-                      "（本轮质量更好）", flush=True)
-            elif q < best_quality - args.quality_tol:
-                print(f"[stop] 质量分 {q:.4f} 低于最佳 {best_quality:.4f} "
-                      f"超过 {args.quality_tol:g}，早停（不动 best）", flush=True)
-                break
+            install_in_place(models_root, args.subject, args.base_work,
+                             cum / "finetune" / "model.ply",
+                             cum / "finetune" / "report.json")
+            rounds[-1]["promoted"] = True
+            print(f"  写回 models/{args.subject}/{args.base_work}"
+                  f"（{'本轮更优' if improved else '容差内，接受最后一版'}）",
+                  flush=True)
+            best_model_name = args.base_work
         else:
-            if not improved and q < best_quality - args.quality_tol:
-                print(f"[stop] 质量分 {q:.4f} 低于最佳 {best_quality:.4f} "
-                      f"超过 {args.quality_tol:g}，早停", flush=True)
-                break
-            # 只有更好的轮次才作为下一轮起点；更差但仍可接受的轮次
-            # 不接进链里，避免 LPIPS/感知质量逐轮累积退化
-            base = promote if improved else best_model_name
+            base = promote
+            best_model_name = promote
+        last_round = rounds[-1]
         print(f"  下一轮 base={base}", flush=True)
 
     total = time.perf_counter() - start
-    passed = [r for r in rounds if r.get("improved")]
-    best_round = max(
-        passed,
-        key=lambda r: (r["best"].get("ssim", 0.0)
-                       - r["best"].get("lpips", 1.0)
-                       + args.psnr_weight * r["best"].get("psnr", 0.0)),
-    ) if passed else None
+    # 选“最后一个被接受的轮次”，不再按分数挑 best
+    best_round = last_round
     out = {
         "prefix": args.prefix, "base": args.base_work,
         "top_n": args.top_n, "rings": rings,
@@ -510,6 +507,8 @@ def main(argv: list[str] | None = None) -> int:
         "rounds": rounds, "total_seconds": round(total, 1),
         "in_place": in_place,
         "improved": any(r.get("improved") for r in rounds),
+        "accepted": any(r.get("accepted") for r in rounds),
+        "selection": "last-within-tol",
         "best_round": best_round,
         "best_model": best_model_name,
     }
@@ -520,14 +519,15 @@ def main(argv: list[str] | None = None) -> int:
     if in_place:
         updated = any(r.get("promoted") for r in rounds)
         print(f"  模型：models/{args.subject}/{args.base_work}"
-              f"（{'已更新' if updated else '未改进，保持基座'}）", flush=True)
+              f"（{'已更新' if updated else '未接受，保持基座'}）", flush=True)
     if best_round:
         best_secs = best_round.get("best_seconds")
-        print(f"  最佳 {best_round['round']}：{best_round['best']}"
-              + (f"，最佳累计 {best_secs:.1f}s" if best_secs is not None else ""),
+        print(f"  最终 {best_round['round']}（{best_round.get('selected')}）："
+              f"{best_round['best']}"
+              + (f"，累计 {best_secs:.1f}s" if best_secs is not None else ""),
               flush=True)
     elif not in_place:
-        print(f"  未改进，保持 models/{args.subject}/{args.base_work}", flush=True)
+        print(f"  未接受，保持 models/{args.subject}/{args.base_work}", flush=True)
     print(f"  报告：{report_path}", flush=True)
     return 0
 
