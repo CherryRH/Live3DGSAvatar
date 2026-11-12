@@ -10,7 +10,7 @@
 用法：
     python scripts/iterative_repair.py --subject biden \
         --base-work train1_repair_r1 --prefix top2 --top-n 2 \
-        --rings "30,20;40,30;50,30" --round-offset 1 \
+        --rings auto --round-offset 1 \
         --seed-defects output/post/biden/top2/r1/defects
 
 产物（每次运行一个目录）：
@@ -37,6 +37,8 @@ PY = sys.executable
 
 
 def parse_rings(text: str) -> list[tuple[float, float]]:
+    if str(text).strip().lower() == "auto":
+        return []          # 由 main 里按数据集覆盖范围计算
     out = []
     for part in text.split(";"):
         part = part.strip()
@@ -126,7 +128,13 @@ def main(argv: list[str] | None = None) -> int:
                          "不产生 <prefix>_rN；基座 checkpoint 仍在 output/train/")
     ap.add_argument("--top-n", type=int, default=2)
     ap.add_argument("--rings", required=True,
-                    help="每轮 (yaw,pitch) 上限，如 '30,20;40,30;50,30'")
+                    help="每轮 (yaw,pitch) 上限，如 '30,20;40,30;50,30'；"
+                         "填 auto 则按数据集覆盖边缘自动生成")
+    ap.add_argument("--ring-quantile", type=float, default=0.90,
+                    help="auto 模式：用 |yaw|/|pitch| 的该分位数作为覆盖边缘")
+    ap.add_argument("--ring-step", type=float, default=10.0)
+    ap.add_argument("--ring-max-yaw", type=float, default=50.0)
+    ap.add_argument("--ring-max-pitch", type=float, default=30.0)
     ap.add_argument("--round-offset", type=int, default=0,
                     help="第一轮编号偏移（top2 从 r2 开始时填 1）")
     ap.add_argument("--seed-defects", type=Path, default=None,
@@ -203,6 +211,44 @@ def main(argv: list[str] | None = None) -> int:
 
     dataset = args.dataset or args.subject
     rings = parse_rings(args.rings)
+    if not rings:
+        # 从数据集训练段的头姿分布估计"已经覆盖到的边缘"：p90 作为起点，
+        # 再按 ring_step 向外扩到配置上限。避免在已有真实数据的角度上
+        # 继续让扩散模型重绘（那只会引入噪声）。
+        import numpy as np
+
+        from live3dgsavatar.config import load_config
+        from live3dgsavatar.data.datasets import resolve_dataset_dir
+        from live3dgsavatar.data.pose import head_pitch, head_yaw
+
+        cfg = load_config()
+        data_dir = resolve_dataset_dir(cfg, dataset)
+        with np.load(data_dir / "render_inputs.npz", allow_pickle=True) as d:
+            w = np.asarray(d["blend_weight"], np.float32)
+        ratio = float(cfg.get("train.pipeline.test_ratio", 0.3))
+        n = len(w)
+        train_end = max(1, n - max(1, int(round(n * ratio))))
+        yaw = np.abs(head_yaw(w[:train_end]))
+        pitch = np.abs(head_pitch(w[:train_end]))
+        q = float(np.clip(args.ring_quantile, 0.5, 1.0)) * 100.0
+        step = max(1.0, float(args.ring_step))
+        edge_yaw = float(np.ceil(np.percentile(yaw, q) / step) * step)
+        edge_pitch = float(np.ceil(np.percentile(pitch, q) / step) * step)
+        if edge_yaw > args.ring_max_yaw and edge_pitch > args.ring_max_pitch:
+            raise SystemExit(
+                f"[error] 数据集覆盖边缘 ({edge_yaw:g},{edge_pitch:g}) 已超过上限 "
+                f"({args.ring_max_yaw:g},{args.ring_max_pitch:g})")
+        y, pi = edge_yaw, edge_pitch
+        while y <= args.ring_max_yaw or pi <= args.ring_max_pitch:
+            rings.append((min(y, args.ring_max_yaw),
+                          min(pi, args.ring_max_pitch)))
+            y += step
+            pi += step
+        print(f"自动选角：数据集 p{args.ring_quantile * 100:.0f} "
+              f"|yaw|={np.percentile(yaw, q):.1f} / "
+              f"|pitch|={np.percentile(pitch, q):.1f} → "
+              f"ring 起点 ({edge_yaw:g},{edge_pitch:g})，共 {len(rings)} 轮",
+              flush=True)
     if not rings:
         raise SystemExit("[error] --rings 为空")
     out_root = (args.out_root if args.out_root is not None
