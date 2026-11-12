@@ -403,6 +403,14 @@ def test_keep_interior_holes_drops_border_and_large() -> None:
     assert not kept[1, 11] and not kept[30, 30]
 
 
+def test_pseudo_label_prompt_suppresses_clothes_and_makeup() -> None:
+    m = load_script("pseudo_label.py")
+    args = m.parse_args(["--subject", "a", "--work-name", "b"])
+    assert "bare face" in args.prompt
+    for word in ("clothing", "jewelry", "earrings", "makeup", "lipstick"):
+        assert word in args.negative, word
+
+
 def test_pseudo_label_defaults_cover_ghosting() -> None:
     """默认应修"破碎/虚影"而不只是洞：mask-mode=full、strength 足够动结构。"""
     m = load_script("pseudo_label.py")

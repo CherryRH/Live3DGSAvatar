@@ -78,11 +78,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="重绘强度；SD1.5 人脸加强版默认 0.85")
     p.add_argument("--guidance", type=float, default=5.5)
     p.add_argument("--prompt",
-                   default="professional photo of a human head, natural skin "
-                           "texture, fine detail, sharp focus")
+                   default="close-up of a bare face and neck, natural bare "
+                           "skin, visible pores, soft light, plain background, "
+                           "sharp focus")
     p.add_argument("--negative",
-                   default="blurry, smooth plastic, deformed, cartoon, "
-                           "extra eyes, low resolution, watermark")
+                   default="clothing, shirt, collar, jacket, scarf, necklace, "
+                           "earrings, jewelry, hat, glasses, makeup, lipstick, "
+                           "eyeshadow, blush, painted face, beauty filter, "
+                           "blurry, smooth plastic, deformed, extra eyes, low "
+                           "resolution, watermark")
 
     # ---- 掩码与筛选 ----
     p.add_argument("--normal-convention", choices=("opengl", "camera"),
@@ -157,9 +161,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="单个洞连通域的像素占比上限；更大的块是缺失解剖结构，不修")
     p.add_argument("--border-margin", type=int, default=2,
                    help="碰到图像边缘的洞不修（通常是画面外的脖子/肩膀）")
+    p.add_argument("--head-cut", action="store_true",
+                   help="unsupported 模式：只修到最低观测像素附近，"
+                        "避免扩散补出脖子/胸口/衣服/首饰")
     p.add_argument("--head-cut-margin", type=int, default=0,
-                   help="unsupported 模式：把掩码裁到'最低支持像素+margin'以上，"
-                        "排除脖子/胸口（0 = 不裁）")
+                   help="head-cut 时向下保留的像素（0 = 正好裁在最低观测处）")
     p.add_argument("--min-std", type=float, default=3.0,
                    help="洞内像素标准差下限（太平坦说明糊了）")
     p.add_argument("--consistency", type=int, default=2,
@@ -205,6 +211,26 @@ def _erode(mask, radius: int):
                 continue
             out &= np.roll(np.roll(m, dy, axis=0), dx, axis=1)
     return out
+
+
+def crop_below_face(mask, core, observed, margin: int = 0):
+    """把掩码裁到「最低观测像素 + margin」以上（y 越大越靠下）。
+
+    未观测的脖子/胸口是扩散最容易补出衣服、项链、胸口的地方；宁可在那里
+    留空，也不要生成假内容。返回裁完的 `(mask, core)`。
+    """
+    import numpy as np
+
+    m = np.asarray(mask, bool)
+    c = np.asarray(core, bool)
+    obs = None if observed is None else np.asarray(observed, bool)
+    if obs is None or not obs.any():
+        return m, c
+    rows = np.arange(m.shape[0])[:, None]
+    y_cut = int(np.where(obs)[0].max()) + int(margin)
+    y_cut = min(max(y_cut, 0), m.shape[0] - 1)
+    keep = rows <= y_cut
+    return m & keep, c & keep
 
 
 def observed_pixels(ids_np, observed_face=None):
@@ -749,12 +775,10 @@ def main(argv: list[str] | None = None) -> int:
             spike=args.spike_threshold, defect_quantile=args.defect_quantile,
             max_hole_area=args.max_hole_area, border=args.border_margin,
             dilate_px=args.mask_dilate, core_dilate=args.core_dilate)
-        if (args.mask_mode == "unsupported" and args.head_cut_margin > 0
+        if (args.mask_mode == "unsupported" and args.head_cut
                 and obs_px is not None and obs_px.any()):
-            rows = np.arange(mask.shape[0])[:, None]
-            y_cut = int(np.where(obs_px)[0].max()) + int(args.head_cut_margin)
-            mask = mask & (rows <= y_cut)
-            core = core & (rows <= y_cut)
+            mask, core = crop_below_face(
+                mask, core, obs_px, margin=args.head_cut_margin)
         if dropped:
             print(f"  {label:40s} 丢弃 {dropped} 块大洞（缺失解剖结构/画面外）",
                   flush=True)

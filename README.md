@@ -25,7 +25,9 @@
   （`SSIM − LPIPS + 0.002·PSNR`）早停并保留最佳轮次；
 - 对没有真实观测的区域，生成伪标签只能给出**推测**；补齐覆盖要靠采集或更强的
   多视角生成器，不是训练技巧；
-- 后训练不做语义分割（脖子/胸口仍可能被填），验收以正面与既有角度不退化为准。
+- 后训练不做语义分割；默认 `head_cut: true` 把掩码裁到最低观测像素附近，
+  避免补出脖子/胸口/衣服（代价是这些区域可能留空）。提示词已加
+  clothing / jewelry / makeup 负向词，但无法保证身份完全不变。
 
 ## 快速开始
 
@@ -98,7 +100,8 @@ python scripts/iterative_repair.py --subject <对象> --base-work <版本> \
 
 - 视角：`find_defects.py` 在当前角度圈里选**最差的 top-N**（不是固定对称角）；
 - 标签：`pseudo_label.py` 用 epiC + normal ControlNet 只重绘未观测/缺陷区域，
-  过填充、可信区、一致性门后才接受；
+  过填充、可信区、一致性门后才接受；提示词为 bare face/neck + 负向
+  clothing/jewelry/makeup，`head_cut` 默认排除未观测的脖子/胸口；
 - 掩码：向缺陷区外扩 12px（`mask_dilate`），给扩散模型足够上下文；
 - 监督：累计标签（旧视角继续监督）+ 真实帧 8 : 伪标签 2；
 - 选最佳：**`SSIM − LPIPS + 0.002·PSNR`**（PSNR 权重很小，避免选到

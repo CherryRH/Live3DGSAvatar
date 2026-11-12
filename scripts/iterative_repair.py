@@ -145,11 +145,19 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--feather", type=int, default=4,
                     help="core 边界羽化半径（0=硬替换）")
     ap.add_argument("--prompt",
-                    default="professional photo of a human head, natural skin "
-                            "texture, fine detail, sharp focus")
+                    default="close-up of a bare face and neck, natural bare "
+                            "skin, visible pores, soft light, plain background, "
+                            "sharp focus")
     ap.add_argument("--negative",
-                    default="blurry, smooth plastic, deformed, cartoon, "
-                            "extra eyes, low resolution, watermark")
+                    default="clothing, shirt, collar, jacket, scarf, necklace, "
+                            "earrings, jewelry, hat, glasses, makeup, lipstick, "
+                            "eyeshadow, blush, painted face, beauty filter, "
+                            "blurry, smooth plastic, deformed, extra eyes, low "
+                            "resolution, watermark")
+    ap.add_argument("--head-cut", action="store_true",
+                    help="unsupported 掩码只修到最低观测像素附近，"
+                         "避免补出脖子/胸口/衣服")
+    ap.add_argument("--head-cut-margin", type=int, default=0)
     ap.add_argument("--min-fill", type=float, default=0.45,
                     help="大掩码下填充率门限（默认 0.45）")
     ap.add_argument("--sharp-tolerance", type=float, default=0.12)
@@ -243,6 +251,9 @@ def main(argv: list[str] | None = None) -> int:
                             else ["--no-color-match"]),
                           "--prompt", args.prompt,
                           "--negative", args.negative,
+                          *(["--head-cut", "--head-cut-margin",
+                             str(args.head_cut_margin)]
+                            if args.head_cut else []),
                           "--steps", "40", "--consistency", "2",
                           "--photometric-frames", "80",
                           "--photometric-min-px", "16", "--sharpen", "0.3",
@@ -402,6 +413,8 @@ def main(argv: list[str] | None = None) -> int:
             "psnr_weight": args.psnr_weight,
             "color_match": args.color_match,
             "feather": args.feather,
+            "head_cut": args.head_cut,
+            "head_cut_margin": args.head_cut_margin,
         },
         "rounds": rounds, "total_seconds": round(total, 1),
         "in_place": in_place,

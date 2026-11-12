@@ -60,6 +60,8 @@ POST_PSNR_WEIGHT="${POST_PSNR_WEIGHT:-}"
 POST_FEATHER="${POST_FEATHER:-}"
 POST_COLOR_RING="${POST_COLOR_RING:-}"
 POST_COLOR_MATCH="${POST_COLOR_MATCH:-}"
+POST_HEAD_CUT="${POST_HEAD_CUT:-}"
+POST_HEAD_CUT_MARGIN="${POST_HEAD_CUT_MARGIN:-}"
 POST_PROMPT="${POST_PROMPT:-}"
 POST_NEGATIVE="${POST_NEGATIVE:-}"
 
@@ -121,6 +123,8 @@ POST_PSNR_WEIGHT="${POST_PSNR_WEIGHT:-$CFG_POST_PSNR_WEIGHT}"
 POST_FEATHER="${POST_FEATHER:-$CFG_POST_FEATHER}"
 POST_COLOR_RING="${POST_COLOR_RING:-$CFG_POST_COLOR_RING}"
 POST_COLOR_MATCH="${POST_COLOR_MATCH:-$CFG_POST_COLOR_MATCH}"
+POST_HEAD_CUT="${POST_HEAD_CUT:-$CFG_POST_HEAD_CUT}"
+POST_HEAD_CUT_MARGIN="${POST_HEAD_CUT_MARGIN:-$CFG_POST_HEAD_CUT_MARGIN}"
 POST_PROMPT="${POST_PROMPT:-$CFG_POST_PROMPT}"
 POST_NEGATIVE="${POST_NEGATIVE:-$CFG_POST_NEGATIVE}"
 if (( PREFIX_SET == 0 )); then
@@ -167,6 +171,8 @@ post_psnr_weight=$POST_PSNR_WEIGHT
 post_feather=$POST_FEATHER
 post_color_ring=$POST_COLOR_RING
 post_color_match=$POST_COLOR_MATCH
+post_head_cut=$POST_HEAD_CUT
+post_head_cut_margin=$POST_HEAD_CUT_MARGIN
 post_controlnet=lllyasviel/control_v11p_sd15_normalbae
 EOF
 }
@@ -228,6 +234,9 @@ post_train() {
     args+=(--color-match)
   else
     args+=(--no-color-match)
+  fi
+  if [[ "${POST_HEAD_CUT,,}" == "true" ]]; then
+    args+=(--head-cut --head-cut-margin "$POST_HEAD_CUT_MARGIN")
   fi
   if (( IN_PLACE == 1 )); then args+=(--in-place); fi
   if (( DRY == 1 )); then

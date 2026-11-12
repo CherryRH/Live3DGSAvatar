@@ -280,6 +280,8 @@ def main(argv: list[str] | None = None) -> int:
     post_color_mean_only = bool(_pt("color_mean_only", False))
     post_color_ring = int(_pt("color_ring", 8))
     post_feather = int(_pt("feather", 4))
+    post_head_cut = bool(_pt("head_cut", False))
+    post_head_cut_margin = int(_pt("head_cut_margin", 0))
     post_prompt = str(_pt("prompt", "professional photo of a human head, "
                                    "natural skin texture, fine detail, sharp focus"))
     post_negative = str(_pt("negative", "blurry, smooth plastic, deformed, "
@@ -790,7 +792,9 @@ def main(argv: list[str] | None = None) -> int:
                  else ["--no-color-match"]),
                *(["--color-mean-only"] if post_color_mean_only else []),
                "--feather", str(post_feather),
-               "--prompt", post_prompt, "--negative", post_negative]
+               "--prompt", post_prompt, "--negative", post_negative,
+               *(["--head-cut", "--head-cut-margin",
+                  str(post_head_cut_margin)] if post_head_cut else [])]
         print(f"\n后训练：{' '.join(cmd)}", flush=True)
         rc = subprocess.run(cmd, cwd=str(Path(__file__).resolve().parents[1]),
                             check=False).returncode

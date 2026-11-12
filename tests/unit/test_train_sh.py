@@ -32,6 +32,8 @@ PLAN_TO_CONFIG = {
     "post_psnr_weight": "psnr_weight",
     "post_feather": "feather",
     "post_color_ring": "color_ring",
+    "post_head_cut": "head_cut",
+    "post_head_cut_margin": "head_cut_margin",
 }
 
 
