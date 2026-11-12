@@ -239,10 +239,31 @@ def main(argv: list[str] | None = None) -> int:
     post_steps = int(_pt("steps", 200))
     post_refined = int(_pt("refined_per_batch", 2))
     post_real = int(_pt("real_per_batch", 8))
-    post_quality_tol = float(_pt("quality_tol", 0.002))
-    post_mask_dilate = int(_pt("mask_dilate", 24))
+    post_quality_tol = float(_pt("quality_tol", 0.01))
+    post_psnr_weight = float(_pt("psnr_weight", 0.002))
+    post_mask_dilate = int(_pt("mask_dilate", 12))
     post_min_fill = float(_pt("min_fill", 0.45))
     post_base_model = str(_pt("base_model", "emilianJR/epiCRealism"))
+    post_ip_adapter = str(_pt("ip_adapter", "none"))
+    post_ip_adapter_weight = str(_pt("ip_adapter_weight",
+                                     "ip-adapter-faceid_sd15.bin"))
+    post_ip_adapter_image_encoder = str(_pt(
+        "ip_adapter_image_encoder", "h94/IP-Adapter/sdxl_models/image_encoder"))
+    post_ip_adapter_scale = float(_pt("ip_adapter_scale", 0.6))
+    post_strength = float(_pt("strength", 0.85))
+    post_core_dilate = int(_pt("core_dilate", 12))
+    post_identity_threshold = float(_pt("identity_threshold", 0.30))
+    post_trusted_tol = float(_pt("trusted_tol", 3.0))
+    post_lr_xyz = float(_pt("lr_xyz", 1e-5))
+    post_color_match = bool(_pt("color_match", False))
+    post_color_mean_only = bool(_pt("color_mean_only", False))
+    post_color_ring = int(_pt("color_ring", 8))
+    post_feather = int(_pt("feather", 4))
+    post_prompt = str(_pt("prompt", "professional photo of a human head, "
+                                   "natural skin texture, fine detail, sharp focus"))
+    post_negative = str(_pt("negative", "blurry, smooth plastic, deformed, "
+                                       "cartoon, extra eyes, low resolution, "
+                                       "watermark"))
 
     from live3dgsavatar.data.sources import ManifestSource
 
@@ -523,22 +544,37 @@ def main(argv: list[str] | None = None) -> int:
 
     from live3dgsavatar.core.io.ply import save_ply
 
+    # 训练循环内的墙钟：每次存盘打印累计耗时，report 里也留一份。
+    # t0 在 trainer.run() 前才置位，不把数据加载/预处理算进训练时间。
+    timing = {"t0": None, "best": None, "saves": []}
+
+    def _elapsed() -> float:
+        return 0.0 if timing["t0"] is None else time.perf_counter() - timing["t0"]
+
     def save(iteration: int) -> None:
-        save_ply(avatar, out_dir / f"model_{iteration:06d}.ply")
+        path = out_dir / f"model_{iteration:06d}.ply"
+        save_ply(avatar, path)
+        secs = _elapsed()
+        timing["saves"].append({"iteration": iteration, "file": path.name,
+                                "seconds": round(secs, 1)})
+        print(f"  [save] 第 {iteration} 步 {path.name}（累计 {secs:.1f}s）",
+              flush=True)
 
     def save_best(iteration: int, metric: float) -> None:
         """验证指标刷新最好成绩时存一份 —— 后训变差也能拿回好的那份。"""
         save_ply(avatar, out_dir / "model_best.ply")
+        secs = _elapsed()
+        timing["best"] = secs
         if robust_cfg is not None:
             print(f"  [best] 第 {iteration} 步 robust {metric:.2f}"
                   f"（PSNR {last_eval.get('psnr', float('nan')):.2f}，"
                   f"缺口 {last_eval.get('deficit_mean', float('nan')):.3f}，"
                   f"阈值孔洞 {last_eval.get('hole_mean', float('nan')):.1%}，"
                   f"面外溢出 {last_eval.get('outside_mean', float('nan')):.1%}）"
-                  " → model_best.ply", flush=True)
+                  f" → model_best.ply（累计 {secs:.1f}s）", flush=True)
         else:
-            print(f"  [best] 第 {iteration} 步 验证 {metric:.2f} dB → model_best.ply",
-                  flush=True)
+            print(f"  [best] 第 {iteration} 步 验证 {metric:.2f} dB"
+                  f" → model_best.ply（累计 {secs:.1f}s）", flush=True)
 
     hooks = [
         LogHook(every=100),
@@ -611,6 +647,7 @@ def main(argv: list[str] | None = None) -> int:
                       render_fn=render_fn, params=avatar.parameter_groups(),
                       iterations=iterations, batch_size=batch_size,
                       blend_start=blend_start, hooks=hooks, device=device)
+    timing["t0"] = time.perf_counter()
     report = trainer.run()
 
     # 最终模型（训练结束时的那一份）—— 定期存档已在 CheckpointHook 里做过
@@ -621,18 +658,23 @@ def main(argv: list[str] | None = None) -> int:
     import shutil as _shutil
 
     _shutil.copyfile(model_cfg, out_dir / "config.yaml")
-    print(f"\n最终模型：{final_ply}")
+    print(f"\n最终模型：{final_ply}（累计 {_elapsed():.1f}s）")
 
     print(f"\n训练结束：{report.iterations} 步，{report.seconds:.1f} s，"
           f"{report.iters_per_s:.2f} it/s")
     if report.best_metric is not None:
+        best_secs = timing["best"]
+        suffix = f"，累计 {best_secs:.1f}s" if best_secs is not None else ""
         print(f"  最佳验证 PSNR {report.best_metric:.2f} dB"
-              f"（第 {report.best_iteration} 步）")
+              f"（第 {report.best_iteration} 步{suffix}）")
     report_path = out_dir / "report.json"
     report_path.write_text(json.dumps({
         "subject": subject, "work_name": work,
         "iterations": report.iterations, "seconds": report.seconds,
         "best_psnr": report.best_metric, "best_iteration": report.best_iteration,
+        "best_seconds": (round(timing["best"], 1)
+                         if timing["best"] is not None else None),
+        "checkpoints": timing["saves"],
         "stopped_early": report.stopped_early,
     }, indent=2, ensure_ascii=False), encoding="utf-8")
 
@@ -661,9 +703,25 @@ def main(argv: list[str] | None = None) -> int:
                "--refined-per-batch", str(post_refined),
                "--real-per-batch", str(post_real),
                "--quality-tol", str(post_quality_tol),
+               "--psnr-weight", str(post_psnr_weight),
                "--mask-dilate", str(post_mask_dilate),
                "--min-fill", str(post_min_fill),
-               "--base-model", post_base_model]
+               "--base-model", post_base_model,
+               "--ip-adapter", post_ip_adapter,
+               "--ip-adapter-weight", post_ip_adapter_weight,
+               "--ip-adapter-image-encoder", post_ip_adapter_image_encoder,
+               "--ip-adapter-scale", str(post_ip_adapter_scale),
+               "--strength", str(post_strength),
+               "--core-dilate", str(post_core_dilate),
+               "--lr-xyz", str(post_lr_xyz),
+               "--identity-threshold", str(post_identity_threshold),
+               "--trusted-tol", str(post_trusted_tol),
+               "--color-ring", str(post_color_ring),
+               *(["--color-match"] if post_color_match
+                 else ["--no-color-match"]),
+               *(["--color-mean-only"] if post_color_mean_only else []),
+               "--feather", str(post_feather),
+               "--prompt", post_prompt, "--negative", post_negative]
         print(f"\n后训练：{' '.join(cmd)}", flush=True)
         rc = subprocess.run(cmd, cwd=str(Path(__file__).resolve().parents[1]),
                             check=False).returncode

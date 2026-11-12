@@ -22,7 +22,7 @@
   不透明度、尺度与位置。未观测区域依赖生成伪标签，质量受数据覆盖限制；
 - biden 的采集角度不对称（yaw 约 [−3°, +13°]、pitch 约 [−14°, +2°]）。
   后训练用数据驱动选角；外扩到 ±50° 时可能出现脖子/胸口填充，默认按质量分
-  （`SSIM − LPIPS`）早停并保留最佳轮次；
+  （`SSIM − LPIPS + 0.002·PSNR`）早停并保留最佳轮次；
 - 对没有真实观测的区域，生成伪标签只能给出**推测**；补齐覆盖要靠采集或更强的
   多视角生成器，不是训练技巧；
 - 后训练不做语义分割（脖子/胸口仍可能被填），验收以正面与既有角度不退化为准。
@@ -53,6 +53,8 @@ bash train.sh --subject <对象> --work-name <版本> --no-spill        # 原版
 - **默认几何监督**：每 4 步采一个 ±10..50° 新视角，罚 FLAME 表面外
   12px 之外的半透明 spill（`weight 0.05`；实色头发不罚）。`--no-spill` 可回退；
 - 早停：正脸 PSNR 与大角度缺口的加权指标（`--no-robust-eval` 可关）；
+- 计时：每次存盘打印累计耗时（`[save]` / `[best]`），`report.json` 记录
+  `best_seconds` 与 `checkpoints`；训练结束再打印最佳检查点的累计时间；
 - 产物：`output/train/<对象>/<版本>/`；训练结束**自动**把最佳检查点装进
   `models/<对象>/<版本>/`（同名覆盖）。
 
@@ -62,6 +64,14 @@ bash train.sh --subject <对象> --work-name <版本> --no-spill        # 原版
 
 ```bash
 bash train.sh --subject <对象> --work-name <版本> --post-train
+```
+
+基础模型已存在、只想跑后训练时用 `--post-only`；只看这条路线解析出的参数用
+`--plan`（不跑 GPU）：
+
+```bash
+bash train.sh --subject <对象> --work-name <版本> --post-only
+bash train.sh --subject <对象> --work-name <版本> --plan
 ```
 
 等价于基础训练落地后运行 `scripts/iterative_repair.py`：
@@ -74,9 +84,10 @@ python scripts/iterative_repair.py --subject <对象> --base-work <版本> \
 - 视角：`find_defects.py` 在当前角度圈里选**最差的 top-N**（不是固定对称角）；
 - 标签：`pseudo_label.py` 用 epiC + normal ControlNet 只重绘未观测/缺陷区域，
   过填充、可信区、一致性门后才接受；
-- 掩码：向缺陷区外扩 24px（`mask_dilate`），给扩散模型足够上下文；
+- 掩码：向缺陷区外扩 12px（`mask_dilate`），给扩散模型足够上下文；
 - 监督：累计标签（旧视角继续监督）+ 真实帧 8 : 伪标签 2；
-- 选最佳：**`SSIM − LPIPS`**，不看 PSNR；质量分下降超阈值就早停，保留最佳轮；
+- 选最佳：**`SSIM − LPIPS + 0.002·PSNR`**（PSNR 权重很小，避免选到
+  「PSNR 高但脖子起雾」的轮）；质量分比最佳低 0.01 就早停，保留最佳轮；
 - 产物：`models/<对象>/<版本>_post_r*/`，报告在
   `output/defects/<对象>/<版本>_post_report.json`（含每轮耗时）。
 

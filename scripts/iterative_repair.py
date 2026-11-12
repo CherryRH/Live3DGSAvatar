@@ -96,9 +96,38 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--real-per-batch", type=int, default=8)
     ap.add_argument("--lr-xyz", type=float, default=1e-5)
     ap.add_argument("--base-model", default="emilianJR/epiCRealism")
+    ap.add_argument("--ip-adapter", choices=("none", "faceid", "faceid_plus"),
+                    default="none")
+    ap.add_argument("--ip-adapter-weight", default="ip-adapter-faceid_sd15.bin")
+    ap.add_argument("--ip-adapter-image-encoder",
+                    default="h94/IP-Adapter/sdxl_models/image_encoder")
+    ap.add_argument("--ip-adapter-scale", type=float, default=0.6)
     ap.add_argument("--trusted-tol", type=float, default=3.0)
-    ap.add_argument("--mask-dilate", type=int, default=24,
-                    help="伪标签掩码向周围扩多少像素（默认 24；太小扩散补不全）")
+    ap.add_argument("--mask-dilate", type=int, default=12,
+                    help="伪标签掩码向周围扩多少像素（默认 12；扩散上下文）")
+    ap.add_argument("--core-dilate", type=int, default=12,
+                    help="真正替换回渲染图的 core 外扩（默认 12 = 整掩码替换）")
+    ap.add_argument("--strength", type=float, default=0.85,
+                    help="重绘强度（SD1.5 人脸加强版默认 0.85）")
+    ap.add_argument("--identity-threshold", type=float, default=0.30,
+                    help="ArcFace 身份相似度下限（默认 0.30）")
+    ap.add_argument("--color-match", dest="color_match", action="store_true",
+                    default=False,
+                    help="把生成图颜色分布对齐到周围渲染（默认关：实测压锐度）")
+    ap.add_argument("--no-color-match", dest="color_match", action="store_false",
+                    help="关闭颜色对齐（默认）")
+    ap.add_argument("--color-mean-only", action="store_true",
+                    help="只对齐颜色均值，保留对比度")
+    ap.add_argument("--color-ring", type=int, default=8,
+                    help="取渲染图周围多少像素的分布做对齐")
+    ap.add_argument("--feather", type=int, default=4,
+                    help="core 边界羽化半径（0=硬替换）")
+    ap.add_argument("--prompt",
+                    default="professional photo of a human head, natural skin "
+                            "texture, fine detail, sharp focus")
+    ap.add_argument("--negative",
+                    default="blurry, smooth plastic, deformed, cartoon, "
+                            "extra eyes, low resolution, watermark")
     ap.add_argument("--min-fill", type=float, default=0.45,
                     help="大掩码下填充率门限（默认 0.45）")
     ap.add_argument("--sharp-tolerance", type=float, default=0.12)
@@ -107,8 +136,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--gross-psnr", type=float, default=30.0)
     ap.add_argument("--gross-ssim", type=float, default=0.93)
     ap.add_argument("--gross-lpips", type=float, default=0.10)
-    ap.add_argument("--quality-tol", type=float, default=0.002,
-                    help="质量分(SSIM-LPIPS)相对最佳下降超过该值即早停")
+    ap.add_argument("--quality-tol", type=float, default=0.01,
+                    help="质量分(SSIM-LPIPS+psnr_weight*PSNR)相对最佳下降超过该值即早停")
+    ap.add_argument("--psnr-weight", type=float, default=0.002,
+                    help="PSNR 在质量分中的小权重（默认 0.002/dB）")
     ap.add_argument("--out-root", type=Path, default=None,
                     help="默认 output/defects/<subject>")
     ap.add_argument("--gen-root", type=Path,
@@ -170,13 +201,28 @@ def main(argv: list[str] | None = None) -> int:
                           "--dataset", dataset,
                           "--defects", str(rdir), "--out", str(gendir),
                           "--limit", "0", "--mask-mode", "unsupported",
-                          "--mask-dilate", str(args.mask_dilate), "--strength", "0.85",
+                          "--mask-dilate", str(args.mask_dilate),
+                          "--strength", f"{args.strength:g}",
+                          "--core-dilate", str(args.core_dilate),
+                          "--identity-threshold", f"{args.identity_threshold:g}",
+                          "--color-ring", str(args.color_ring),
+                          *(["--color-mean-only"] if args.color_mean_only else []),
+                          "--feather", str(args.feather),
+                          *(["--color-match"] if args.color_match
+                            else ["--no-color-match"]),
+                          "--prompt", args.prompt,
+                          "--negative", args.negative,
                           "--steps", "40", "--consistency", "2",
                           "--photometric-frames", "80",
                           "--photometric-min-px", "16", "--sharpen", "0.3",
                           "--min-fill", f"{args.min_fill:g}",
                           "--trusted-tol", f"{args.trusted_tol:g}",
                           "--base-model", args.base_model,
+                          "--ip-adapter", args.ip_adapter,
+                          "--ip-adapter-weight", args.ip_adapter_weight,
+                          "--ip-adapter-image-encoder",
+                          args.ip_adapter_image_encoder,
+                          "--ip-adapter-scale", f"{args.ip_adapter_scale:g}",
                           "--install-refined"], dry=args.dry_run)
         if rc != 0:
             print("[stop] pseudo_label 失败", flush=True)
@@ -199,13 +245,13 @@ def main(argv: list[str] | None = None) -> int:
             print("[stop] 没有可用伪标签", flush=True)
             break
 
-        promote = f"train1_{args.prefix}_{rtag}"
+        promote = f"{args.prefix}_{rtag}"
         rc, dt_ft = run([PY, "scripts/refine_from_images.py",
                          "--subject", args.subject, "--work-name", base,
                          "--dataset", dataset, "--defects", str(cum),
                          "--steps", str(args.steps), "--eval-every", "50",
                          "--eval-frames", "64", "--promote",
-                         "--promote-name", promote,
+                         "--promote-name", promote, "--force",
                          "--lr-xyz", f"{args.lr_xyz:g}",
                          "--ssim-weight", "0.2", "--lpips-weight", "0.1",
                          "--refined-per-batch", str(args.refined_per_batch),
@@ -226,9 +272,12 @@ def main(argv: list[str] | None = None) -> int:
                 best = max(hist, key=lambda h: h.get("ssim", 0.0)
                            - h.get("lpips", 1.0))
         dt_round = time.perf_counter() - t_round
+        best_secs = rep.get("best_seconds") if rep is not None else None
         rounds.append({
             "round": rtag, "yaw": yaw, "pitch": pitch,
             "views": sorted(new), "labels": labels,
+            "model": promote,
+            "best_seconds": best_secs,
             "before": (rep.get("before") if rep is not None else None),
             "best": best,
             "seconds": round(dt_round, 1),
@@ -237,7 +286,8 @@ def main(argv: list[str] | None = None) -> int:
             "ft_seconds": round(dt_ft, 1),
         })
         print(f"  {rtag} 耗时 {dt_round:.1f}s（选角 {dt_sel:.1f}s / "
-              f"生成 {dt_gen:.1f}s / 微调 {dt_ft:.1f}s），标签 {labels} 张",
+              f"生成 {dt_gen:.1f}s / 微调 {dt_ft:.1f}s），标签 {labels} 张"
+              + (f"，最佳 {best_secs:.1f}s" if best_secs is not None else ""),
               flush=True)
         if rc != 0:
             print("[stop] refine 失败", flush=True)
@@ -245,12 +295,24 @@ def main(argv: list[str] | None = None) -> int:
         if best is None:
             print("[stop] 没有通过的检查点", flush=True)
             break
+        before = rep.get("before") if rep is not None else None
+        # 绝对阈值只是兜底：不同对象/基座的 SSIM 本来就不一样（biden 0.95，
+        # 别的对象可能 0.92），只按绝对值会把"正常但偏低"当成崩坏。
+        # 真正的崩坏 = 既低于绝对阈值，又比本轮基座明显退步。
+        degraded = bool(before) and (
+            (before.get("psnr") is not None
+             and best.get("psnr", 0.0) < before["psnr"] - 1.0)
+            or (before.get("ssim") is not None
+                and best.get("ssim", 0.0) < before["ssim"] - 0.01)
+            or (before.get("lpips") is not None
+                and best.get("lpips", 1.0) > before["lpips"] + 0.01))
         if (best["psnr"] < args.gross_psnr
                 or best["ssim"] < args.gross_ssim
-                or best["lpips"] > args.gross_lpips):
-            print(f"[stop] 严重崩坏：{best}", flush=True)
+                or best["lpips"] > args.gross_lpips) and degraded:
+            print(f"[stop] 严重崩坏（低于基座 {before}）：{best}", flush=True)
             break
-        q = best.get("ssim", 0.0) - best.get("lpips", 1.0)
+        q = (best.get("ssim", 0.0) - best.get("lpips", 1.0)
+             + args.psnr_weight * best.get("psnr", 0.0))
         if best_quality is None or q > best_quality:
             best_quality = q
             best_round_tag = rtag
@@ -265,21 +327,44 @@ def main(argv: list[str] | None = None) -> int:
     passed = [r for r in rounds if r.get("best")]
     best_round = max(
         passed,
-        key=lambda r: r["best"].get("ssim", 0.0) - r["best"].get("lpips", 1.0),
+        key=lambda r: (r["best"].get("ssim", 0.0)
+                       - r["best"].get("lpips", 1.0)
+                       + args.psnr_weight * r["best"].get("psnr", 0.0)),
     ) if passed else None
     out = {
         "prefix": args.prefix, "base": args.base_work,
         "top_n": args.top_n, "rings": rings,
+        # 记录生成这条结果的确切参数：换生成器/掩码后仍能追溯来源
+        "params": {
+            "base_model": args.base_model,
+            "ip_adapter": args.ip_adapter,
+            "mask_dilate": args.mask_dilate,
+            "core_dilate": args.core_dilate,
+            "strength": args.strength,
+            "min_fill": args.min_fill,
+            "trusted_tol": args.trusted_tol,
+            "steps": args.steps,
+            "lr_xyz": args.lr_xyz,
+            "real_per_batch": args.real_per_batch,
+            "refined_per_batch": args.refined_per_batch,
+            "quality_tol": args.quality_tol,
+            "psnr_weight": args.psnr_weight,
+            "color_match": args.color_match,
+            "feather": args.feather,
+        },
         "rounds": rounds, "total_seconds": round(total, 1),
         "best_round": best_round,
-        "best_model": f"train1_{args.prefix}_{best_round['round']}"
+        "best_model": f"{args.prefix}_{best_round['round']}"
         if best_round else None,
     }
     (out_root / f"{args.prefix}_report.json").write_text(
         json.dumps(out, ensure_ascii=False, indent=1), encoding="utf-8")
     print(f"\n完成 {args.prefix}：{len(rounds)} 轮，总 {total:.1f}s", flush=True)
     if best_round:
-        print(f"  最佳 {best_round['round']}：{best_round['best']}", flush=True)
+        best_secs = best_round.get("best_seconds")
+        print(f"  最佳 {best_round['round']}：{best_round['best']}"
+              + (f"，最佳累计 {best_secs:.1f}s" if best_secs is not None else ""),
+              flush=True)
     print(f"  报告：{out_root / (args.prefix + '_report.json')}", flush=True)
     return 0
 

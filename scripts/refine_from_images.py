@@ -36,6 +36,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -506,10 +507,12 @@ def main(argv: list[str] | None = None) -> int:
         def __init__(self, out_dir: Path):
             self.out_dir = out_dir
             self.best = -1e9
+            self.best_seconds: float | None = None
+            self._t0: float | None = None
             self.history: list[dict] = []
 
         def on_start(self, trainer) -> None:
-            pass
+            self._t0 = time.perf_counter()
 
         def on_step(self, trainer, iteration, parts) -> None:
             if args.eval_every <= 0 or (iteration + 1) % args.eval_every != 0:
@@ -544,7 +547,11 @@ def main(argv: list[str] | None = None) -> int:
             if passed and m["psnr"] > self.best:
                 self.best = m["psnr"]
                 save_ply(avatar, self.out_dir / "model_best.ply")
-                print("       ↑ 刷新最佳 → model_best.ply", flush=True)
+                secs = (time.perf_counter() - self._t0
+                        if self._t0 is not None else 0.0)
+                self.best_seconds = secs
+                print(f"       ↑ 刷新最佳 → model_best.ply（累计 {secs:.1f}s）",
+                      flush=True)
 
         def on_end(self, trainer) -> None:
             pass
@@ -567,6 +574,7 @@ def main(argv: list[str] | None = None) -> int:
     report = trainer.run()
 
     save_ply(avatar, out_dir / "model.ply")
+    print(f"  [save] 最终 model.ply（累计 {report.seconds:.1f}s）", flush=True)
     no_pass = not (out_dir / "model_best.ply").is_file() and bool(evaluator.history)
     if no_pass:
         # 没有任何检查点同时守住锐度/SSIM/LPIPS：这次微调视为失败，
@@ -582,9 +590,13 @@ def main(argv: list[str] | None = None) -> int:
                         config=read_embedded_config(out_dir / "model_best.ply"),
                         device=device)
         save_ply(best, out_dir / "model.ply")
+        print(f"  [save] 用 model_best 覆盖 model.ply"
+              f"（累计 {report.seconds:.1f}s）", flush=True)
     payload = {
         "model": str(ply), "steps": int(args.steps),
         "seconds": round(report.seconds, 1),
+        "best_seconds": (round(evaluator.best_seconds, 1)
+                         if evaluator.best_seconds is not None else None),
         "refined_views": len(obs), "skipped": skipped,
         "eval_mode": args.eval_mode,
         "eval_frames": len(eval_ids_final),
@@ -602,6 +614,8 @@ def main(argv: list[str] | None = None) -> int:
         json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
 
     print(f"\n完成：{report.iterations} 步，{report.seconds:.1f} s")
+    if evaluator.best_seconds is not None:
+        print(f"  最佳检查点累计：{evaluator.best_seconds:.1f}s")
     print(f"  选点集 PSNR：{before['psnr']:.2f} → {after['psnr']:.2f} dB")
     if "ssim" in after:
         print(f"  选点集 SSIM：{before.get('ssim', float('nan')):.4f} → "
