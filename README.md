@@ -103,6 +103,8 @@ python scripts/iterative_repair.py --subject <对象> --base-work <版本> \
   角度圈默认 `rings: auto`：用训练段 |yaw|/|pitch| 的 p90 作为
   覆盖边缘再向外扩，避免在已有真实数据的角度上让扩散重绘；
   基帧 |yaw|>30° 或 |pitch|>20° 会被过滤，避免参考图和补偿旋转过大；
+  光栅 y 翻转由 find_defects 统一判定并写进 selected.json，pseudo_label 复用，
+  不再逐视角按 alpha IoU 重判（大角度下会翻错）；
 - 标签：`pseudo_label.py` 用 epiC + normal ControlNet 只重绘未观测/缺陷区域，
   过填充、可信区、一致性门后才接受；提示词为 bare face/neck + 负向
   clothing/jewelry/makeup，`head_cut` 默认排除未观测的脖子/胸口；

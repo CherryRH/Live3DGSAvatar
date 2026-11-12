@@ -662,6 +662,11 @@ def main(argv: list[str] | None = None) -> int:
         if stale:
             print(f"  清理旧 accepted {stale} 张", flush=True)
     payload = json.loads(selected.read_text(encoding="utf-8"))
+    # 光栅 y 翻转是**整段场景固定**的约定；find_defects 已在覆盖统计里
+    # 用正面帧判定过一次。逐视角按 alpha IoU 重判在大角度/近似对称轮廓上
+    # 会翻错（crh_1 frame01509: 0.768 vs 0.765，normal 图上下颠倒）。
+    forced_flip = payload.get("raster_flip")
+    forced_flip = None if forced_flip is None else bool(forced_flip)
     labels = list(payload["views"]["chosen"])
     if args.limit:
         labels = labels[: args.limit]
@@ -764,7 +769,13 @@ def main(argv: list[str] | None = None) -> int:
             gs = avatar.deform(mesh, weight)
             out = rasterizer.render(gs, cam, bg)
             alpha_np = out.alpha[0, 0].detach().cpu().numpy()
-            flip, ious = pick_flip(alpha_np, mesh.verts, cam)
+            if forced_flip is None:
+                flip, ious = pick_flip(alpha_np, mesh.verts, cam)
+                flip_note = (f"IoU: 翻 {ious[True]:.3f} / "
+                             f"不翻 {ious[False]:.3f}")
+            else:
+                flip = forced_flip
+                flip_note = "来自 find_defects"
             ids = face_id_map(mesh.verts, faces, cam, glctx, flip_y=flip)
             ids_int = ids.detach().cpu().numpy()
             ids_np = ids_int >= 0
@@ -776,8 +787,7 @@ def main(argv: list[str] | None = None) -> int:
         surf_np = surf.detach().cpu().numpy()
         obs_px = (observed_pixels(ids_int, observed_face)
                   if observed_face is not None else None)
-        print(f"  {label:40s} 光栅 y 翻转={flip}"
-              f"（IoU: 翻 {ious[True]:.3f} / 不翻 {ious[False]:.3f}）", flush=True)
+        print(f"  {label:40s} 光栅 y 翻转={flip}（{flip_note}）", flush=True)
         mask, core, dropped, mstats = build_defect_mask(
             alpha_np, surf_np, ids_int, face_mass, observed=obs_px,
             mode=args.mask_mode,

@@ -435,6 +435,7 @@ def main(argv: list[str] | None = None) -> int:
         "subject": subject, "work_name": work, "dataset": dataset,
         "model": str(ply), "budget": int(args.budget),
         "candidate_count": len(candidates),
+        "raster_flip": bool(flip_y),
         "views": result.to_dict(),
         "view_metrics": {m["label"]: m for m in view_metrics},
         "mass": mass_summary,
