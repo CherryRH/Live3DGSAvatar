@@ -77,8 +77,18 @@ def orbit_w2c(w2c, center, yaw_deg: float = 0.0, pitch_deg: float = 0.0) -> torc
     Returns:
         `[4,4]` CPU float32
     """
-    c = as_cpu(center).reshape(3)
     R = rotation_x(pitch_deg) @ rotation_y(yaw_deg)
+    return orbit_w2c_matrix(w2c, center, R)
+
+
+def orbit_w2c_matrix(w2c, center, R: torch.Tensor) -> torch.Tensor:
+    """同 `orbit_w2c`，但绕中心的旋转直接给 3×3（或 4×4）矩阵。
+
+    用于"绝对头姿"：`R = R_target @ R_head.T` 可精确抵消基帧头姿，
+    避免只减 yaw/pitch 在头已有较大 pitch 时产生 roll。
+    """
+    c = as_cpu(center).reshape(3)
+    R = as_cpu(R)
     M = torch.eye(4, dtype=torch.float32)
     M[:3, :3] = R[:3, :3]
     M[:3, 3] = c - R[:3, :3] @ c

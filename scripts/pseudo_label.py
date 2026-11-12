@@ -621,7 +621,8 @@ def main(argv: list[str] | None = None) -> int:
     from PIL import Image
 
     from live3dgsavatar.config import load_config, resolve_model_ply
-    from live3dgsavatar.core.camera import orbit_w2c, roll_w2c
+    from live3dgsavatar.core.camera import (orbit_w2c_matrix, roll_w2c,
+                                           rotation_x, rotation_y)
     from live3dgsavatar.core.io import load_ply
     from live3dgsavatar.core.io.ply import read_embedded_config
     from live3dgsavatar.core.render import SimpleRasterizer
@@ -629,7 +630,7 @@ def main(argv: list[str] | None = None) -> int:
     from live3dgsavatar.core.render.normals import normal_map
     from live3dgsavatar.core.types import Camera, Mesh
     from live3dgsavatar.data.datasets import resolve_dataset_dir
-    from live3dgsavatar.data.pose import head_pitch, head_yaw
+    from live3dgsavatar.data.pose import rot6d_to_matrix
     from live3dgsavatar.data.scene import load_scene
 
     cfg = load_config()
@@ -749,10 +750,10 @@ def main(argv: list[str] | None = None) -> int:
         frame = scene.frames[idx]
         center = frame["mesh"].mean(dim=0).detach().cpu()
         bw = frame["blend_weight"].detach().cpu().numpy()[None]
-        base_yaw = float(head_yaw(bw)[0])
-        base_pitch = float(head_pitch(bw)[0])
-        view = orbit_w2c(w2c_data, center, info["yaw"] - base_yaw,
-                         info["pitch"] - base_pitch)
+        head_R = torch.from_numpy(rot6d_to_matrix(bw[:, 100:106])[0]).float()
+        R_target = (rotation_x(info["pitch"])
+                    @ rotation_y(info["yaw"]))[:3, :3]
+        view = orbit_w2c_matrix(w2c_data, center, R_target @ head_R.T)
         view = roll_w2c(view, info["roll"])
         cam = Camera(K=scene.K, w2c=view.unsqueeze(0).to(device),
                      width=scene.width, height=scene.height).to(device)

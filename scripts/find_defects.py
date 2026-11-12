@@ -21,9 +21,10 @@ python scripts/find_defects.py --subject <对象> --work-name <版本> --dataset
 
 产物在 `output/defects/<对象>/<版本>/<数据集>/`。
 
-`yaw/pitch` 是**相对头部的绝对角度**：渲染时会减掉基帧自身的头姿
-（`blend_weight[100:106]`），所以 `yaw+20` 在原本已经 +39° 的帧上
-仍然渲染成 +20°，而不是 +59°。
+`yaw/pitch` 是**相对头部的绝对角度**：渲染时会用 `R_target @ R_head.T`
+精确抵消基帧头姿，所以 `yaw+20` 在原本已经 +39° 的帧上仍然渲染成 +20°，
+而不是 +59°。头姿过大的真实帧（|yaw|>30 或 |pitch|>20）默认不作为基帧，
+避免参考图和补偿旋转过大。
 
 ⚠️ 需要 GPU（nvdiffrast）。`--dry-run` 可离线检查数据与网格规模。
 """
@@ -51,6 +52,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--expr-count", type=int, default=None,
                    help="表情候选数；缺省 聚类 + 主轴极值")
     p.add_argument("--budget", type=int, default=16, help="选多少个待精修组合")
+    p.add_argument("--max-base-yaw", type=float, default=30.0,
+                   help="基帧头姿 |yaw| 上限；超过则不用它做基帧（避免参考图/补偿过大）")
+    p.add_argument("--max-base-pitch", type=float, default=20.0,
+                   help="基帧头姿 |pitch| 上限")
 
     # ---- 搜索范围（默认与旧行为一致；调大就能覆盖更极端的情形）----
     p.add_argument("--yaw-limit", type=float, default=40.0)
@@ -81,6 +86,7 @@ def main(argv: list[str] | None = None) -> int:
     import numpy as np
 
     from live3dgsavatar.config import load_config, resolve_model_ply
+    from live3dgsavatar.data.pose import head_pitch, head_yaw, rot6d_to_matrix
 
     cfg = load_config()
     subject = args.subject or str(cfg.get("subject") or "")
@@ -127,6 +133,25 @@ def main(argv: list[str] | None = None) -> int:
                                        k=min(args.clusters,
                                              max(4, train_end // 200))),
                         axis_extremes(X[:train_end], k=args.axes))
+
+    # 真实帧作基帧时，头姿太极端会让参考图看起来"角度很大"，也要求
+    # 相机做很大的补偿旋转。超过上限的簇直接丢掉（axis 候选仍用中性帧）。
+    yaw_all = head_yaw(weights)
+    pitch_all = head_pitch(weights)
+
+    def base_pose_ok(spec) -> bool:
+        if not spec.name.startswith("frame"):
+            return True
+        i = int(spec.name[5:])
+        return (abs(float(yaw_all[i])) <= args.max_base_yaw
+                and abs(float(pitch_all[i])) <= args.max_base_pitch)
+
+    kept = [s for s in specs if base_pose_ok(s)]
+    dropped = len(specs) - len(kept)
+    if dropped:
+        print(f"  基帧过滤：去掉 {dropped} 个头姿超限的表达簇"
+              f"（|yaw|>{args.max_base_yaw:g} 或 |pitch|>{args.max_base_pitch:g}）")
+    specs = kept or axis_extremes(X[:train_end], k=args.axes)
     if args.expr_count:
         specs = specs[: int(args.expr_count)]
 
@@ -149,14 +174,14 @@ def main(argv: list[str] | None = None) -> int:
 
     import nvdiffrast.torch as dr
 
-    from live3dgsavatar.core.camera import orbit_w2c
+    from live3dgsavatar.core.camera import (orbit_w2c_matrix, rotation_x,
+                                           rotation_y)
     from live3dgsavatar.core.io import load_ply
     from live3dgsavatar.core.io.ply import read_embedded_config
     from live3dgsavatar.core.render import SimpleRasterizer
     from live3dgsavatar.core.render.faceid import face_id_map
     from live3dgsavatar.core.types import Camera, Mesh
     from live3dgsavatar.data.scene import load_scene
-    from live3dgsavatar.data.pose import head_pitch, head_yaw
     from live3dgsavatar.evaluation import (Candidate, alpha_hole_ratio,
                                            build_defect_map, coverage_counts,
                                            coverage_defect, floater_offsets,
@@ -205,13 +230,21 @@ def main(argv: list[str] | None = None) -> int:
     def mesh_of(frame):
         return frame["mesh"].unsqueeze(0).to(device)
 
-    def base_view_angles(frame):
-        """基帧自身的头姿；候选 yaw/pitch 是**绝对**角度，渲染时减掉它。"""
+    def base_rotation(frame):
+        """基帧自身头姿的 3×3 旋转。"""
         bw = frame["blend_weight"].detach().cpu().numpy()[None]
-        return float(head_yaw(bw)[0]), float(head_pitch(bw)[0])
+        return torch.from_numpy(rot6d_to_matrix(bw[:, 100:106])[0]).float()
 
-    def camera_at(center, yaw, pitch, roll, base_yaw=0.0, base_pitch=0.0):
-        view = orbit_w2c(w2c, center, yaw - base_yaw, pitch - base_pitch)
+    def camera_at(center, yaw, pitch, roll, head_R=None):
+        # 绝对目标 R_target = R_x(pitch) @ R_y(yaw)；抵消基帧头姿：
+        # R_orbit = R_target @ R_head.T。只减 yaw/pitch 在基帧有较大
+        # pitch 时会残留 roll（crh_1 frame571 实测）。
+        R_target = (rotation_x(pitch) @ rotation_y(yaw))[:3, :3]
+        if head_R is None:
+            R_orbit = R_target
+        else:
+            R_orbit = R_target @ head_R.T
+        view = orbit_w2c_matrix(w2c, center, R_orbit)
         if roll:
             from live3dgsavatar.core.camera import roll_w2c
             view = roll_w2c(view, roll)
@@ -273,9 +306,9 @@ def main(argv: list[str] | None = None) -> int:
             base_idx, base_frame = frame_for(expr)
             base_verts = mesh_of(base_frame)
             center_i = base_verts[0].mean(dim=0).detach().cpu()
-            base_yaw, base_pitch = base_view_angles(base_frame)
+            head_R = base_rotation(base_frame)
             cam = camera_at(center_i, spec_view.yaw, spec_view.pitch,
-                            spec_view.roll, base_yaw, base_pitch)
+                            spec_view.roll, head_R)
             weight = base_frame["blend_weight"].unsqueeze(0).to(device)
             with torch.no_grad():
                 gs = avatar.deform(mesh_input(base_verts), weight)
@@ -428,9 +461,9 @@ def main(argv: list[str] | None = None) -> int:
         base_verts = mesh_of(scene.frames[int(cand.payload["base_frame"])])
         center_i = base_verts[0].mean(dim=0).detach().cpu()
         base_frame = scene.frames[int(cand.payload["base_frame"])]
-        base_yaw, base_pitch = base_view_angles(base_frame)
+        head_R = base_rotation(base_frame)
         cam = camera_at(center_i, spec_view["yaw"], spec_view["pitch"],
-                        spec_view["roll"], base_yaw, base_pitch)
+                        spec_view["roll"], head_R)
         weight = scene.frames[int(cand.payload["base_frame"])][
             "blend_weight"].unsqueeze(0).to(device)
         with torch.no_grad():
