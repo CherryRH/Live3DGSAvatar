@@ -79,12 +79,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--guidance", type=float, default=5.5)
     p.add_argument("--prompt",
                    default="close-up of a bare face and neck, natural bare "
-                           "skin, visible pores, soft light, plain background, "
-                           "sharp focus")
+                           "skin, visible pores, eyes looking straight ahead, "
+                           "soft light, plain background, sharp focus")
     p.add_argument("--negative",
-                   default="clothing, shirt, collar, jacket, scarf, necklace, "
-                           "earrings, jewelry, hat, glasses, makeup, lipstick, "
-                           "eyeshadow, blush, painted face, beauty filter, "
+                   default="looking at camera, looking at viewer, eye contact, "
+                           "side glance, cross-eyed, clothing, shirt, collar, "
+                           "jacket, scarf, necklace, earrings, jewelry, hat, "
+                           "glasses, makeup, lipstick, eyeshadow, blush, "
+                           "painted face, beauty filter, "
                            "blurry, smooth plastic, deformed, extra eyes, low "
                            "resolution, watermark")
 

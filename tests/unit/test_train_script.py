@@ -407,7 +407,9 @@ def test_pseudo_label_prompt_suppresses_clothes_and_makeup() -> None:
     m = load_script("pseudo_label.py")
     args = m.parse_args(["--subject", "a", "--work-name", "b"])
     assert "bare face" in args.prompt
-    for word in ("clothing", "jewelry", "earrings", "makeup", "lipstick"):
+    assert "straight ahead" in args.prompt
+    for word in ("clothing", "jewelry", "earrings", "makeup", "lipstick",
+                 "looking at camera"):
         assert word in args.negative, word
 
 

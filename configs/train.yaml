@@ -85,7 +85,7 @@ train:
       rings: "20,10;30,20;40,30;50,30"
       steps: 200
       refined_per_batch: 2
-      real_per_batch: 6
+      real_per_batch: 8
       quality_tol: 0.01
       psnr_weight: 0.002
       # 伪标签掩码向周围扩多少像素：范围太小扩散补不全眼睛/头顶/嘴巴
@@ -105,14 +105,14 @@ train:
       color_match: false
       color_ring: 8
       core_dilate: 12
-      strength: 0.6
+      strength: 0.85
       feather: 4
       # 只修到最低观测像素附近：未观测的脖子/胸口最容易补出衣服、项链；
       # 宁可在那里留空，也不要生成假内容（不想要就改 false）
       head_cut: true
       head_cut_margin: 0
-      prompt: "close-up of a bare face and neck, natural bare skin, visible pores, soft light, plain background, sharp focus"
-      negative: "clothing, shirt, collar, jacket, scarf, necklace, earrings, jewelry, hat, glasses, makeup, lipstick, eyeshadow, blush, painted face, beauty filter, blurry, smooth plastic, deformed, extra eyes, low resolution, watermark"
+      prompt: "close-up of a bare face and neck, natural bare skin, visible pores, eyes looking straight ahead, soft light, plain background, sharp focus"
+      negative: "looking at camera, looking at viewer, eye contact, side glance, cross-eyed, clothing, shirt, collar, jacket, scarf, necklace, earrings, jewelry, hat, glasses, makeup, lipstick, eyeshadow, blush, painted face, beauty filter, blurry, smooth plastic, deformed, extra eyes, low resolution, watermark"
 
   # 在线更新（热更新）：通话开始时用一小段观测微调外观。
   # 见 docs/ONLINE_UPDATE.md。

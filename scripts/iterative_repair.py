@@ -146,14 +146,15 @@ def main(argv: list[str] | None = None) -> int:
                     help="core 边界羽化半径（0=硬替换）")
     ap.add_argument("--prompt",
                     default="close-up of a bare face and neck, natural bare "
-                            "skin, visible pores, soft light, plain background, "
-                            "sharp focus")
+                            "skin, visible pores, eyes looking straight ahead, "
+                            "soft light, plain background, sharp focus")
     ap.add_argument("--negative",
-                    default="clothing, shirt, collar, jacket, scarf, necklace, "
-                            "earrings, jewelry, hat, glasses, makeup, lipstick, "
-                            "eyeshadow, blush, painted face, beauty filter, "
-                            "blurry, smooth plastic, deformed, extra eyes, low "
-                            "resolution, watermark")
+                    default="looking at camera, looking at viewer, eye contact, "
+                            "side glance, cross-eyed, clothing, shirt, collar, "
+                            "jacket, scarf, necklace, earrings, jewelry, hat, "
+                            "glasses, makeup, lipstick, eyeshadow, blush, "
+                            "painted face, beauty filter, blurry, smooth plastic, "
+                            "deformed, extra eyes, low resolution, watermark")
     ap.add_argument("--head-cut", action="store_true",
                     help="unsupported 掩码只修到最低观测像素附近，"
                          "避免补出脖子/胸口/衣服")
