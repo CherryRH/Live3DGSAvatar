@@ -105,7 +105,9 @@ python scripts/iterative_repair.py --subject <对象> --base-work <版本> \
 - 掩码：向缺陷区外扩 12px（`mask_dilate`），给扩散模型足够上下文；
 - 监督：累计标签（旧视角继续监督）+ 真实帧 8 : 伪标签 2；
 - 选最佳：**`SSIM − LPIPS + 0.002·PSNR`**（PSNR 权重很小，避免选到
-  「PSNR 高但脖子起雾」的轮）；质量分比最佳低 0.01 就早停，保留最佳轮；
+  「PSNR 高但脖子起雾」的轮）；`refine_from_images` 的 `model_best` 默认也按
+  这个 quality 选（`--select-by quality`）。质量分比最佳低 0.01 就早停，
+  且更差的轮次不再作为下一轮起点；
 - 产物：模型在 `models/<对象>/<版本>_post_r*/`；一次后训练的全部中间产物都在
   一个目录里，不再散落：
 
@@ -136,6 +138,13 @@ bash eval.sh --subject <对象> --work-name <版本> --base-work <基线版本>
 - 取帧：`--frames` 定数量，`--frame-mode head|tail|random` 定从哪里取；
 - 产物：`report.json`（PSNR / SSIM / LPIPS / 锐度 / 性能）+ `compare.mp4`
   （原图与渲染并排，逐帧叠加指标，30 FPS）；给了 `--base-work` 时额外做同视角缺陷对比。
+
+`scripts/render_test.py` 还额外输出大角度展示视频 `showcase.mp4`（默认开）：
+
+```bash
+python scripts/render_test.py --subject <对象> --work-name <版本> --frames 20
+# showcase.mp4：yaw 0→40→-40→0，再 pitch 20→-20，共 30 帧
+```
 
 ## 四、渲染与前端
 

@@ -279,6 +279,10 @@ target = models / best / "model.ply"
 if not target.is_file():
     print("[error] 报告里的最佳模型不存在：{}".format(target), file=sys.stderr)
     raise SystemExit(1)
+if d.get("improved") is False:
+    print("[train] 后训练未改进，保持 {}".format(target.parent))
+    print("[train] 报告：{}".format(report))
+    raise SystemExit(0)
 
 
 def fmt(value, spec):

@@ -344,8 +344,10 @@ def main(argv: list[str] | None = None) -> int:
             rep = json.loads(report_path.read_text(encoding="utf-8"))
             hist = [h for h in rep.get("score_history", []) if h.get("passed")]
             if hist:
-                # 与 model_best 的选择一致：quality = SSIM − LPIPS + w·PSNR
+                # 直接用 refine 写入的 score（quality = SSIM−LPIPS+w·PSNR），
+                # 避免两处公式各算一遍；旧 report 没有 score 时回退计算。
                 best = max(hist, key=lambda h: (
+                    h["score"] if h.get("score") is not None else
                     h.get("ssim", 0.0) - h.get("lpips", 1.0)
                     + args.psnr_weight * h.get("psnr", 0.0)))
         dt_round = time.perf_counter() - t_round
@@ -426,7 +428,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  下一轮 base={base}", flush=True)
 
     total = time.perf_counter() - start
-    passed = [r for r in rounds if r.get("best")]
+    passed = [r for r in rounds if r.get("improved")]
     best_round = max(
         passed,
         key=lambda r: (r["best"].get("ssim", 0.0)
@@ -478,6 +480,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  最佳 {best_round['round']}：{best_round['best']}"
               + (f"，最佳累计 {best_secs:.1f}s" if best_secs is not None else ""),
               flush=True)
+    elif not in_place:
+        print(f"  未改进，保持 models/{args.subject}/{args.base_work}", flush=True)
     print(f"  报告：{report_path}", flush=True)
     return 0
 

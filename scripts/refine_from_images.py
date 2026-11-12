@@ -6,14 +6,14 @@
 1. **只在缺陷处监督**：权重图取 `|精修 − 渲染|`，前景内给下限、前景外为 0；
 2. **精修图体检**：前景 IoU 太低或整体色差过大的视角直接跳过，
    避免把坏样本当目标；
-3. **按真值选点**：每若干步在**验证帧**上算 PSNR 与锐度比，
-   用 `score = PSNR − λ·max(0, 容差线 − 锐度比)` 选最佳检查点；
-   容差线 = 训练前锐度 − `--sharp-tolerance`（默认 0.03），随模型自适应，
-   不接受"用模糊换 PSNR"；
+3. **按真值选点**：每若干步在**验证帧**上算 PSNR/SSIM/LPIPS/锐度比。
+   默认 `--select-by quality`：`score = SSIM − LPIPS + w·PSNR`（w=0.002），
+   避免只按 PSNR 选到"PSNR 高但感知更差"的检查点；锐度/SSIM/LPIPS 硬门
+   仍然生效。容差线随训练前锐度自适应，不接受"用模糊换 PSNR"；
 4. **真实帧锚定**：每批混入真实数据，且验证帧从锚定里剔除，避免自己考自己。
 
-SSIM 项默认关闭（`--ssim-weight 0`）：`fused-ssim` 的 backward 在个别构建上
-会触发 CUDA illegal memory access。需要时显式开启并自行验证。
+`--ssim-weight` 默认 0（单独调用时只做 L1）；后训练流程传 0.2 + LPIPS 0.1。
+SSIM 已改为纯 torch 实现，不再依赖 `fused-ssim` 的 backward。
 
 不改模型格式、不改数据。
 
@@ -73,8 +73,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--eval-frames", type=int, default=64,
                    help="选点用的帧数（从训练段随机取，且这些帧不参与锚定）")
     p.add_argument("--eval-seed", type=int, default=0)
-    p.add_argument("--select-by", choices=("psnr", "quality"), default="psnr",
-                   help="model_best 的选择依据；iterative_repair 用 quality")
+    p.add_argument("--select-by", choices=("psnr", "quality"),
+                   default="quality",
+                   help="model_best 的选择依据（默认 quality：SSIM−LPIPS+w·PSNR）")
     p.add_argument("--psnr-weight", type=float, default=0.002,
                    help="quality 模式下 PSNR 的小权重（默认 0.002/dB）")
     p.add_argument("--eval-mode", choices=("angle", "random", "holdout", "both"),

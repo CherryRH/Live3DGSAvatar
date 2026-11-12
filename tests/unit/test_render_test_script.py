@@ -170,13 +170,15 @@ def test_clean_previous_outputs_removes_stale_images(tmp_path) -> None:
     for i in range(3):
         (images / f"{i:05d}.png").write_bytes(b"x")
     (out / "compare.webp").write_bytes(b"old")
+    (out / "showcase.webp").write_bytes(b"old")
     (out / "report.json").write_text("{}", encoding="utf-8")
 
     removed = m.clean_previous_outputs(out, images)
 
-    assert removed == 4, "3 张图 + 1 个旧视频"
+    assert removed == 5, "3 张图 + 对比视频 + 展示视频"
     assert list(images.glob("*.png")) == []
     assert not (out / "compare.webp").exists()
+    assert not (out / "showcase.webp").exists()
     assert (out / "report.json").is_file(), "指标文件不该被清理"
 
 
@@ -220,3 +222,13 @@ def test_select_indices_handles_more_frames_than_available() -> None:
     m = _load()
     assert m.select_indices(10, 99, "tail") == list(range(10))
     assert len(m.select_indices(10, 99, "random", seed=3)) == 10
+
+
+def test_showcase_poses_turns_yaw_then_pitch() -> None:
+    m = _load()
+    poses = m.showcase_poses(30)
+    assert len(poses) == 30
+    assert poses[0] == (0.0, 0.0)
+    assert max(y for y, _ in poses) == 40.0
+    assert min(y for y, _ in poses) == -40.0
+    assert poses[-1][0] == 0.0 and poses[-1][1] == -20.0

@@ -14,7 +14,8 @@
     python scripts/train.py --subject <对象> --work-name <版本>
 
 默认超参与 模型目录的 `config.yaml` 一致：batch 10、50000 步、
-只用 L1；验证集取末尾 350 帧。
+L1 + 新视角 spill；SSIM/LPIPS 可选（默认关，见 config 的 ssim_weight /
+lpips_weight）。验证集取末尾 30%。
 """
 
 from __future__ import annotations

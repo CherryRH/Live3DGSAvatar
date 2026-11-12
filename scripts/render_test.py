@@ -14,7 +14,8 @@
     python scripts/render_test.py --dry-run          # 无需 GPU 的形状/约定自检
 
 产物：`report.json`（PSNR / SSIM / LPIPS / 锐度 / 性能）+ `compare.mp4`
-（原图 | 渲染并排，每帧叠加指标；缺 imageio 时退化为 `compare.webp`）。
+（原图 | 渲染并排，每帧叠加指标）+ `showcase.mp4`（大角度展示：
+yaw 0→40→-40→0，再 pitch 20→-20，30 帧；缺 imageio 时退化为 `.webp`）。
 """
 
 from __future__ import annotations
@@ -72,7 +73,8 @@ def clean_previous_outputs(out_root: Path, share_dir: Path | None) -> int:
         for path in Path(sub).glob("*.png"):
             path.unlink()
             removed += 1
-    for pattern in ("compare.mp4", "compare.webp"):
+    for pattern in ("compare.mp4", "compare.webp",
+                    "showcase.mp4", "showcase.webp"):
         path = Path(out_root) / pattern
         if path.is_file():
             path.unlink()
@@ -114,6 +116,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="产物根目录（默认 output/render_test/<对象>/<版本>/<数据集>）")
     p.add_argument("--save-images", action="store_true",
                    help="额外落盘渲染 PNG（默认只出对比视频）")
+    p.add_argument("--showcase", dest="showcase", action="store_true",
+                   default=True,
+                   help="额外输出大角度展示视频（默认开）：yaw 0→40→-40→0，"
+                        "再 pitch 20→-20，共 30 帧")
+    p.add_argument("--no-showcase", dest="showcase", action="store_false",
+                   help="不输出展示视频")
+    p.add_argument("--showcase-frames", type=int, default=30,
+                   help="展示视频帧数（默认 30）")
+    p.add_argument("--showcase-frame", type=int, default=None,
+                   help="展示用的基础帧下标（默认取本次评测的第一帧）")
     p.add_argument("--no-lpips", action="store_true",
                    help="跳过 LPIPS（首次使用需下载 AlexNet 权重）")
     p.add_argument("--profile", action="store_true",
@@ -140,6 +152,10 @@ def _validate(args: argparse.Namespace) -> None:
             raise SystemExit(f"[error] --{name.replace('_', '-')} 不能为 0")
     if args.frames is not None and args.frames < -1:
         raise SystemExit("[error] --frames 应为 -1 或正整数")
+    if args.showcase_frames <= 0:
+        raise SystemExit("[error] --showcase-frames 必须为正")
+    if args.showcase_frame is not None and args.showcase_frame < 0:
+        raise SystemExit("[error] --showcase-frame 不能为负")
 
 
 def _finalize(args: argparse.Namespace, cfg: Config) -> argparse.Namespace:
@@ -336,8 +352,70 @@ def render_core(args, scene, frames: list[int], out_dir: Path,
     }
     if args.profile:
         perf["stages_ms"] = {k: float(np.mean(v)) for k, v in stages.items() if v}
-    return images, perf
+    showcase = None
+    if args.showcase:
+        base = (int(args.showcase_frame) if args.showcase_frame is not None
+                else int(frames[0]))
+        showcase = render_showcase(args, scene, avatar, rasterizer, bg, base)
+    return images, perf, showcase
 
+
+def showcase_poses(n: int = 30) -> list[tuple[float, float]]:
+    """展示轨迹：0 yaw → +40 → -40 → 0 → pitch +20 → -20。
+
+    每个关键帧都精确落在采样点上；段内线性插值。返回 `(yaw, pitch)`。
+    """
+    keys = [(0.0, 0.0), (40.0, 0.0), (-40.0, 0.0), (0.0, 0.0),
+            (0.0, 20.0), (0.0, -20.0)]
+    n = max(2, int(n))
+    nseg = len(keys) - 1
+    base, rem = divmod(n, nseg)
+    counts = [base + (1 if i < rem else 0) for i in range(nseg)]
+    out = []
+    for j, count in enumerate(counts):
+        y0, p0 = keys[j]
+        y1, p1 = keys[j + 1]
+        for k in range(count):
+            # 每段只保留起点；最后一段补上终点
+            f = k / (count - 1) if (j == nseg - 1 and count > 1) else (
+                k / count if count else 0.0)
+            out.append((y0 + (y1 - y0) * f, p0 + (p1 - p0) * f))
+    return out
+
+
+def render_showcase(args, scene, avatar, rasterizer, bg,
+                    frame_idx: int) -> list[np.ndarray]:
+    """用同一个基础帧，绕头部渲染大角度展示序列。"""
+    import torch
+    from PIL import Image, ImageDraw
+
+    from live3dgsavatar.core.camera import orbit_w2c
+    from live3dgsavatar.core.types import Camera, Mesh
+
+    mesh = Mesh(verts=scene.frames_tensor([frame_idx], device="cuda"),
+                faces=scene.faces, uvs=scene.uvs, uv_faces=scene.uv_faces)
+    weight = scene.weights_tensor([frame_idx], device="cuda")
+    K = scene.intrinsics([frame_idx], device="cuda")
+    w2c_data = torch.eye(4, dtype=torch.float32)
+    w2c_data[:3, :3] = scene.R
+    w2c_data[:3, 3] = scene.T
+    center = mesh.verts[0].mean(dim=0).detach().cpu()
+    with torch.no_grad():
+        gs = avatar.deform(mesh, weight)
+    frames = []
+    for yaw, pitch in showcase_poses(args.showcase_frames):
+        view = orbit_w2c(w2c_data, center, yaw, pitch)
+        cam = Camera(K=K, w2c=view.unsqueeze(0),
+                     width=scene.width, height=scene.height).to("cuda")
+        with torch.no_grad():
+            out = rasterizer.render(gs, cam, bg)
+        arr = (out.color.clamp(0, 1).permute(0, 2, 3, 1) * 255).byte()
+        img = Image.fromarray(arr[0].cpu().numpy())
+        draw = ImageDraw.Draw(img)
+        draw.text((12, 12), f"yaw {yaw:+.0f}  pitch {pitch:+.0f}",
+                  fill=(255, 255, 255))
+        frames.append(np.asarray(img))
+    return frames
 
 def select_indices(total: int, frames: int | None, mode: str, *,
                    seed: int = 0, offset: int = 0) -> list[int]:
@@ -429,6 +507,11 @@ def main() -> int:
     # 帧数据很小（2863 帧约 175 MB），不值得为 head 模式单独优化。
     scene = load_scene(cfg, frames=-1, data_dir=args.data)
     total = scene.total_frames
+    if (args.showcase_frame is not None
+            and not 0 <= int(args.showcase_frame) < total):
+        print(f"[error] --showcase-frame 越界：{args.showcase_frame}"
+              f"（数据集共 {total} 帧）", file=sys.stderr)
+        return 1
     indices = select_indices(total, args.frames, args.frame_mode,
                              seed=args.seed, offset=args.frame_offset)
     n = len(indices)
@@ -448,13 +531,14 @@ def main() -> int:
     if stale:
         print(f"  清理旧产物：{stale} 张", flush=True)
 
-    images, perf = render_core(args, scene, indices, out_root, share_dir)
+    images, perf, showcase = render_core(args, scene, indices, out_root, share_dir)
 
     result = EvaluationReport(
         subject=args.subject, work_name=args.work_name, dataset=args.dataset,
         num_frames=n, dataset_frames=total,
         width=scene.width, height=scene.height,
-        perf=perf, extra={"model_path": str(args.ply)})
+        perf=perf, extra={"model_path": str(args.ply),
+                          "showcase_frames": len(showcase) if showcase else 0})
     report: dict = result.to_dict()
 
     print(f"  读取原图：{n} 张（解码 512² PNG，约 {n * 14 / 1000:.0f} s）…",
@@ -512,6 +596,12 @@ def main() -> int:
                                  args.video_fps)
         print(f"\n  对比视频：{video_path}（{len(frames_out)} 帧，"
               f"{args.video_fps:.0f} FPS；渲染均值 {perf['fps']:.0f} FPS）")
+    showcase_path = None
+    if showcase:
+        showcase_path = write_video(out_root / "showcase", showcase,
+                                    args.video_fps)
+        print(f"  展示视频：{showcase_path}（{len(showcase)} 帧，"
+              f"{args.video_fps:.0f} FPS；yaw 0→40→-40→0，pitch 20→-20）")
 
     report_path = out_root / "report.json"
     report_path.write_text(json.dumps(report, indent=2, ensure_ascii=False),
@@ -521,6 +611,8 @@ def main() -> int:
     print(f"    report.json  指标")
     if video_path is not None:
         print(f"    {video_path.name}  对比视频（原图 | 渲染，带逐帧指标）")
+    if showcase_path is not None:
+        print(f"    {showcase_path.name}  大角度展示视频")
     if share_dir is not None:
         print(f"    images/      渲染图（{n} 张）")
     return 0
