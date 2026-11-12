@@ -15,7 +15,7 @@
 
 产物：`report.json`（PSNR / SSIM / LPIPS / 锐度 / 性能）+ `compare.mp4`
 （原图 | 渲染并排，每帧叠加指标）+ `showcase.mp4`（大角度展示：
-yaw 0→40→-40→0，再 pitch 20→-20；默认 90 帧 / 30 FPS（约 3 s），
+yaw 0→40→-40→0，再 pitch 20→-20→0；默认 120 帧 / 30 FPS（约 4 s），
 每段 smoothstep 缓动；缺 imageio 时退化为 `.webp`）。
 """
 
@@ -123,10 +123,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         "再 pitch 20→-20，共 30 帧")
     p.add_argument("--no-showcase", dest="showcase", action="store_false",
                    help="不输出展示视频")
-    p.add_argument("--showcase-frames", type=int, default=90,
-                   help="展示视频总帧数（默认 90；采样更密、转动更慢）")
-    p.add_argument("--showcase-fps", type=float, default=30.0,
-                   help="展示视频帧率（默认 30；90 帧约 3 s）")
+    p.add_argument("--showcase-frames", type=int, default=120,
+                   help="展示视频总帧数（默认 120；采样更密、转动更慢）")
+    p.add_argument("--showcase-fps", type=float, default=None,
+                   help="展示视频帧率（默认与 --video-fps 一致）")
     p.add_argument("--showcase-frame", type=int, default=None,
                    help="展示用的基础帧下标（默认取本次评测的第一帧）")
     p.add_argument("--no-lpips", action="store_true",
@@ -157,7 +157,7 @@ def _validate(args: argparse.Namespace) -> None:
         raise SystemExit("[error] --frames 应为 -1 或正整数")
     if args.showcase_frames <= 0:
         raise SystemExit("[error] --showcase-frames 必须为正")
-    if args.showcase_fps <= 0:
+    if args.showcase_fps is not None and args.showcase_fps <= 0:
         raise SystemExit("[error] --showcase-fps 必须为正")
     if args.showcase_frame is not None and args.showcase_frame < 0:
         raise SystemExit("[error] --showcase-frame 不能为负")
@@ -172,6 +172,8 @@ def _finalize(args: argparse.Namespace, cfg: Config) -> argparse.Namespace:
                    if args.seed is None else args.seed)
     args.video_fps = float(cfg.get("render.video_fps", 30.0)
                            if args.video_fps is None else args.video_fps)
+    args.showcase_fps = float(args.video_fps if args.showcase_fps is None
+                              else args.showcase_fps)
     args._explicit_tex_size = args.tex_size is not None
     args._explicit_basis_in = args.num_basis_in is not None
     args._explicit_basis_blend = args.num_basis_blend is not None
@@ -372,7 +374,7 @@ def showcase_poses(n: int = 30) -> list[tuple[float, float]]:
     返回 `(yaw, pitch)`。
     """
     keys = [(0.0, 0.0), (40.0, 0.0), (-40.0, 0.0), (0.0, 0.0),
-            (0.0, 20.0), (0.0, -20.0)]
+            (0.0, 20.0), (0.0, -20.0), (0.0, 0.0)]
     n = max(len(keys), int(n))
     nseg = len(keys) - 1
     # 关键帧的帧号，例如 n=30 → [0, 6, 12, 18, 24, 29]
@@ -609,7 +611,7 @@ def main() -> int:
         showcase_path = write_video(out_root / "showcase", showcase,
                                     args.showcase_fps)
         print(f"  展示视频：{showcase_path}（{len(showcase)} 帧，"
-              f"{args.showcase_fps:g} FPS；yaw 0→40→-40→0，pitch 20→-20，"
+              f"{args.showcase_fps:g} FPS；yaw 0→40→-40→0，pitch 20→-20→0，"
               "每段 smoothstep 缓动）")
 
     report_path = out_root / "report.json"

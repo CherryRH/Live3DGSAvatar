@@ -231,6 +231,6 @@ def test_showcase_poses_turns_yaw_then_pitch() -> None:
     assert poses[0] == (0.0, 0.0)
     assert max(y for y, _ in poses) == 40.0
     assert min(y for y, _ in poses) == -40.0
-    assert poses[-1][0] == 0.0 and poses[-1][1] == -20.0
+    assert poses[-1][0] == 0.0 and poses[-1][1] == 0.0
     # smoothstep：第一段起步比线性慢（线性第 1 帧应为 40/6）
     assert poses[1][0] < 40.0 / 6.0
