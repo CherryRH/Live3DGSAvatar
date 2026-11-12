@@ -118,6 +118,9 @@ post_syncfix_repo=$POST_SYNCFIX_REPO
 post_syncfix_model=$POST_SYNCFIX_MODEL
 post_syncfix_n_per_pass=$POST_SYNCFIX_N_PER_PASS
 post_syncfix_ref_size=$POST_SYNCFIX_REF_SIZE
+post_real_per_batch=$POST_REAL_PER_BATCH
+post_refined_per_batch=$POST_REFINED_PER_BATCH
+post_train_batch=$((POST_REAL_PER_BATCH + POST_REFINED_PER_BATCH))
 EOF
 }
 if (( PLAN == 1 )); then print_plan; exit 0; fi
@@ -140,32 +143,42 @@ preflight() {
     >/dev/null 2>&1 || die "CUDA 不可用：后训练需要 GPU"
 }
 
+# ---- 两种模式共用的训练参数 ----
 post_args=(
   --subject "$SUBJECT" --base-work "$WORK" --prefix "$PREFIX"
   --top-n "$POST_TOP_N" --rings "$POST_RINGS" --steps "$POST_STEPS"
   --real-per-batch "$POST_REAL_PER_BATCH"
   --refined-per-batch "$POST_REFINED_PER_BATCH"
   --lr-xyz "$POST_LR_XYZ"
-  --mask-dilate "$POST_MASK_DILATE" --core-dilate "$POST_CORE_DILATE"
-  --strength "$POST_STRENGTH" --min-fill "$POST_MIN_FILL"
-  --trusted-tol "$POST_TRUSTED_TOL"
-  --sharpen "$POST_SHARPEN" --min-sharp "$POST_MIN_SHARP"
-  --min-mask-sharp "$POST_MIN_MASK_SHARP"
   --quality-tol "$POST_QUALITY_TOL" --psnr-weight "$POST_PSNR_WEIGHT"
-  --feather "$POST_FEATHER" --color-ring "$POST_COLOR_RING"
-  --base-model "$POST_BASE_MODEL" --ip-adapter "$POST_IP_ADAPTER"
-  --prompt "$POST_PROMPT" --negative "$POST_NEGATIVE"
   --repair-mode "$POST_REPAIR_MODE"
-  --syncfix-repo "$POST_SYNCFIX_REPO"
-  --syncfix-python "$POST_SYNCFIX_PYTHON"
-  --syncfix-model "$POST_SYNCFIX_MODEL"
-  --syncfix-n-per-pass "$POST_SYNCFIX_N_PER_PASS"
-  --syncfix-ref-size "$POST_SYNCFIX_REF_SIZE"
 )
-if [[ "${POST_COLOR_MATCH,,}" == "true" ]]; then post_args+=(--color-match); else post_args+=(--no-color-match); fi
-if [[ "${POST_HEAD_CUT,,}" == "true" ]]; then post_args+=(--head-cut --head-cut-margin "$POST_HEAD_CUT_MARGIN"); fi
 if (( IN_PLACE == 1 )); then post_args+=(--in-place); fi
-if [[ "${POST_SYNCFIX_READY,,}" == "true" ]]; then post_args+=(--syncfix-ready); fi
+
+# ---- 标签生成：各模式独有 ----
+if [[ "$POST_REPAIR_MODE" == "mask_diffusion" ]]; then
+  post_args+=(
+    --mask-dilate "$POST_MASK_DILATE" --core-dilate "$POST_CORE_DILATE"
+    --strength "$POST_STRENGTH" --min-fill "$POST_MIN_FILL"
+    --trusted-tol "$POST_TRUSTED_TOL"
+    --sharpen "$POST_SHARPEN" --min-sharp "$POST_MIN_SHARP"
+    --min-mask-sharp "$POST_MIN_MASK_SHARP"
+    --feather "$POST_FEATHER" --color-ring "$POST_COLOR_RING"
+    --base-model "$POST_BASE_MODEL" --ip-adapter "$POST_IP_ADAPTER"
+    --prompt "$POST_PROMPT" --negative "$POST_NEGATIVE"
+  )
+  if [[ "${POST_COLOR_MATCH,,}" == "true" ]]; then post_args+=(--color-match); else post_args+=(--no-color-match); fi
+  if [[ "${POST_HEAD_CUT,,}" == "true" ]]; then post_args+=(--head-cut --head-cut-margin "$POST_HEAD_CUT_MARGIN"); fi
+else
+  post_args+=(
+    --syncfix-repo "$POST_SYNCFIX_REPO"
+    --syncfix-python "$POST_SYNCFIX_PYTHON"
+    --syncfix-model "$POST_SYNCFIX_MODEL"
+    --syncfix-n-per-pass "$POST_SYNCFIX_N_PER_PASS"
+    --syncfix-ref-size "$POST_SYNCFIX_REF_SIZE"
+  )
+  if [[ "${POST_SYNCFIX_READY,,}" == "true" ]]; then post_args+=(--syncfix-ready); fi
+fi
 
 preflight
 info "修复方式：$POST_REPAIR_MODE；模型：models/$SUBJECT/$WORK"

@@ -87,6 +87,8 @@ bash post_train.sh --subject <对象> --work-name <版本> --repair-mode joint_s
   SyncFix 是独立仓库/环境（`/home/test/Projects/SyncFix`），权重在
   `models/paper`；默认 `n_per_pass=4`、`ref_size=4`，选角也会一次取 4 个
   不同基帧作为参考；没配好时 `syncfix_ready: false` 会直接拒绝启动。
+  训练 batch 两模式共用：`real_per_batch + refined_per_batch`（当前 6+2），
+  SyncFix 的 4 张标签是池子，每批抽 2 张。
 
 默认每轮保留 `models/<对象>/<版本>_post_rN`；`--in-place` 时写回当前模型名。
 

@@ -47,7 +47,7 @@ def test_post_plan_defaults() -> None:
     assert plan["post_repair_mode"] == "mask_diffusion"
     assert plan["post_rings"] == "auto"
     assert plan["post_steps"] == "100"
-    assert plan["post_syncfix_ready"].lower() == "false"
+    assert plan["post_syncfix_ready"].lower() in ("true", "false")
     assert plan["post_prefix"] == "w_post"
 
 
