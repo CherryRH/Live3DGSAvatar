@@ -15,7 +15,8 @@
 
 产物：`report.json`（PSNR / SSIM / LPIPS / 锐度 / 性能）+ `compare.mp4`
 （原图 | 渲染并排，每帧叠加指标）+ `showcase.mp4`（大角度展示：
-yaw 0→40→-40→0，再 pitch 20→-20，30 帧；缺 imageio 时退化为 `.webp`）。
+yaw 0→40→-40→0，再 pitch 20→-20；默认 90 帧 / 30 FPS（约 3 s），
+每段 smoothstep 缓动；缺 imageio 时退化为 `.webp`）。
 """
 
 from __future__ import annotations
@@ -122,8 +123,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         "再 pitch 20→-20，共 30 帧")
     p.add_argument("--no-showcase", dest="showcase", action="store_false",
                    help="不输出展示视频")
-    p.add_argument("--showcase-frames", type=int, default=30,
-                   help="展示视频帧数（默认 30）")
+    p.add_argument("--showcase-frames", type=int, default=90,
+                   help="展示视频总帧数（默认 90；采样更密、转动更慢）")
+    p.add_argument("--showcase-fps", type=float, default=30.0,
+                   help="展示视频帧率（默认 30；90 帧约 3 s）")
     p.add_argument("--showcase-frame", type=int, default=None,
                    help="展示用的基础帧下标（默认取本次评测的第一帧）")
     p.add_argument("--no-lpips", action="store_true",
@@ -154,6 +157,8 @@ def _validate(args: argparse.Namespace) -> None:
         raise SystemExit("[error] --frames 应为 -1 或正整数")
     if args.showcase_frames <= 0:
         raise SystemExit("[error] --showcase-frames 必须为正")
+    if args.showcase_fps <= 0:
+        raise SystemExit("[error] --showcase-fps 必须为正")
     if args.showcase_frame is not None and args.showcase_frame < 0:
         raise SystemExit("[error] --showcase-frame 不能为负")
 
@@ -363,25 +368,28 @@ def render_core(args, scene, frames: list[int], out_dir: Path,
 def showcase_poses(n: int = 30) -> list[tuple[float, float]]:
     """展示轨迹：0 yaw → +40 → -40 → 0 → pitch +20 → -20。
 
-    每个关键帧都精确落在采样点上；段内线性插值。返回 `(yaw, pitch)`。
+    关键帧精确落在采样点上；段内用 smoothstep 缓动（每段起步/收尾都变慢）。
+    返回 `(yaw, pitch)`。
     """
     keys = [(0.0, 0.0), (40.0, 0.0), (-40.0, 0.0), (0.0, 0.0),
             (0.0, 20.0), (0.0, -20.0)]
-    n = max(2, int(n))
+    n = max(len(keys), int(n))
     nseg = len(keys) - 1
-    base, rem = divmod(n, nseg)
-    counts = [base + (1 if i < rem else 0) for i in range(nseg)]
+    # 关键帧的帧号，例如 n=30 → [0, 6, 12, 18, 24, 29]
+    idx = [round(j * (n - 1) / nseg) for j in range(nseg + 1)]
     out = []
-    for j, count in enumerate(counts):
+    j = 0
+    for i in range(n):
+        while j < nseg - 1 and i > idx[j + 1]:
+            j += 1
+        span = max(1, idx[j + 1] - idx[j])
+        f = (i - idx[j]) / span
+        f = max(0.0, min(1.0, f))
+        f = f * f * (3.0 - 2.0 * f)      # smoothstep：每段缓入缓出
         y0, p0 = keys[j]
         y1, p1 = keys[j + 1]
-        for k in range(count):
-            # 每段只保留起点；最后一段补上终点
-            f = k / (count - 1) if (j == nseg - 1 and count > 1) else (
-                k / count if count else 0.0)
-            out.append((y0 + (y1 - y0) * f, p0 + (p1 - p0) * f))
+        out.append((y0 + (y1 - y0) * f, p0 + (p1 - p0) * f))
     return out
-
 
 def render_showcase(args, scene, avatar, rasterizer, bg,
                     frame_idx: int) -> list[np.ndarray]:
@@ -599,9 +607,10 @@ def main() -> int:
     showcase_path = None
     if showcase:
         showcase_path = write_video(out_root / "showcase", showcase,
-                                    args.video_fps)
+                                    args.showcase_fps)
         print(f"  展示视频：{showcase_path}（{len(showcase)} 帧，"
-              f"{args.video_fps:.0f} FPS；yaw 0→40→-40→0，pitch 20→-20）")
+              f"{args.showcase_fps:g} FPS；yaw 0→40→-40→0，pitch 20→-20，"
+              "每段 smoothstep 缓动）")
 
     report_path = out_root / "report.json"
     report_path.write_text(json.dumps(report, indent=2, ensure_ascii=False),

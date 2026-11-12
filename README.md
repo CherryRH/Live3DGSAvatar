@@ -143,7 +143,7 @@ bash eval.sh --subject <对象> --work-name <版本> --base-work <基线版本>
 
 ```bash
 python scripts/render_test.py --subject <对象> --work-name <版本> --frames 20
-# showcase.mp4：yaw 0→40→-40→0，再 pitch 20→-20，共 30 帧
+# showcase.mp4：yaw 0→40→-40→0，再 pitch 20→-20；90 帧 / 30 FPS（约 3s），每段缓动
 ```
 
 ## 四、渲染与前端
