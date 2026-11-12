@@ -152,11 +152,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="早停指标里 面外溢出 的权重（默认 0 = 不计）")
     p.add_argument("--no-spill", action="store_true",
                    help="关闭新视角 spill（原版无几何监督基线）")
-    p.add_argument("--post-train", dest="post_train", action="store_true",
-                   default=None,
-                   help="训练后接迭代修复（默认取配置 post_train.enabled）")
-    p.add_argument("--no-post-train", dest="post_train", action="store_false",
-                   help="强制关闭后训练")
     p.add_argument("--output-dir", type=Path, default=None)
     p.add_argument("--promote-name", default=None,
                    help="装进 models/ 时用的名字（默认与 --work-name 相同）")
@@ -251,47 +246,6 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("[error] 新视角监督需要至少一个 --nv-yaws")
     need_support = nv_enabled and nv_hole > 0
 
-    def _pt(key, default):
-        return cfg.get(f"train.pipeline.post_train.{key}", default)
-
-    post_enabled = bool(args.post_train if args.post_train is not None
-                        else _pt("enabled", False))
-    post_top_n = int(_pt("top_n", 2))
-    post_rings = str(_pt("rings", "20,10;30,20;40,30;50,30"))
-    post_steps = int(_pt("steps", 200))
-    post_refined = int(_pt("refined_per_batch", 2))
-    post_real = int(_pt("real_per_batch", 8))
-    post_quality_tol = float(_pt("quality_tol", 0.01))
-    post_psnr_weight = float(_pt("psnr_weight", 0.002))
-    post_mask_dilate = int(_pt("mask_dilate", 12))
-    post_min_fill = float(_pt("min_fill", 0.45))
-    post_base_model = str(_pt("base_model", "emilianJR/epiCRealism"))
-    post_ip_adapter = str(_pt("ip_adapter", "none"))
-    post_ip_adapter_weight = str(_pt("ip_adapter_weight",
-                                     "ip-adapter-faceid_sd15.bin"))
-    post_ip_adapter_image_encoder = str(_pt(
-        "ip_adapter_image_encoder", "h94/IP-Adapter/sdxl_models/image_encoder"))
-    post_ip_adapter_scale = float(_pt("ip_adapter_scale", 0.6))
-    post_strength = float(_pt("strength", 0.85))
-    post_core_dilate = int(_pt("core_dilate", 12))
-    post_identity_threshold = float(_pt("identity_threshold", 0.30))
-    post_trusted_tol = float(_pt("trusted_tol", 3.0))
-    post_sharpen = float(_pt("sharpen", 0.35))
-    post_min_sharp = float(_pt("min_sharp", 0.95))
-    post_min_mask_sharp = float(_pt("min_mask_sharp", 0.90))
-    post_lr_xyz = float(_pt("lr_xyz", 1e-5))
-    post_color_match = bool(_pt("color_match", False))
-    post_color_mean_only = bool(_pt("color_mean_only", False))
-    post_color_ring = int(_pt("color_ring", 8))
-    post_feather = int(_pt("feather", 4))
-    post_head_cut = bool(_pt("head_cut", False))
-    post_head_cut_margin = int(_pt("head_cut_margin", 0))
-    post_prompt = str(_pt("prompt", "professional photo of a human head, "
-                                   "natural skin texture, fine detail, sharp focus"))
-    post_negative = str(_pt("negative", "blurry, smooth plastic, deformed, "
-                                       "cartoon, extra eyes, low resolution, "
-                                       "watermark"))
-
     from live3dgsavatar.data.sources import ManifestSource
 
     max_frames = cfg.get("train.pipeline.max_frames", None)
@@ -352,9 +306,6 @@ def main(argv: list[str] | None = None) -> int:
                   f"hole {nv_hole:g} + spill {nv_spill:g}"
                   f"（margin {nv_margin}px, alpha "
                   f"{nv_alpha_min:g}–{nv_alpha_max:g}）")
-        if post_enabled:
-            print(f"  [dry-run] 后训练: top{post_top_n} rings {post_rings}，"
-                  f"{post_steps} 步/轮（默认关，需 epiC 模型）")
         print(f"  [dry-run] 产物目录 {out_dir}")
         print("  [dry-run] 未执行训练（需要 GPU）")
         return 0
@@ -768,45 +719,6 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     print(f"已装入：{target}")
     print(f"  评测：bash eval.sh --subject {subject} --work-name {name}")
-    if post_enabled:
-        import subprocess
-        prefix = f"{work}_post"
-        cmd = [sys.executable, "scripts/iterative_repair.py",
-               "--subject", subject, "--base-work", name,
-               "--prefix", prefix, "--top-n", str(post_top_n),
-               "--rings", post_rings, "--steps", str(post_steps),
-               "--refined-per-batch", str(post_refined),
-               "--real-per-batch", str(post_real),
-               "--quality-tol", str(post_quality_tol),
-               "--psnr-weight", str(post_psnr_weight),
-               "--mask-dilate", str(post_mask_dilate),
-               "--min-fill", str(post_min_fill),
-               "--base-model", post_base_model,
-               "--ip-adapter", post_ip_adapter,
-               "--ip-adapter-weight", post_ip_adapter_weight,
-               "--ip-adapter-image-encoder", post_ip_adapter_image_encoder,
-               "--ip-adapter-scale", str(post_ip_adapter_scale),
-               "--strength", str(post_strength),
-               "--core-dilate", str(post_core_dilate),
-               "--lr-xyz", str(post_lr_xyz),
-               "--identity-threshold", str(post_identity_threshold),
-               "--trusted-tol", str(post_trusted_tol),
-               "--sharpen", str(post_sharpen),
-               "--min-sharp", str(post_min_sharp),
-               "--min-mask-sharp", str(post_min_mask_sharp),
-               "--color-ring", str(post_color_ring),
-               *(["--color-match"] if post_color_match
-                 else ["--no-color-match"]),
-               *(["--color-mean-only"] if post_color_mean_only else []),
-               "--feather", str(post_feather),
-               "--prompt", post_prompt, "--negative", post_negative,
-               *(["--head-cut", "--head-cut-margin",
-                  str(post_head_cut_margin)] if post_head_cut else [])]
-        print(f"\n后训练：{' '.join(cmd)}", flush=True)
-        rc = subprocess.run(cmd, cwd=str(Path(__file__).resolve().parents[1]),
-                            check=False).returncode
-        if rc != 0:
-            print("[warn] 后训练失败；基础模型已保留", file=sys.stderr)
     return 0
 
 

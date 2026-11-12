@@ -143,6 +143,17 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--refined-per-batch", type=int, default=2)
     ap.add_argument("--real-per-batch", type=int, default=8)
     ap.add_argument("--lr-xyz", type=float, default=1e-5)
+    ap.add_argument("--repair-mode",
+                    choices=("mask_diffusion", "joint_syncfix"),
+                    default="mask_diffusion",
+                    help="mask_diffusion=掩码+扩散；joint_syncfix=全图+SyncFix")
+    ap.add_argument("--syncfix-ready", action="store_true",
+                    help="确认 SyncFix 环境可用；否则 joint_syncfix 拒绝启动")
+    ap.add_argument("--syncfix-repo", default="/home/test/Projects/SyncFix")
+    ap.add_argument("--syncfix-python", default="syncfix")
+    ap.add_argument("--syncfix-model",
+                    default="/home/test/Projects/SyncFix/models/paper")
+    ap.add_argument("--syncfix-n-per-pass", type=int, default=2)
     ap.add_argument("--base-model", default="emilianJR/epiCRealism")
     ap.add_argument("--ip-adapter", choices=("none", "faceid", "faceid_plus"),
                     default="none")
@@ -287,7 +298,8 @@ def main(argv: list[str] | None = None) -> int:
         k = args.round_offset + i + 1
         rtag = f"r{k}"
         rdir = run_dir / rtag / "defects"
-        gendir = run_dir / rtag / "pseudo"
+        gendir = run_dir / rtag / (
+            "pseudo" if args.repair_mode == "mask_diffusion" else "syncfix")
         if rdir.exists() and not args.dry_run:
             shutil.rmtree(rdir)
         if gendir.exists() and not args.dry_run:
@@ -308,42 +320,52 @@ def main(argv: list[str] | None = None) -> int:
             print("[stop] find_defects 失败", flush=True)
             break
 
-        rc, dt_gen = run([PY, "scripts/pseudo_label.py",
-                          "--subject", args.subject, "--work-name", base,
-                          "--dataset", dataset,
-                          "--defects", str(rdir), "--out", str(gendir),
-                          "--limit", "0", "--mask-mode", "unsupported",
-                          "--mask-dilate", str(args.mask_dilate),
-                          "--strength", f"{args.strength:g}",
-                          "--core-dilate", str(args.core_dilate),
-                          "--identity-threshold", f"{args.identity_threshold:g}",
-                          "--color-ring", str(args.color_ring),
-                          *(["--color-mean-only"] if args.color_mean_only else []),
-                          "--feather", str(args.feather),
-                          *(["--color-match"] if args.color_match
-                            else ["--no-color-match"]),
-                          "--prompt", args.prompt,
-                          "--negative", args.negative,
-                          *(["--head-cut", "--head-cut-margin",
-                             str(args.head_cut_margin)]
-                            if args.head_cut else []),
-                          "--steps", "40", "--consistency", "2",
-                          "--photometric-frames", "80",
-                          "--photometric-min-px", "16",
-                          "--sharpen", f"{args.sharpen:g}",
-                          "--min-sharp", f"{args.min_sharp:g}",
-                          "--min-mask-sharp", f"{args.min_mask_sharp:g}",
-                          "--min-fill", f"{args.min_fill:g}",
-                          "--trusted-tol", f"{args.trusted_tol:g}",
-                          "--base-model", args.base_model,
-                          "--ip-adapter", args.ip_adapter,
-                          "--ip-adapter-weight", args.ip_adapter_weight,
-                          "--ip-adapter-image-encoder",
-                          args.ip_adapter_image_encoder,
-                          "--ip-adapter-scale", f"{args.ip_adapter_scale:g}",
-                          ], dry=args.dry_run)
+        if args.repair_mode == "mask_diffusion":
+            gen_cmd = [PY, "scripts/pseudo_label.py",
+                       "--subject", args.subject, "--work-name", base,
+                       "--dataset", dataset,
+                       "--defects", str(rdir), "--out", str(gendir),
+                       "--limit", "0", "--mask-mode", "unsupported",
+                       "--mask-dilate", str(args.mask_dilate),
+                       "--strength", f"{args.strength:g}",
+                       "--core-dilate", str(args.core_dilate),
+                       "--identity-threshold", f"{args.identity_threshold:g}",
+                       "--color-ring", str(args.color_ring),
+                       *(["--color-mean-only"] if args.color_mean_only else []),
+                       "--feather", str(args.feather),
+                       *(["--color-match"] if args.color_match
+                         else ["--no-color-match"]),
+                       "--prompt", args.prompt,
+                       "--negative", args.negative,
+                       *(["--head-cut", "--head-cut-margin",
+                          str(args.head_cut_margin)]
+                         if args.head_cut else []),
+                       "--steps", "40", "--consistency", "2",
+                       "--photometric-frames", "80",
+                       "--photometric-min-px", "16",
+                       "--sharpen", f"{args.sharpen:g}",
+                       "--min-sharp", f"{args.min_sharp:g}",
+                       "--min-mask-sharp", f"{args.min_mask_sharp:g}",
+                       "--min-fill", f"{args.min_fill:g}",
+                       "--trusted-tol", f"{args.trusted_tol:g}",
+                       "--base-model", args.base_model,
+                       "--ip-adapter", args.ip_adapter,
+                       "--ip-adapter-weight", args.ip_adapter_weight,
+                       "--ip-adapter-image-encoder",
+                       args.ip_adapter_image_encoder,
+                       "--ip-adapter-scale", f"{args.ip_adapter_scale:g}"]
+        else:
+            gen_cmd = [PY, "scripts/syncfix_label.py",
+                       "--defects", str(rdir), "--out", str(gendir),
+                       "--repo", args.syncfix_repo,
+                       "--python", args.syncfix_python,
+                       "--model", args.syncfix_model,
+                       "--n-per-pass", str(args.syncfix_n_per_pass),
+                       "--height", "512", "--width", "512",
+                       *(["--ready"] if args.syncfix_ready else [])]
+        rc, dt_gen = run(gen_cmd, dry=args.dry_run)
         if rc != 0:
-            print("[stop] pseudo_label 失败", flush=True)
+            print(f"[stop] 标签生成失败（{args.repair_mode}）", flush=True)
             break
         if args.dry_run:
             print("  [dry-run] 跳过累计合并与微调", flush=True)
@@ -483,6 +505,8 @@ def main(argv: list[str] | None = None) -> int:
         "top_n": args.top_n, "rings": rings,
         # 记录生成这条结果的确切参数：换生成器/掩码后仍能追溯来源
         "params": {
+            "repair_mode": args.repair_mode,
+            "syncfix_model": args.syncfix_model,
             "base_model": args.base_model,
             "ip_adapter": args.ip_adapter,
             "mask_dilate": args.mask_dilate,

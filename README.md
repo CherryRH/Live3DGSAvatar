@@ -12,7 +12,7 @@
 |---|---|---|
 | 数据构建 | `bash build_dataset.sh` | 自动跑 RDF 跟踪，烘焙成训练格式 |
 | 训练 | `bash train.sh` | 单目视频 → 可驱动高斯头像（默认 spill 监督） |
-| 后训练（可选） | `bash train.sh ... --post-train` | 生成伪标签 + 迭代修复，按 SSIM/LPIPS 选最佳 |
+| 后训练（可选） | `bash post_train.sh ...` | 掩码+扩散 或 全图+SyncFix，迭代修复 |
 | 评测 | `bash eval.sh` | 对比视频 + PSNR/SSIM/LPIPS |
 | 实时渲染 / 前端 | `bash run_gui.sh` | 浏览器预览，可切模型、调整视角、接实时驱动 |
 
@@ -37,11 +37,12 @@ conda activate live3dgs
 
 bash build_dataset.sh <图像目录> --name <对象>            # ① 数据集
 bash train.sh --subject <对象> --work-name base             # ② 训练（默认 spill）
-bash train.sh --subject <对象> --work-name base --post-train  # ②' 可选后训练
+bash post_train.sh --subject <对象> --work-name base         # ②' 可选后训练（独立入口）
 bash run_gui.sh --subject <对象> --work-name base          # ③ 预览
 ```
 
-后训练需要额外下载 `emilianJR/epiCRealism`（diffusers）；不开启时基础训练不受影响。
+后训练是独立入口：`bash post_train.sh ...`。默认掩码+扩散需要 `emilianJR/epiCRealism`；
+全图模式 `--repair-mode joint_syncfix` 需要单独配置 SyncFix 环境，未就绪时会拒绝启动。
 
 ## 一、训练
 
@@ -63,28 +64,34 @@ bash train.sh --subject <对象> --work-name <版本> --no-spill        # 原版
 - 产物：`output/train/<对象>/<版本>/`；训练结束**自动**把最佳检查点装进
   `models/<对象>/<版本>/`（同名覆盖）。
 
-## 二、后训练（生成伪标签 + 迭代修复）
+## 二、后训练（独立入口：掩码+扩散 / 全图+SyncFix）
 
 一条命令串起：**选角 → epiC 伪标签 → 缺陷加权微调 → 质量门 → 早停/最佳**。
 
 ```bash
-bash train.sh --subject <对象> --work-name <版本> --post-train
+bash post_train.sh --subject <对象> --work-name <版本>
 ```
 
-基础模型已存在、只想跑后训练时用 `--post-only`；只看这条路线解析出的参数用
-`--plan`（不跑 GPU）：
+`post_train.sh` 不再依附 `train.sh`。`--plan` 只打印解析后的参数，不跑 GPU：
 
 ```bash
-bash train.sh --subject <对象> --work-name <版本> --post-only
-bash train.sh --subject <对象> --work-name <版本> --plan
+bash post_train.sh --subject <对象> --work-name <版本> --plan
+bash post_train.sh --subject <对象> --work-name <版本> --in-place
+bash post_train.sh --subject <对象> --work-name <版本> --repair-mode joint_syncfix
 ```
 
-默认每轮保留 `models/<对象>/<版本>_post_rN`，报告里选最佳轮。如果希望后训练
-始终写回当前模型名（例如 `best`），加 `--in-place`：
+两种修复方式：
+
+- `mask_diffusion`（默认）：`find_defects` 选角 → 掩码伪标签（epiC/SD1.5）→ 微调；
+- `joint_syncfix`：`find_defects` 选角 → SyncFix 全图多视图修复 → 微调。
+  SyncFix 是独立仓库/环境（`/home/test/Projects/SyncFix`），权重在
+  `models/paper`；没配好时 `syncfix_ready: false` 会直接拒绝启动，不会误调用。
+
+默认每轮保留 `models/<对象>/<版本>_post_rN`；`--in-place` 时写回当前模型名。
 
 ```bash
-bash train.sh --subject biden --work-name best --post-train --in-place
-# 只有质量更好时才覆盖 models/biden/best；不生成 best_post_rN
+bash post_train.sh --subject biden --work-name best --in-place
+# 容差内接受最后一轮；只有超容差/崩坏才保留上一版
 ```
 
 `best` 是基础训练装入的验证集最佳检查点（`train.py` 用 `model_best.ply`），
