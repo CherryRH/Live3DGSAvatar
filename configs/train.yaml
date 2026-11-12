@@ -105,7 +105,7 @@ train:
       color_match: false
       color_ring: 8
       core_dilate: 12
-      strength: 0.85
+      strength: 0.6
       feather: 4
       # 只修到最低观测像素附近：未观测的脖子/胸口最容易补出衣服、项链；
       # 宁可在那里留空，也不要生成假内容（不想要就改 false）
