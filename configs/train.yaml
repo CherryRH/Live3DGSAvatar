@@ -89,7 +89,7 @@ train:
       # 修复方式：mask_diffusion=当前掩码+扩散；joint_syncfix=全图+SyncFix
       repair_mode: mask_diffusion
       # SyncFix 环境未配好前保持 false：joint_syncfix 会直接拒绝启动
-      syncfix_ready: false
+      syncfix_ready: true
       syncfix_repo: /home/test/Projects/SyncFix
       syncfix_python: syncfix
       syncfix_model: /home/test/Projects/SyncFix/models/paper

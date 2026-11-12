@@ -388,8 +388,9 @@ def main(argv: list[str] | None = None) -> int:
             print("[stop] 没有选中视角", flush=True)
             break
         keep |= new
-        _merge_selected(cum, rdir, keep=keep,
-                        refined_src=gendir / "accepted")
+        refined_src = (gendir / "accepted"
+                       if args.repair_mode == "mask_diffusion" else gendir)
+        _merge_selected(cum, rdir, keep=keep, refined_src=refined_src)
         labels = len(list((cum / "refined").glob("*.png")))
         if labels == 0:
             print("[stop] 没有可用伪标签", flush=True)
