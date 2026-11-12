@@ -112,7 +112,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     # `default=None`：脚本不硬编码业务默认量，未给时在 `_finalize` 里取 0
     p.add_argument("--frame-offset", type=int, default=None,
                    help="起始帧（仅 head 模式生效）")
-    p.add_argument("--batch-size", type=int, default=None, help="批大小")
+    p.add_argument("--batch-size", type=int, default=1,
+                   help="批大小（默认 1；FPS 按单帧口径统计）")
     p.add_argument("--output-dir", type=Path, default=None,
                    help="产物根目录（默认 output/render_test/<对象>/<版本>/<数据集>）")
     p.add_argument("--save-images", action="store_true",
