@@ -85,7 +85,8 @@ bash post_train.sh --subject <对象> --work-name <版本> --repair-mode joint_s
 - `mask_diffusion`（默认）：`find_defects` 选角 → 掩码伪标签（epiC/SD1.5）→ 微调；
 - `joint_syncfix`：`find_defects` 选角 → SyncFix 全图多视图修复 → 微调。
   SyncFix 是独立仓库/环境（`/home/test/Projects/SyncFix`），权重在
-  `models/paper`；没配好时 `syncfix_ready: false` 会直接拒绝启动，不会误调用。
+  `models/paper`；默认 `n_per_pass=4`、`ref_size=4`，选角也会一次取 4 个
+  不同基帧作为参考；没配好时 `syncfix_ready: false` 会直接拒绝启动。
 
 默认每轮保留 `models/<对象>/<版本>_post_rN`；`--in-place` 时写回当前模型名。
 

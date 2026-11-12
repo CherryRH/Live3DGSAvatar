@@ -153,7 +153,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--syncfix-python", default="syncfix")
     ap.add_argument("--syncfix-model",
                     default="/home/test/Projects/SyncFix/models/paper")
-    ap.add_argument("--syncfix-n-per-pass", type=int, default=2)
+    ap.add_argument("--syncfix-n-per-pass", type=int, default=4)
+    ap.add_argument("--syncfix-ref-size", type=int, default=4)
     ap.add_argument("--base-model", default="emilianJR/epiCRealism")
     ap.add_argument("--ip-adapter", choices=("none", "faceid", "faceid_plus"),
                     default="none")
@@ -308,13 +309,20 @@ def main(argv: list[str] | None = None) -> int:
         print(f"\n=== {args.prefix} {rtag}: yaw ±{yaw:g} / pitch ±{pitch:g} "
               f"top-{args.top_n}（base={base}）===", flush=True)
 
+        # SyncFix 联合修复一次要 4 张：视图和参考图都按 n_per_pass 扩；
+        # 每帧最多取 1 个视角，保证有同样数量的不同参考帧。
+        sel_n = (max(args.top_n, args.syncfix_n_per_pass)
+                 if args.repair_mode == "joint_syncfix" else args.top_n)
+        sel_extra = (["--per-base-max", "1"]
+                     if args.repair_mode == "joint_syncfix" else [])
         rc, dt_sel = run([PY, "scripts/find_defects.py",
                           "--subject", args.subject, "--work-name", base,
                           "--dataset", dataset,
                           "--yaw-limit", f"{yaw:g}",
                           "--pitch-limit", f"{pitch:g}",
                           "--step", "10", "--dense-from", "100",
-                          "--budget", str(args.top_n),
+                          "--budget", str(sel_n),
+                          *sel_extra,
                           "--out", str(rdir)], dry=args.dry_run)
         if rc != 0:
             print("[stop] find_defects 失败", flush=True)
@@ -361,6 +369,7 @@ def main(argv: list[str] | None = None) -> int:
                        "--python", args.syncfix_python,
                        "--model", args.syncfix_model,
                        "--n-per-pass", str(args.syncfix_n_per_pass),
+                       "--ref-size", str(args.syncfix_ref_size),
                        "--height", "512", "--width", "512",
                        *(["--ready"] if args.syncfix_ready else [])]
         rc, dt_gen = run(gen_cmd, dry=args.dry_run)
@@ -507,6 +516,8 @@ def main(argv: list[str] | None = None) -> int:
         "params": {
             "repair_mode": args.repair_mode,
             "syncfix_model": args.syncfix_model,
+            "syncfix_n_per_pass": args.syncfix_n_per_pass,
+            "syncfix_ref_size": args.syncfix_ref_size,
             "base_model": args.base_model,
             "ip_adapter": args.ip_adapter,
             "mask_dilate": args.mask_dilate,

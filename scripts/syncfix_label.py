@@ -24,7 +24,8 @@ def parse_args(argv=None):
     p.add_argument("--python", default="syncfix",
                    help="SyncFix 的 conda 环境名或 python 可执行文件")
     p.add_argument("--model", default="/home/test/Projects/SyncFix/models/paper")
-    p.add_argument("--n-per-pass", type=int, default=2)
+    p.add_argument("--n-per-pass", type=int, default=4)
+    p.add_argument("--ref-size", type=int, default=4)
     p.add_argument("--height", type=int, default=512)
     p.add_argument("--width", type=int, default=512)
     p.add_argument("--ready", action="store_true",
@@ -64,7 +65,7 @@ def main(argv=None) -> int:
            "--model_path", str(model),
            "--output_dir", str(args.out),
            "--n_per_pass", str(args.n_per_pass),
-           "--ref_size", "1",
+           "--ref_size", str(args.ref_size),
            "--height", str(args.height),
            "--width", str(args.width)]
     print("$ " + " ".join(cmd), flush=True)

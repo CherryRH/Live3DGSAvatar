@@ -89,7 +89,8 @@ POST_SYNCFIX_READY="${POST_SYNCFIX_READY:-${CFG_POST_SYNCFIX_READY:-false}}"
 POST_SYNCFIX_REPO="${POST_SYNCFIX_REPO:-${CFG_POST_SYNCFIX_REPO:-/home/test/Projects/SyncFix}}"
 POST_SYNCFIX_PYTHON="${POST_SYNCFIX_PYTHON:-${CFG_POST_SYNCFIX_PYTHON:-syncfix}}"
 POST_SYNCFIX_MODEL="${POST_SYNCFIX_MODEL:-${CFG_POST_SYNCFIX_MODEL:-/home/test/Projects/SyncFix/models/paper}}"
-POST_SYNCFIX_N_PER_PASS="${POST_SYNCFIX_N_PER_PASS:-${CFG_POST_SYNCFIX_N_PER_PASS:-2}}"
+POST_SYNCFIX_N_PER_PASS="${POST_SYNCFIX_N_PER_PASS:-${CFG_POST_SYNCFIX_N_PER_PASS:-4}}"
+POST_SYNCFIX_REF_SIZE="${POST_SYNCFIX_REF_SIZE:-${CFG_POST_SYNCFIX_REF_SIZE:-4}}"
 
 case "$POST_REPAIR_MODE" in
   mask_diffusion|joint_syncfix) ;;
@@ -115,6 +116,8 @@ post_base_model=$POST_BASE_MODEL
 post_syncfix_ready=$POST_SYNCFIX_READY
 post_syncfix_repo=$POST_SYNCFIX_REPO
 post_syncfix_model=$POST_SYNCFIX_MODEL
+post_syncfix_n_per_pass=$POST_SYNCFIX_N_PER_PASS
+post_syncfix_ref_size=$POST_SYNCFIX_REF_SIZE
 EOF
 }
 if (( PLAN == 1 )); then print_plan; exit 0; fi
@@ -157,6 +160,7 @@ post_args=(
   --syncfix-python "$POST_SYNCFIX_PYTHON"
   --syncfix-model "$POST_SYNCFIX_MODEL"
   --syncfix-n-per-pass "$POST_SYNCFIX_N_PER_PASS"
+  --syncfix-ref-size "$POST_SYNCFIX_REF_SIZE"
 )
 if [[ "${POST_COLOR_MATCH,,}" == "true" ]]; then post_args+=(--color-match); else post_args+=(--no-color-match); fi
 if [[ "${POST_HEAD_CUT,,}" == "true" ]]; then post_args+=(--head-cut --head-cut-margin "$POST_HEAD_CUT_MARGIN"); fi

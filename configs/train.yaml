@@ -76,28 +76,40 @@ train:
     # 真实帧 8 : 伪标签 2、按 SSIM-LPIPS 选最佳并早停。
     # 需要 diffusers + epiCRealism 权重；基础模型不依赖它。
     #
-    # 稳定路线以 train.sh 为准（`bash train.sh ... --post-train`），
-    # 这里是对应的默认值；改一边要同步另一边（tests/unit/test_train_sh.py
-    # 会检查两者一致）。
+    # post_train.sh 直接读这里（scripts/show_config.py --shell-post）；
+    # 改这里即可，不用再同步脚本。临时消融可用 POST_* 环境变量覆盖。
     post_train:
-      enabled: false
       top_n: 2
-      rings: "20,10;30,20;40,30;50,30"
-      steps: 200
+      # auto：按数据集训练段的 |yaw|/|pitch| p90 作为覆盖边缘，再向外扩；
+      # 也可以写死 "20,10;30,20;..."。角度都是相对头部的绝对值。
+      rings: "auto"
+      steps: 100
       refined_per_batch: 2
-      real_per_batch: 8
+      real_per_batch: 6
+      # 修复方式：mask_diffusion=当前掩码+扩散；joint_syncfix=全图+SyncFix
+      repair_mode: mask_diffusion
+      # SyncFix 环境未配好前保持 false：joint_syncfix 会直接拒绝启动
+      syncfix_ready: false
+      syncfix_repo: /home/test/Projects/SyncFix
+      syncfix_python: syncfix
+      syncfix_model: /home/test/Projects/SyncFix/models/paper
+      # 一次联合修复 4 张；参考图也给 4 张（find_defects 会取 4 个不同基帧）
+      syncfix_n_per_pass: 4
+      syncfix_ref_size: 4
+      # 下降容差：最后一轮比当前最佳低不超过该值就保留最后一轮，
+      # 超过才回退到最佳并停止。小角度留出集测不到大角度变化。
       quality_tol: 0.01
       psnr_weight: 0.002
       # 伪标签掩码向周围扩多少像素：范围太小扩散补不全眼睛/头顶/嘴巴
       mask_dilate: 12
       # 大掩码下填充率会下降，门限相应放宽
-      min_fill: 0.45
+      min_fill: 0.4
       trusted_tol: 3.0
       # 锐度门：mean gradient 会把渲染噪点也算进去，大掩码容易被误判成糊，
       # 这里比旧默认（0.97/0.98）宽松一档；先看几张 accepted 再决定是否收紧。
       sharpen: 0.35
-      min_sharp: 0.95
-      min_mask_sharp: 0.90
+      min_sharp: 0.85
+      min_mask_sharp: 0.85
       lr_xyz: 1e-5
       base_model: emilianJR/epiCRealism
       # 身份条件/颜色对齐是失败实验：默认关（见 docs/POSTTRAIN.md）
