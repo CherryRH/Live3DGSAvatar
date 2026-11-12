@@ -810,6 +810,7 @@ def test_train_cli_exposes_warm_start_and_novel_view() -> None:
     assert a.lr_scale == 1.0
     assert a.no_overwrite is False
     assert a.nv_every is None and a.nv_spill_weight is None
+    assert a.ssim_weight is None and a.lpips_weight is None
     b = m.parse_args(["--subject", "a", "--work-name", "b",
                       "--init-ply", "x.ply", "--lr-scale", "0.2",
                       "--no-overwrite", "--nv-every", "4",
@@ -822,3 +823,9 @@ def test_train_cli_exposes_warm_start_and_novel_view() -> None:
     assert b.nv_spill_weight == 0.05
     assert b.nv_spill_margin == 12
     assert b.nv_yaws == [-40.0, 40.0]
+    c = m.parse_args(["--subject", "a", "--work-name", "b",
+                      "--ssim-weight", "0.02", "--lpips-weight", "0.01",
+                      "--lpips-from", "20000"])
+    assert c.ssim_weight == 0.02
+    assert c.lpips_weight == 0.01
+    assert c.lpips_from == 20000

@@ -50,6 +50,8 @@ bash train.sh --subject <对象> --work-name <版本> --no-spill        # 原版
 
 - 数据：`datasets/<对象>/`（`images/` + `render_inputs.npz`）；
 - 切分：末尾 30% 作验证（`test_ratio`），验证集只含真实数据；
+- 损失：默认 L1 + 新视角 spill；可选 SSIM/LPIPS（`ssim_weight` /
+  `lpips_weight`，默认 0，权重相对 L1，先从小值 A/B）；
 - **默认几何监督**：每 4 步采一个 ±10..50° 新视角，罚 FLAME 表面外
   12px 之外的半透明 spill（`weight 0.05`；实色头发不罚）。`--no-spill` 可回退；
 - 早停：正脸 PSNR 与大角度缺口的加权指标（`--no-robust-eval` 可关）；

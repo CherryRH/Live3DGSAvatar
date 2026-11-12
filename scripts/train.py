@@ -94,6 +94,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="第几步开始启用形变基（默认 3000）")
     p.add_argument("--mask-weight", type=float, default=None,
                    help="背景在损失里的权重；1 表示与前景同权（默认）")
+    p.add_argument("--ssim-weight", type=float, default=None,
+                   help="SSIM 项权重（默认 0；基础训练可试 0.02–0.05）")
+    p.add_argument("--lpips-weight", type=float, default=None,
+                   help="LPIPS 项权重（默认 0；建议 >=20000 步再开 0.01–0.03）")
+    p.add_argument("--lpips-from", type=int, default=None,
+                   help="第几步开始启用 LPIPS（默认取配置）")
     p.add_argument("--test-ratio", type=float, default=None,
                    help="验证集比例（0.3 表示末尾 30%%，默认 0.3）")
     p.add_argument("--eval-every", type=int, default=None)
@@ -423,18 +429,35 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  lr 缩放 : {lr_scale:g}")
     mask_weight = float(args.mask_weight if args.mask_weight is not None
                         else cfg.get("train.pipeline.mask_weight", 1.0))
+    ssim_weight = float(args.ssim_weight if args.ssim_weight is not None
+                        else cfg.get("train.pipeline.ssim_weight", 0.0))
+    lpips_weight = float(args.lpips_weight if args.lpips_weight is not None
+                         else cfg.get("train.pipeline.lpips_weight", 0.0))
+    lpips_from = int(args.lpips_from if args.lpips_from is not None
+                     else cfg.get("train.pipeline.lpips_from", 20_000))
     objective = Objective.rgba_avatar_defaults()
     objective.mask_weight = mask_weight
     objective.nv_hole = nv_hole
     objective.nv_spill = nv_spill
+    objective.ssim = ssim_weight
+    objective.lpips = lpips_weight
+    objective.lpips_from = lpips_from
     supported_face = None
     loss_terms = [f"L1（背景权重 {mask_weight:.2f}）"]
     if nv_spill > 0:
         loss_terms.append(f"nv_spill {nv_spill:g}")
     if nv_hole > 0:
         loss_terms.append(f"nv_hole {nv_hole:g}")
+    if ssim_weight > 0:
+        loss_terms.append(f"ssim {ssim_weight:g}")
+    if lpips_weight > 0:
+        loss_terms.append(f"lpips {lpips_weight:g}")
     print(f"  损失   : {' + '.join(loss_terms)}")
-    print("  感知项 : 基础训练关闭（SSIM/LPIPS 只在后训练 refine 启用）")
+    if ssim_weight > 0 or lpips_weight > 0:
+        print(f"  感知项 : SSIM {ssim_weight:g} + LPIPS {lpips_weight:g}"
+              f"（LPIPS 第 {lpips_from} 步后启用）")
+    else:
+        print("  感知项 : 关闭（SSIM/LPIPS 只在后训练 refine 启用）")
     if nv_enabled:
         print(f"  新视角 : 每 {nv_every} 步，yaw {nv_yaws}，"
               f"hole {nv_hole:g} + spill {nv_spill:g}"
@@ -718,6 +741,8 @@ def main(argv: list[str] | None = None) -> int:
         "checkpoints": timing["saves"],
         "eval_every": eval_every, "patience": patience,
         "min_delta": min_delta, "early_stop_after": early_stop_after,
+        "ssim_weight": ssim_weight, "lpips_weight": lpips_weight,
+        "lpips_from": lpips_from,
         "eval_history": eval_history,
         "stopped_early": report.stopped_early,
     }, indent=2, ensure_ascii=False), encoding="utf-8")
