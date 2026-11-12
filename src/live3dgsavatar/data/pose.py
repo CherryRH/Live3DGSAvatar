@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import numpy as np
 
-__all__ = ["rot6d_to_matrix", "head_yaw", "angle_weights"]
+__all__ = ["rot6d_to_matrix", "head_yaw", "head_pitch", "angle_weights"]
 
 #: 头姿在 blend_weight 中的切片
 HEAD_ROT_SLICE = slice(100, 106)
@@ -38,6 +38,15 @@ def head_yaw(blend_weight) -> np.ndarray:
         raise ValueError(f"blend_weight 应为 [N,>=106]，实际 {w.shape}")
     R = rot6d_to_matrix(w[:, HEAD_ROT_SLICE])
     return np.degrees(np.arctan2(-R[..., 2, 0], R[..., 2, 2]))
+
+
+def head_pitch(blend_weight) -> np.ndarray:
+    """`[N, >=106]` 驱动参数 → `[N]` 头姿 pitch（度，绕 x）。"""
+    w = np.asarray(blend_weight, dtype=np.float64)
+    if w.ndim != 2 or w.shape[1] < HEAD_ROT_SLICE.stop:
+        raise ValueError(f"blend_weight 应为 [N,>=106]，实际 {w.shape}")
+    R = rot6d_to_matrix(w[:, HEAD_ROT_SLICE])
+    return np.degrees(np.arcsin(np.clip(R[..., 2, 1], -1.0, 1.0)))
 
 
 def angle_weights(yaw, *, scale: float = 20.0, floor: float = 1.0) -> np.ndarray:

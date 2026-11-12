@@ -99,6 +99,7 @@ python scripts/iterative_repair.py --subject <对象> --base-work <版本> \
 ```
 
 - 视角：`find_defects.py` 在当前角度圈里选**最差的 top-N**（不是固定对称角）；
+  `yaw/pitch` 是相对头部的绝对角度，渲染时会减掉基帧自身头姿；
 - 标签：`pseudo_label.py` 用 epiC + normal ControlNet 只重绘未观测/缺陷区域，
   过填充、可信区、一致性门后才接受；提示词为 bare face/neck + 负向
   clothing/jewelry/makeup，`head_cut` 默认排除未观测的脖子/胸口；

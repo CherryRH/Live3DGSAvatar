@@ -21,6 +21,10 @@ python scripts/find_defects.py --subject <对象> --work-name <版本> --dataset
 
 产物在 `output/defects/<对象>/<版本>/<数据集>/`。
 
+`yaw/pitch` 是**相对头部的绝对角度**：渲染时会减掉基帧自身的头姿
+（`blend_weight[100:106]`），所以 `yaw+20` 在原本已经 +39° 的帧上
+仍然渲染成 +20°，而不是 +59°。
+
 ⚠️ 需要 GPU（nvdiffrast）。`--dry-run` 可离线检查数据与网格规模。
 """
 
@@ -152,6 +156,7 @@ def main(argv: list[str] | None = None) -> int:
     from live3dgsavatar.core.render.faceid import face_id_map
     from live3dgsavatar.core.types import Camera, Mesh
     from live3dgsavatar.data.scene import load_scene
+    from live3dgsavatar.data.pose import head_pitch, head_yaw
     from live3dgsavatar.evaluation import (Candidate, alpha_hole_ratio,
                                            build_defect_map, coverage_counts,
                                            coverage_defect, floater_offsets,
@@ -200,8 +205,13 @@ def main(argv: list[str] | None = None) -> int:
     def mesh_of(frame):
         return frame["mesh"].unsqueeze(0).to(device)
 
-    def camera_at(center, yaw, pitch, roll):
-        view = orbit_w2c(w2c, center, yaw, pitch)
+    def base_view_angles(frame):
+        """基帧自身的头姿；候选 yaw/pitch 是**绝对**角度，渲染时减掉它。"""
+        bw = frame["blend_weight"].detach().cpu().numpy()[None]
+        return float(head_yaw(bw)[0]), float(head_pitch(bw)[0])
+
+    def camera_at(center, yaw, pitch, roll, base_yaw=0.0, base_pitch=0.0):
+        view = orbit_w2c(w2c, center, yaw - base_yaw, pitch - base_pitch)
         if roll:
             from live3dgsavatar.core.camera import roll_w2c
             view = roll_w2c(view, roll)
@@ -263,7 +273,9 @@ def main(argv: list[str] | None = None) -> int:
             base_idx, base_frame = frame_for(expr)
             base_verts = mesh_of(base_frame)
             center_i = base_verts[0].mean(dim=0).detach().cpu()
-            cam = camera_at(center_i, spec_view.yaw, spec_view.pitch, spec_view.roll)
+            base_yaw, base_pitch = base_view_angles(base_frame)
+            cam = camera_at(center_i, spec_view.yaw, spec_view.pitch,
+                            spec_view.roll, base_yaw, base_pitch)
             weight = base_frame["blend_weight"].unsqueeze(0).to(device)
             with torch.no_grad():
                 gs = avatar.deform(mesh_input(base_verts), weight)
@@ -415,8 +427,10 @@ def main(argv: list[str] | None = None) -> int:
         spec_view = cand.payload["view"]
         base_verts = mesh_of(scene.frames[int(cand.payload["base_frame"])])
         center_i = base_verts[0].mean(dim=0).detach().cpu()
+        base_frame = scene.frames[int(cand.payload["base_frame"])]
+        base_yaw, base_pitch = base_view_angles(base_frame)
         cam = camera_at(center_i, spec_view["yaw"], spec_view["pitch"],
-                        spec_view["roll"])
+                        spec_view["roll"], base_yaw, base_pitch)
         weight = scene.frames[int(cand.payload["base_frame"])][
             "blend_weight"].unsqueeze(0).to(device)
         with torch.no_grad():

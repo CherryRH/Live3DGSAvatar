@@ -4,6 +4,7 @@
 这是 GAF（CVPR 2025）思路的**轻量版**：不训练任何网络，用冻结的
 SD + Normal ControlNet 在低强度下重绘缺陷视角，再用几何与一致性检查过滤，
 通过的图作为微调目标（落到 `<缺陷目录>/refined/`，交给 `refine_from_images.py`）。
+视角标签里的 `yaw/pitch` 是绝对头部角度；渲染时会减掉基帧头姿。
 
 ## 与 GAF 的差别（以及为什么这样取舍）
 
@@ -628,6 +629,7 @@ def main(argv: list[str] | None = None) -> int:
     from live3dgsavatar.core.render.normals import normal_map
     from live3dgsavatar.core.types import Camera, Mesh
     from live3dgsavatar.data.datasets import resolve_dataset_dir
+    from live3dgsavatar.data.pose import head_pitch, head_yaw
     from live3dgsavatar.data.scene import load_scene
 
     cfg = load_config()
@@ -746,7 +748,11 @@ def main(argv: list[str] | None = None) -> int:
         idx = min(max(idx, 0), scene.num_frames - 1)
         frame = scene.frames[idx]
         center = frame["mesh"].mean(dim=0).detach().cpu()
-        view = orbit_w2c(w2c_data, center, info["yaw"], info["pitch"])
+        bw = frame["blend_weight"].detach().cpu().numpy()[None]
+        base_yaw = float(head_yaw(bw)[0])
+        base_pitch = float(head_pitch(bw)[0])
+        view = orbit_w2c(w2c_data, center, info["yaw"] - base_yaw,
+                         info["pitch"] - base_pitch)
         view = roll_w2c(view, info["roll"])
         cam = Camera(K=scene.K, w2c=view.unsqueeze(0).to(device),
                      width=scene.width, height=scene.height).to(device)
