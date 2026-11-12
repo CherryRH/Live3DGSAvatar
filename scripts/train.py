@@ -275,6 +275,9 @@ def main(argv: list[str] | None = None) -> int:
     post_core_dilate = int(_pt("core_dilate", 12))
     post_identity_threshold = float(_pt("identity_threshold", 0.30))
     post_trusted_tol = float(_pt("trusted_tol", 3.0))
+    post_sharpen = float(_pt("sharpen", 0.35))
+    post_min_sharp = float(_pt("min_sharp", 0.95))
+    post_min_mask_sharp = float(_pt("min_mask_sharp", 0.90))
     post_lr_xyz = float(_pt("lr_xyz", 1e-5))
     post_color_match = bool(_pt("color_match", False))
     post_color_mean_only = bool(_pt("color_mean_only", False))
@@ -787,6 +790,9 @@ def main(argv: list[str] | None = None) -> int:
                "--lr-xyz", str(post_lr_xyz),
                "--identity-threshold", str(post_identity_threshold),
                "--trusted-tol", str(post_trusted_tol),
+               "--sharpen", str(post_sharpen),
+               "--min-sharp", str(post_min_sharp),
+               "--min-mask-sharp", str(post_min_mask_sharp),
                "--color-ring", str(post_color_ring),
                *(["--color-match"] if post_color_match
                  else ["--no-color-match"]),

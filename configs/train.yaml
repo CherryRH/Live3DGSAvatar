@@ -93,6 +93,11 @@ train:
       # 大掩码下填充率会下降，门限相应放宽
       min_fill: 0.45
       trusted_tol: 3.0
+      # 锐度门：mean gradient 会把渲染噪点也算进去，大掩码容易被误判成糊，
+      # 这里比旧默认（0.97/0.98）宽松一档；先看几张 accepted 再决定是否收紧。
+      sharpen: 0.35
+      min_sharp: 0.95
+      min_mask_sharp: 0.90
       lr_xyz: 1e-5
       base_model: emilianJR/epiCRealism
       # 身份条件/颜色对齐是失败实验：默认关（见 docs/POSTTRAIN.md）

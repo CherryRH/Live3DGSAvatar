@@ -135,7 +135,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="一个面累计至少多少前景像素才算被数据支持")
     p.add_argument("--no-observed", action="store_true",
                    help="关闭观测面限制（默认只补被数据看过的表面）")
-    p.add_argument("--sharpen", type=float, default=0.30,
+    p.add_argument("--sharpen", type=float, default=0.35,
                    help="unsharp 增益，补偿 SD 往返的梯度损失。实测 SD 往返把标签"
                         "梯度压到渲染的 0.935，0.30 可回到约 0.99；0 关闭")
     p.add_argument("--trusted-tol", type=float, default=3.0,
@@ -152,9 +152,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--min-fill", type=float, default=0.45,
                    help="掩码内生成前景（>8）占比下限；低于此说明扩散没补上，"
                         "这样的标签喂给微调只会教出噪声")
-    p.add_argument("--min-sharp", type=float, default=0.97,
+    p.add_argument("--min-sharp", type=float, default=0.95,
                    help="伪标签/渲染的**整幅**前景梯度能量比下限")
-    p.add_argument("--min-mask-sharp", type=float, default=0.98,
+    p.add_argument("--min-mask-sharp", type=float, default=0.90,
                    help="伪标签/渲染在**掩码内**的梯度能量比下限。整幅比会被"
                         "掩码外的渲染图主导，这条才反映补出来的区域够不够锐")
     p.add_argument("--max-hole-area", type=float, default=0.15,

@@ -160,6 +160,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--head-cut-margin", type=int, default=0)
     ap.add_argument("--min-fill", type=float, default=0.45,
                     help="大掩码下填充率门限（默认 0.45）")
+    ap.add_argument("--sharpen", type=float, default=0.35,
+                    help="SD 往返后的 unsharp 增益")
+    ap.add_argument("--min-sharp", type=float, default=0.95,
+                    help="整幅前景锐度比下限")
+    ap.add_argument("--min-mask-sharp", type=float, default=0.90,
+                    help="掩码内锐度比下限（大掩码可适当放宽）")
     ap.add_argument("--sharp-tolerance", type=float, default=0.12)
     ap.add_argument("--ssim-tolerance", type=float, default=0.03)
     ap.add_argument("--lpips-tolerance", type=float, default=0.08)
@@ -256,7 +262,10 @@ def main(argv: list[str] | None = None) -> int:
                             if args.head_cut else []),
                           "--steps", "40", "--consistency", "2",
                           "--photometric-frames", "80",
-                          "--photometric-min-px", "16", "--sharpen", "0.3",
+                          "--photometric-min-px", "16",
+                          "--sharpen", f"{args.sharpen:g}",
+                          "--min-sharp", f"{args.min_sharp:g}",
+                          "--min-mask-sharp", f"{args.min_mask_sharp:g}",
                           "--min-fill", f"{args.min_fill:g}",
                           "--trusted-tol", f"{args.trusted_tol:g}",
                           "--base-model", args.base_model,
@@ -405,6 +414,9 @@ def main(argv: list[str] | None = None) -> int:
             "strength": args.strength,
             "min_fill": args.min_fill,
             "trusted_tol": args.trusted_tol,
+            "sharpen": args.sharpen,
+            "min_sharp": args.min_sharp,
+            "min_mask_sharp": args.min_mask_sharp,
             "steps": args.steps,
             "lr_xyz": args.lr_xyz,
             "real_per_batch": args.real_per_batch,
