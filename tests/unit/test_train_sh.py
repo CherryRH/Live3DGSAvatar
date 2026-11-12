@@ -56,6 +56,8 @@ def test_post_in_place_and_joint_mode() -> None:
     assert plan["post_prefix"] == "w"
     plan = _plan("--repair-mode", "joint_syncfix")
     assert plan["post_repair_mode"] == "joint_syncfix"
+    plan = _plan("--repair-mode", "none")
+    assert plan["post_repair_mode"] == "none"
 
 
 def test_post_config_matches_plan() -> None:

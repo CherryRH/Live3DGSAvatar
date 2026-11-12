@@ -52,6 +52,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--dataset", default=None)
     p.add_argument("--defects", type=Path, default=None)
     p.add_argument("--refined-dir", type=Path, default=None)
+    p.add_argument("--real-only", action="store_true",
+                   help="消融：只用真实帧，不用任何修复图")
     p.add_argument("--steps", type=int, default=600)
     p.add_argument("--refined-per-batch", type=int, default=4)
     p.add_argument("--real-per-batch", type=int, default=4)
@@ -212,16 +214,22 @@ def main(argv: list[str] | None = None) -> int:
     defects_dir = Path(args.defects or (
         Path(str(cfg.get("paths.output_dir", "output"))) / "defects"
         / subject / work / dataset))
-    refined_dir = Path(args.refined_dir or (defects_dir / "refined"))
-    selected = defects_dir / "selected.json"
-    if not selected.is_file():
-        raise SystemExit(f"[error] 找不到 {selected}（先跑 find_defects.py）")
-    if not refined_dir.is_dir():
-        if not args.dry_run:
-            raise SystemExit(f"[error] 找不到精修图目录 {refined_dir}")
-        print(f"  [warn] 精修图目录不存在（dry-run 继续）：{refined_dir}")
-    labels = sorted(p.stem for p in refined_dir.glob("*.png")
-                    if LABEL_RE.match(p.stem))
+    defects_dir.mkdir(parents=True, exist_ok=True)
+    if args.real_only:
+        args.refined_per_batch = 0
+        refined_dir = None
+        labels = []
+    else:
+        refined_dir = Path(args.refined_dir or (defects_dir / "refined"))
+        selected = defects_dir / "selected.json"
+        if not selected.is_file():
+            raise SystemExit(f"[error] 找不到 {selected}（先跑 find_defects.py）")
+        if not refined_dir.is_dir():
+            if not args.dry_run:
+                raise SystemExit(f"[error] 找不到精修图目录 {refined_dir}")
+            print(f"  [warn] 精修图目录不存在（dry-run 继续）：{refined_dir}")
+        labels = sorted(p.stem for p in refined_dir.glob("*.png")
+                        if LABEL_RE.match(p.stem))
 
     with np.load(data_dir / "render_inputs.npz", allow_pickle=True) as d:
         total = int(d["mesh"].shape[0])
@@ -235,7 +243,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"缺陷目录: {defects_dir}")
     print(f"精修图  : {len(labels)} 个")
     print(f"微调    : {args.steps} 步，每批 {args.refined_per_batch} 精修 + "
-          f"{args.real_per_batch} 真实")
+          f"{args.real_per_batch} 真实"
+          + ("（real-only 消融）" if args.real_only else ""))
     print(f"SSIM    : {args.ssim_weight:g}" +
           ("（关闭）" if args.ssim_weight <= 0 else ""))
     print(f"损失    : L1 1.0 + SSIM {args.ssim_weight:g}"
@@ -292,7 +301,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # ---- 建构精修视角的观测 ----
     obs, skipped = [], []
-    for label in labels:
+    for label in ([] if args.real_only else labels):
         info = parse_view_label(label)
         idx = int(info["expr"][5:]) if info["expr"].startswith("frame") else 0
         idx = min(max(idx, 0), scene.num_frames - 1)
@@ -331,7 +340,7 @@ def main(argv: list[str] | None = None) -> int:
     if skipped:
         print(f"  [warn] 跳过 {len(skipped)} 张：" +
               "，".join(f"{l}（{r}）" for l, r in skipped[:3]) + "…")
-    if not obs:
+    if not obs and not args.real_only:
         raise SystemExit("[error] 没有可用的精修视角")
 
     # ---- 选点帧：不依赖预训练的切片方式 ----
@@ -443,7 +452,7 @@ def main(argv: list[str] | None = None) -> int:
         def random_batch(self, batch_size: int):
             import random
 
-            n_ref = min(args.refined_per_batch, batch_size)
+            n_ref = 0 if args.real_only else min(args.refined_per_batch, batch_size)
             n_real = max(0, batch_size - n_ref)
             parts = []
             for _ in range(n_ref):

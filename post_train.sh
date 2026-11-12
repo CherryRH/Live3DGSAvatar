@@ -5,12 +5,13 @@
 #   bash post_train.sh --subject biden --work-name base
 #   bash post_train.sh --subject biden --work-name best --in-place
 #   bash post_train.sh --subject biden --work-name base --repair-mode joint_syncfix
+#   bash post_train.sh --subject biden --work-name base --repair-mode none
 #   bash post_train.sh --subject biden --work-name base --plan
 #
 # 修复方式：
-#   mask_diffusion（默认）  现路线：选角 -> 掩码伪标签（SD1.5/epiC）-> 微调
-#   joint_syncfix           全图联合修复：选角 -> SyncFix 多视图 -> 微调
-#                           SyncFix 环境/权重未就绪时拒绝启动，不会误调用
+#   mask_diffusion（默认）  选角 -> 掩码伪标签（SD1.5/epiC）-> 微调
+#   joint_syncfix           选角 -> SyncFix 全图多视图 -> 微调
+#   none                     消融：只用真实帧微调，不做任何修复
 #
 # 参数默认值全部来自 configs/train.yaml 的 train.pipeline.post_train；
 # POST_* 环境变量可临时覆盖。产物：output/post/<对象>/<前缀>/。
@@ -93,7 +94,7 @@ POST_SYNCFIX_N_PER_PASS="${POST_SYNCFIX_N_PER_PASS:-${CFG_POST_SYNCFIX_N_PER_PAS
 POST_SYNCFIX_REF_SIZE="${POST_SYNCFIX_REF_SIZE:-${CFG_POST_SYNCFIX_REF_SIZE:-4}}"
 
 case "$POST_REPAIR_MODE" in
-  mask_diffusion|joint_syncfix) ;;
+  mask_diffusion|joint_syncfix|none) ;;
   *) die "未知 --repair-mode：$POST_REPAIR_MODE（mask_diffusion / joint_syncfix）" ;;
 esac
 
@@ -133,7 +134,7 @@ preflight() {
   if [[ "$POST_REPAIR_MODE" == "mask_diffusion" ]]; then
     "${PY_RUN[@]}" -c "import diffusers" >/dev/null 2>&1 || \
       die "mask_diffusion 需要 diffusers：先跑 bash setup_env.sh"
-  else
+  elif [[ "$POST_REPAIR_MODE" == "joint_syncfix" ]]; then
     [[ "${POST_SYNCFIX_READY,,}" == "true" ]] || \
       die "SyncFix 环境未配置（syncfix_ready=false）；本次不会调用。配置好后再设 true"
     [[ -f "$POST_SYNCFIX_MODEL/model.safetensors" ]] || \
@@ -169,7 +170,7 @@ if [[ "$POST_REPAIR_MODE" == "mask_diffusion" ]]; then
   )
   if [[ "${POST_COLOR_MATCH,,}" == "true" ]]; then post_args+=(--color-match); else post_args+=(--no-color-match); fi
   if [[ "${POST_HEAD_CUT,,}" == "true" ]]; then post_args+=(--head-cut --head-cut-margin "$POST_HEAD_CUT_MARGIN"); fi
-else
+elif [[ "$POST_REPAIR_MODE" == "joint_syncfix" ]]; then
   post_args+=(
     --syncfix-repo "$POST_SYNCFIX_REPO"
     --syncfix-python "$POST_SYNCFIX_PYTHON"
@@ -179,6 +180,7 @@ else
   )
   if [[ "${POST_SYNCFIX_READY,,}" == "true" ]]; then post_args+=(--syncfix-ready); fi
 fi
+# none 模式只传共用参数（top_n/rings/steps/real/lr/quality），不传标签生成参数
 
 preflight
 info "修复方式：$POST_REPAIR_MODE；模型：models/$SUBJECT/$WORK"

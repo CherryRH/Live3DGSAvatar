@@ -144,7 +144,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--real-per-batch", type=int, default=8)
     ap.add_argument("--lr-xyz", type=float, default=1e-5)
     ap.add_argument("--repair-mode",
-                    choices=("mask_diffusion", "joint_syncfix"),
+                    choices=("mask_diffusion", "joint_syncfix", "none"),
                     default="mask_diffusion",
                     help="mask_diffusion=掩码+扩散；joint_syncfix=全图+SyncFix")
     ap.add_argument("--syncfix-ready", action="store_true",
@@ -279,6 +279,62 @@ def main(argv: list[str] | None = None) -> int:
 
     in_place = bool(args.in_place)
     models_root = REPO_ROOT / "models"
+
+    if args.repair_mode == "none":
+        # 消融：只用真实帧微调，不做任何选角/伪标签/SyncFix。
+        # 训练总步数与修复路线对齐：steps × 圈数。
+        total_steps = args.steps * max(1, len(rings))
+        promote = args.base_work if in_place else f"{args.prefix}_none"
+        defects_dir = run_dir / "real_only"
+        t0 = time.perf_counter()
+        cmd = [PY, "scripts/refine_from_images.py",
+               "--subject", args.subject, "--work-name", args.base_work,
+               "--dataset", dataset, "--defects", str(defects_dir),
+               "--real-only", "--steps", str(total_steps),
+               "--eval-every", "50", "--eval-frames", "64",
+               "--real-per-batch", str(args.real_per_batch),
+               "--refined-per-batch", "0",
+               "--select-by", "last",
+               "--quality-tol", f"{args.quality_tol:g}",
+               "--psnr-weight", f"{args.psnr_weight:g}",
+               "--promote", "--promote-name", promote, "--force",
+               "--lr-xyz", f"{args.lr_xyz:g}",
+               "--ssim-weight", "0.2", "--lpips-weight", "0.1",
+               "--sharp-tolerance", f"{args.sharp_tolerance:g}",
+               "--ssim-tolerance", f"{args.ssim_tolerance:g}",
+               "--lpips-tolerance", f"{args.lpips_tolerance:g}"]
+        rc, dt = run(cmd, dry=args.dry_run)
+        ref_path = defects_dir / "finetune" / "report.json"
+        rep = (json.loads(ref_path.read_text(encoding="utf-8"))
+               if ref_path.is_file() else {})
+        after = rep.get("after")
+        out = {
+            "prefix": args.prefix, "base": args.base_work,
+            "repair_mode": "none", "rings": rings,
+            "total_seconds": round(time.perf_counter() - t0, 1),
+            "accepted": rc == 0 and after is not None,
+            "improved": None,
+            "best_model": promote,
+            "best_round": {
+                "round": "none", "selected": rep.get("selected"),
+                "best": after,
+                "score": rep.get("selected_score"),
+                "best_seconds": rep.get("best_seconds"),
+            } if after is not None else None,
+            "rounds": [{
+                "round": "none", "labels": 0, "selected": rep.get("selected"),
+                "best": after, "accepted": rc == 0 and after is not None,
+                "seconds": round(dt, 1),
+            }],
+            "params": {"repair_mode": "none", "steps": total_steps,
+                       "real_per_batch": args.real_per_batch,
+                       "refined_per_batch": 0},
+        }
+        (run_dir / "report.json").write_text(
+            json.dumps(out, ensure_ascii=False, indent=1), encoding="utf-8")
+        print(f"完成 {args.prefix}（none）：{total_steps} 步，"
+              f"{out['total_seconds']}s", flush=True)
+        return 0 if out["accepted"] else 1
 
     keep: set[str] = set()
     if args.seed_defects is not None:
