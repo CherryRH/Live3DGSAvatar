@@ -494,7 +494,9 @@ def main() -> int:
     print(f"  data  = {args.data}")
     print(f"  数据集: {args.dataset}")
     frames_text = "全部" if args.frames < 0 else f"{args.frames} 帧"
-    print(f"  配置  : {frames_text}（起始 {args.frame_offset}）, "
+    offset_note = (f"起始 {args.frame_offset}" if args.frame_mode == "head"
+                   else f"frame-mode={args.frame_mode}（frame-offset 仅 head 生效）")
+    print(f"  配置  : {frames_text}（{offset_note}）, "
           f"batch={args.batch_size}, {args.tex_size} tex, "
           f"D={args.num_basis_in}, K={args.num_basis_blend}")
     print(f"  产物  : {args.output_dir}")
@@ -525,7 +527,9 @@ def main() -> int:
     indices = select_indices(total, args.frames, args.frame_mode,
                              seed=args.seed, offset=args.frame_offset)
     n = len(indices)
-    print(f"  数据集: 共 {total} 帧，取 {n} 帧（{args.frame_mode}）", flush=True)
+    rng = (f"，范围 {indices[0]}–{indices[-1]}" if indices else "")
+    print(f"  数据集: 共 {total} 帧，取 {n} 帧（{args.frame_mode}{rng}）",
+          flush=True)
 
     # 背景按图像本身判定：带 alpha 的是实拍（用配置的黑底），
     # 纯 RGB 的多为白底合成图（用白底，否则 PSNR 全被背景吃掉）。
