@@ -117,6 +117,19 @@ def label_stems(defects: Path) -> set[str]:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # 兼容旧名：joint_syncfix -> syncfix（只保留一个规范名，旧命令仍可跑）
+    raw = list(sys.argv[1:] if argv is None else argv)
+    for i, token in enumerate(raw):
+        if token == "--repair-mode" and i + 1 < len(raw) and raw[i + 1] == "joint_syncfix":
+            print("[post] repair-mode 'joint_syncfix' 已更名为 'syncfix'，"
+                  "本次按 syncfix 执行", file=sys.stderr)
+            raw[i + 1] = "syncfix"
+        elif token == "--repair-mode=joint_syncfix":
+            print("[post] repair-mode 'joint_syncfix' 已更名为 'syncfix'，"
+                  "本次按 syncfix 执行", file=sys.stderr)
+            raw[i] = "--repair-mode=syncfix"
+    argv = raw
+
     ap = argparse.ArgumentParser()
     ap.add_argument("--subject", default="biden")
     ap.add_argument("--dataset", default=None)
@@ -144,11 +157,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--real-per-batch", type=int, default=8)
     ap.add_argument("--lr-xyz", type=float, default=1e-5)
     ap.add_argument("--repair-mode",
-                    choices=("mask_diffusion", "joint_syncfix", "none"),
-                    default="mask_diffusion",
-                    help="mask_diffusion=掩码+扩散；joint_syncfix=全图+SyncFix")
+                    choices=("syncfix", "mask_diffusion", "none"),
+                    default="syncfix",
+                    help="syncfix=全图+SyncFix（默认）；"
+                         "mask_diffusion=掩码+扩散；none=纯真实帧消融")
     ap.add_argument("--syncfix-ready", action="store_true",
-                    help="确认 SyncFix 环境可用；否则 joint_syncfix 拒绝启动")
+                    help="确认 SyncFix 环境可用；否则 syncfix 拒绝启动")
     ap.add_argument("--syncfix-repo", default="/home/test/Projects/SyncFix")
     ap.add_argument("--syncfix-python", default="syncfix")
     ap.add_argument("--syncfix-model",
@@ -368,9 +382,9 @@ def main(argv: list[str] | None = None) -> int:
         # SyncFix 联合修复一次要 4 张：视图和参考图都按 n_per_pass 扩；
         # 每帧最多取 1 个视角，保证有同样数量的不同参考帧。
         sel_n = (max(args.top_n, args.syncfix_n_per_pass)
-                 if args.repair_mode == "joint_syncfix" else args.top_n)
+                 if args.repair_mode == "syncfix" else args.top_n)
         sel_extra = (["--per-base-max", "1"]
-                     if args.repair_mode == "joint_syncfix" else [])
+                     if args.repair_mode == "syncfix" else [])
         rc, dt_sel = run([PY, "scripts/find_defects.py",
                           "--subject", args.subject, "--work-name", base,
                           "--dataset", dataset,

@@ -44,18 +44,23 @@ def test_train_sh_is_base_only() -> None:
 
 def test_post_plan_defaults() -> None:
     plan = _plan()
-    assert plan["post_repair_mode"] == "mask_diffusion"
+    assert plan["post_repair_mode"] == "syncfix"
     assert plan["post_rings"] == "auto"
     assert plan["post_steps"] == "100"
     assert plan["post_syncfix_ready"].lower() in ("true", "false")
     assert plan["post_prefix"] == "w_post"
 
 
-def test_post_in_place_and_joint_mode() -> None:
+def test_post_in_place_and_repair_modes() -> None:
     plan = _plan("--in-place")
     assert plan["post_prefix"] == "w"
+    plan = _plan("--repair-mode", "syncfix")
+    assert plan["post_repair_mode"] == "syncfix"
+    # 旧名仍可用，但内部统一成 syncfix
     plan = _plan("--repair-mode", "joint_syncfix")
-    assert plan["post_repair_mode"] == "joint_syncfix"
+    assert plan["post_repair_mode"] == "syncfix"
+    plan = _plan("--repair-mode", "mask_diffusion")
+    assert plan["post_repair_mode"] == "mask_diffusion"
     plan = _plan("--repair-mode", "none")
     assert plan["post_repair_mode"] == "none"
 

@@ -4,14 +4,14 @@
 # 用法：
 #   bash post_train.sh --subject biden --work-name base
 #   bash post_train.sh --subject biden --work-name best --in-place
-#   bash post_train.sh --subject biden --work-name base --repair-mode joint_syncfix
+#   bash post_train.sh --subject biden --work-name base --repair-mode syncfix
 #   bash post_train.sh --subject biden --work-name base --repair-mode none
 #   bash post_train.sh --subject biden --work-name base --plan
 #
 # 修复方式：
-#   mask_diffusion（默认）  选角 -> 掩码伪标签（SD1.5/epiC）-> 微调
-#   joint_syncfix           选角 -> SyncFix 全图多视图 -> 微调
-#   none                     消融：只用真实帧微调，不做任何修复
+#   syncfix（默认）         选角 -> SyncFix 全图多视图 -> 微调
+#   mask_diffusion          选角 -> 掩码伪标签（SD1.5/epiC）-> 微调
+#   none                    消融：只用真实帧微调，不做任何修复
 #
 # 参数默认值全部来自 configs/train.yaml 的 train.pipeline.post_train；
 # POST_* 环境变量可临时覆盖。产物：output/post/<对象>/<前缀>/。
@@ -27,7 +27,7 @@ die() { echo "[error] $*" >&2; exit 1; }
 info() { echo "[post] $*"; }
 
 usage() {
-  sed -n '2,22p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '2,17p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
   exit 0
 }
 
@@ -85,7 +85,7 @@ POST_HEAD_CUT="${POST_HEAD_CUT:-$CFG_POST_HEAD_CUT}"
 POST_HEAD_CUT_MARGIN="${POST_HEAD_CUT_MARGIN:-$CFG_POST_HEAD_CUT_MARGIN}"
 POST_PROMPT="${POST_PROMPT:-$CFG_POST_PROMPT}"
 POST_NEGATIVE="${POST_NEGATIVE:-$CFG_POST_NEGATIVE}"
-POST_REPAIR_MODE="${POST_REPAIR_MODE:-${REPAIR_MODE:-${CFG_POST_REPAIR_MODE:-mask_diffusion}}}"
+POST_REPAIR_MODE="${POST_REPAIR_MODE:-${REPAIR_MODE:-${CFG_POST_REPAIR_MODE:-syncfix}}}"
 POST_SYNCFIX_READY="${POST_SYNCFIX_READY:-${CFG_POST_SYNCFIX_READY:-false}}"
 POST_SYNCFIX_REPO="${POST_SYNCFIX_REPO:-${CFG_POST_SYNCFIX_REPO:-/home/test/Projects/SyncFix}}"
 POST_SYNCFIX_PYTHON="${POST_SYNCFIX_PYTHON:-${CFG_POST_SYNCFIX_PYTHON:-syncfix}}"
@@ -94,8 +94,11 @@ POST_SYNCFIX_N_PER_PASS="${POST_SYNCFIX_N_PER_PASS:-${CFG_POST_SYNCFIX_N_PER_PAS
 POST_SYNCFIX_REF_SIZE="${POST_SYNCFIX_REF_SIZE:-${CFG_POST_SYNCFIX_REF_SIZE:-4}}"
 
 case "$POST_REPAIR_MODE" in
-  mask_diffusion|joint_syncfix|none) ;;
-  *) die "未知 --repair-mode：$POST_REPAIR_MODE（mask_diffusion / joint_syncfix）" ;;
+  joint_syncfix)
+    info "repair-mode 'joint_syncfix' 已更名为 'syncfix'，本次按 syncfix 执行"
+    POST_REPAIR_MODE=syncfix ;;
+  mask_diffusion|syncfix|none) ;;
+  *) die "未知 --repair-mode：$POST_REPAIR_MODE（syncfix / mask_diffusion / none）" ;;
 esac
 
 if (( PREFIX_SET == 0 )); then
@@ -134,7 +137,7 @@ preflight() {
   if [[ "$POST_REPAIR_MODE" == "mask_diffusion" ]]; then
     "${PY_RUN[@]}" -c "import diffusers" >/dev/null 2>&1 || \
       die "mask_diffusion 需要 diffusers：先跑 bash setup_env.sh"
-  elif [[ "$POST_REPAIR_MODE" == "joint_syncfix" ]]; then
+  elif [[ "$POST_REPAIR_MODE" == "syncfix" ]]; then
     [[ "${POST_SYNCFIX_READY,,}" == "true" ]] || \
       die "SyncFix 环境未配置（syncfix_ready=false）；本次不会调用。配置好后再设 true"
     [[ -f "$POST_SYNCFIX_MODEL/model.safetensors" ]] || \
@@ -170,7 +173,7 @@ if [[ "$POST_REPAIR_MODE" == "mask_diffusion" ]]; then
   )
   if [[ "${POST_COLOR_MATCH,,}" == "true" ]]; then post_args+=(--color-match); else post_args+=(--no-color-match); fi
   if [[ "${POST_HEAD_CUT,,}" == "true" ]]; then post_args+=(--head-cut --head-cut-margin "$POST_HEAD_CUT_MARGIN"); fi
-elif [[ "$POST_REPAIR_MODE" == "joint_syncfix" ]]; then
+elif [[ "$POST_REPAIR_MODE" == "syncfix" ]]; then
   post_args+=(
     --syncfix-repo "$POST_SYNCFIX_REPO"
     --syncfix-python "$POST_SYNCFIX_PYTHON"

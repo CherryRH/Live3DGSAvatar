@@ -218,6 +218,17 @@ def test_select_indices_head_tail_random() -> None:
     assert len(m.select_indices(100, -1, "head")) == 100
 
 
+def test_select_indices_heldout_matches_training_split() -> None:
+    """eval 的 heldout 与 ManifestSource 的 test 切分必须用同一个比例。"""
+    m = _load()
+    # 100 帧、0.3 → 训练 70 / 留出 30
+    assert m.select_indices(100, -1, "heldout", test_ratio=0.3) == list(range(70, 100))
+    assert m.select_indices(100, 5, "heldout", test_ratio=0.3) == [70, 71, 72, 73, 74]
+    # 小数据集至少留 1 帧
+    assert m.select_indices(3, -1, "heldout", test_ratio=0.3) == [2]
+    assert m.select_indices(1, -1, "heldout", test_ratio=0.3) == []
+
+
 def test_select_indices_handles_more_frames_than_available() -> None:
     m = _load()
     assert m.select_indices(10, 99, "tail") == list(range(10))

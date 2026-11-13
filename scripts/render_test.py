@@ -102,9 +102,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         "默认取 --subject 同名数据集）")
     p.add_argument("--frames", type=int, default=None,
                    help="评测多少帧；-1 表示全部")
-    p.add_argument("--frame-mode", choices=("head", "tail", "random"),
+    p.add_argument("--frame-mode", choices=("head", "tail", "random", "heldout"),
                    default="head",
-                   help="取帧方式：head=从开头（默认）、tail=从结尾、random=随机")
+                   help="取帧方式：head=从开头（默认）、tail=从结尾、"
+                        "random=随机、heldout=末尾留出集（比例取 test_ratio）")
+    p.add_argument("--test-ratio", type=float, default=None,
+                   help="heldout 模式下留出集比例（默认取 train.pipeline.test_ratio）")
     p.add_argument("--seed", type=int, default=None,
                    help="random 模式的随机种子（默认取配置）")
     p.add_argument("--video-fps", type=float, default=None,
@@ -169,6 +172,11 @@ def _finalize(args: argparse.Namespace, cfg: Config) -> argparse.Namespace:
     # 先记下哪些结构参数是**用户显式给的**：只有那时才用它覆盖 PLY 的自描述，
     # 否则会让"模型结构与配置默认值不一致"的文件被错误加载。
     args.frame_offset = 0 if args.frame_offset is None else int(args.frame_offset)
+    args.test_ratio = float(cfg.get("train.pipeline.test_ratio", 0.3)
+                            if args.test_ratio is None else args.test_ratio)
+    if not 0.0 <= args.test_ratio < 1.0:
+        raise SystemExit(
+            f"[error] --test-ratio 应在 [0, 1)，实际 {args.test_ratio}")
     args.seed = int(cfg.get("render.test_seed", 0)
                    if args.seed is None else args.seed)
     args.video_fps = float(cfg.get("render.video_fps", 30.0)
@@ -429,19 +437,32 @@ def render_showcase(args, scene, avatar, rasterizer, bg,
     return frames
 
 def select_indices(total: int, frames: int | None, mode: str, *,
-                   seed: int = 0, offset: int = 0) -> list[int]:
+                   seed: int = 0, offset: int = 0,
+                   test_ratio: float = 0.3) -> list[int]:
     """按取帧方式返回**全局帧号**列表。
 
-    - `head`  ：从 `offset` 开始连续取（`--frame-offset` 只在这里生效）
-    - `tail`  ：取最后 n 帧
-    - `random`：全片随机取 n 帧（`seed` 固定则可复现）
+    - `head`   ：从 `offset` 开始连续取（`--frame-offset` 只在这里生效）
+    - `tail`   ：取最后 n 帧
+    - `random` ：全片随机取 n 帧（`seed` 固定则可复现）
+    - `heldout`：取末尾 `test_ratio` 的留出集；`frames` 限定时取该段前 n 帧
 
-    `frames` 为 ``None`` 或 `-1` 时表示全部。
+    `frames` 为 ``None`` 或 `-1` 时表示全部。留出集比例与训练切分共用
+    `train.pipeline.test_ratio`，避免评测和训练对"留出"的定义分叉。
     """
     import numpy as np
 
     total = int(total)
     n = total if frames is None or int(frames) < 0 else min(int(frames), total)
+    if mode == "heldout":
+        ratio = float(test_ratio)
+        if not 0.0 <= ratio < 1.0:
+            raise ValueError(f"test_ratio 应在 [0,1)，实际 {ratio}")
+        k = int(round(total * ratio))
+        if ratio > 0 and k == 0 and total > 1:
+            k = 1
+        k = min(k, total - 1) if total > 1 else 0
+        start = total - k
+        return list(range(start, start + min(n, k)))
     if mode == "tail":
         return list(range(total - n, total))
     if mode == "random":
@@ -526,7 +547,8 @@ def main() -> int:
               f"（数据集共 {total} 帧）", file=sys.stderr)
         return 1
     indices = select_indices(total, args.frames, args.frame_mode,
-                             seed=args.seed, offset=args.frame_offset)
+                             seed=args.seed, offset=args.frame_offset,
+                             test_ratio=args.test_ratio)
     n = len(indices)
     rng = (f"，范围 {indices[0]}–{indices[-1]}" if indices else "")
     print(f"  数据集: 共 {total} 帧，取 {n} 帧（{args.frame_mode}{rng}）",
@@ -553,6 +575,10 @@ def main() -> int:
         num_frames=n, dataset_frames=total,
         width=scene.width, height=scene.height,
         perf=perf, extra={"model_path": str(args.ply),
+                          "frame_mode": args.frame_mode,
+                          "frame_range": ([indices[0], indices[-1]]
+                                          if indices else []),
+                          "test_ratio": args.test_ratio,
                           "showcase_frames": len(showcase) if showcase else 0})
     report: dict = result.to_dict()
 

@@ -87,9 +87,9 @@ train:
       # 训练 batch = real_per_batch + refined_per_batch，两种模式共用
       refined_per_batch: 2
       real_per_batch: 6
-      # 修复方式：mask_diffusion=当前掩码+扩散；joint_syncfix=全图+SyncFix
-      repair_mode: mask_diffusion
-      # SyncFix 环境未配好前保持 false：joint_syncfix 会直接拒绝启动
+      # 修复方式：syncfix=全图+SyncFix（默认）；mask_diffusion=当前掩码+扩散；none=纯真实帧消融
+      repair_mode: syncfix
+      # SyncFix 环境未配好前保持 false：syncfix 会直接拒绝启动
       syncfix_ready: true
       syncfix_repo: /home/test/Projects/SyncFix
       syncfix_python: syncfix

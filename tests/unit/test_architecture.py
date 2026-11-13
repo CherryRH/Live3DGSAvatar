@@ -802,3 +802,19 @@ def test_avatar_attributes_used_in_scripts_exist() -> None:
                 line = text[:match.start()].count("\n") + 1
                 problems.append(f"{path.name}:{line} → avatar.{name}")
     assert not problems, "脚本使用了 GaussianAvatar 上不存在的属性：\n  " + "\n  ".join(problems)
+
+
+def test_data_package_is_packaged_and_typed() -> None:
+    """`data/` 必须有 `__init__.py`，否则 wheel/非 editable 安装会漏包。
+
+    可编辑安装靠命名空间包仍能 import，所以这个问题在开发机上不可见；
+    但 `setuptools.find_packages` 会直接跳过没有 `__init__.py` 的目录。
+    """
+    from setuptools import find_packages
+
+    assert (SRC / "data" / "__init__.py").is_file(), \
+        "src/live3dgsavatar/data/__init__.py 缺失，wheel 会漏掉整个 data 包"
+    packages = set(find_packages(where=str(REPO_ROOT / "src")))
+    assert "live3dgsavatar.data" in packages, packages
+    assert (SRC / "py.typed").is_file(), \
+        "pyproject.toml 的 package-data 声明了 py.typed，文件必须存在"

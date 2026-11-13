@@ -34,6 +34,54 @@ from .protocol import FrameTimeline, merge_params, output_size
 log = logging.getLogger(__name__)
 
 
+def resolve_avatar_config(cfg: Config, model_ply: Path,
+                          model_cfg: Path | None = None):
+    """按“PLY 内嵌 → 模型 config.yaml → render.yaml 兜底”解析模型结构。
+
+    `render_test` 早已按这个顺序读结构，但 GUI 之前直接读 `render.yaml`，
+    导致“评测能开、GUI 开不了”的结构漂移。这里把顺序收敛到一处：
+
+    1. PLY 头里的 `comment gaussian_config`（训练产物自带，最可信）
+    2. `<模型目录>/config.yaml`（早期模型/参照实现可能只有这个）
+    3. `configs/render.yaml` 的 `model.network.*`（无任何模型侧信息时才兜底）
+
+    Args:
+        cfg: 运行配置（兜底与 `paths.models_config` 用）
+        model_ply: 模型 `.ply` 路径
+        model_cfg: 直接指定模型 `config.yaml`（测试/特殊调用用）
+
+    Returns:
+        `AvatarConfig`
+    """
+    from ..core.avatar import AvatarConfig
+    from ..core.io.ply import read_embedded_config
+
+    embedded = read_embedded_config(model_ply)
+    if embedded is not None:
+        log.info("模型结构：PLY 内嵌 gaussian_config（%s）", model_ply)
+        return embedded
+
+    if model_cfg is not None:
+        cfg_path = model_cfg
+    else:
+        name = Path(str(cfg.get("paths.models_config") or "config.yaml"))
+        cfg_path = name if name.is_absolute() else model_ply.parent / name
+    if cfg_path.is_file():
+        log.info("模型结构：%s", cfg_path)
+        return AvatarConfig.from_yaml(cfg_path)
+
+    log.warning(
+        "模型结构：%s 既无内嵌 gaussian_config 也无 config.yaml，"
+        "回退 configs/render.yaml 的 model.network", model_ply)
+    return AvatarConfig(
+        tex_size=int(cfg.get("model.network.tex_size")),
+        num_basis_in=int(cfg.get("model.network.num_basis_in")),
+        num_basis_blend=int(cfg.get("model.network.num_basis_blend")),
+        mlp_hidden=tuple(cfg.get("model.network.mlp_hidden") or ()),
+        use_weight_proj=bool(cfg.get("model.network.use_weight_proj", True)),
+    )
+
+
 @dataclass
 class RenderParams:
     """前端可实时调整的参数（对应 docs/APP.md 的 `params`）。
@@ -221,7 +269,6 @@ class Session:
                 "GUI 后端需要可用的 NVIDIA GPU（渲染无法降级到 CPU）。"
                 "请在能访问 GPU 的终端运行。")
 
-        from ..core.avatar import AvatarConfig
         from ..core.io import load_ply
         from ..core.render import SimpleRasterizer
         from ..core.types import Camera
@@ -239,13 +286,7 @@ class Session:
         #    `mesh.verts[:, mesh.faces[used]]` 抛设备不匹配错误。
         scene = load_scene(cfg, frames=preload, device=self.device)
 
-        av_cfg = AvatarConfig(
-            tex_size=int(cfg.get("model.network.tex_size")),
-            num_basis_in=int(cfg.get("model.network.num_basis_in")),
-            num_basis_blend=int(cfg.get("model.network.num_basis_blend")),
-            mlp_hidden=tuple(cfg.get("model.network.mlp_hidden") or ()),
-            use_weight_proj=bool(cfg.get("model.network.use_weight_proj", True)),
-        )
+        av_cfg = resolve_avatar_config(cfg, model_ply)
         try:
             avatar = load_ply(model_ply, config=av_cfg, device=self.device)
         except ValueError as e:

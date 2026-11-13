@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "面向视频通话场景的 3DGS 人体重建 —— 实时、可驱动、可持续更新"
 readme = "README.md"
 requires-python = ">=3.10"
-license = "LicenseRef-Academic-Research-Use"
+license = "MIT"
 
 # ⚠️ 这里**只列本项目自己的依赖**，刻意不重复 requirements.txt 的内容。
 #
