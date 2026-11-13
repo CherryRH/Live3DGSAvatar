@@ -121,6 +121,34 @@ def label_stems(defects: Path) -> set[str]:
     return set(d.get("views", {}).get("chosen", []))
 
 
+def _drop_round_raw(defects: Path, labels: Path) -> None:
+    """cum 已持有合并后的视图/参考/标签，删掉本轮原始副本。"""
+    for sub in ("views", "refs"):
+        path = defects / sub
+        if path.is_dir():
+            shutil.rmtree(path)
+    mass = defects / "mass.npz"
+    if mass.is_file():
+        mass.unlink()
+    if labels.is_dir():
+        shutil.rmtree(labels)
+
+
+def _drop_finetune_models(finetune: Path) -> None:
+    """模型已装进 models/，输出目录只保留报告。"""
+    for name in ("model.ply", "model_best.ply"):
+        path = finetune / name
+        if path.is_file():
+            path.unlink()
+
+
+def _drop_rejected_model(models_dir: Path, subject: str, name: str) -> None:
+    """本轮未通过容差而被拒绝时，别在 models/ 留下更差的版本。"""
+    target = models_dir / subject / name
+    if target.is_dir():
+        shutil.rmtree(target)
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--subject", required=True)
@@ -131,6 +159,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--in-place", action="store_true",
                     help="每轮只把改进后的模型写回 --base-work（如 best），"
                          "不产生 <prefix>_rN；基座 checkpoint 仍在 output/train/")
+    ap.add_argument("--force", action="store_true",
+                    help="覆盖已存在的运行目录/模型版本（默认拒绝）")
     # 未给出的数值由 configs/train.yaml 的 post_train 兜底；
     # post_train.sh 会显式传全部用户参数。
     ap.add_argument("--top-n", type=int, default=None)
@@ -302,11 +332,9 @@ def main(argv: list[str] | None = None) -> int:
         # 继续让扩散模型重绘（那只会引入噪声）。
         import numpy as np
 
-        from live3dgsavatar.config import load_config
         from live3dgsavatar.data.datasets import resolve_dataset_dir
         from live3dgsavatar.data.pose import head_pitch, head_yaw
 
-        cfg = load_config()
         data_dir = resolve_dataset_dir(cfg, dataset)
         with np.load(data_dir / "render_inputs.npz", allow_pickle=True) as d:
             w = np.asarray(d["blend_weight"], np.float32)
@@ -337,13 +365,31 @@ def main(argv: list[str] | None = None) -> int:
     if not rings:
         raise SystemExit("[error] --rings 为空")
     out_root = (args.out_root if args.out_root is not None
-                else REPO_ROOT / "output" / "post")
+                else Path(str(cfg.get("paths.output_dir", "output"))) / "post")
     run_dir = out_root / args.subject / args.prefix
-    # 全新运行先清掉同名目录，避免上一次多出来的 r3/r4 残留；
-    # 续跑（--round-offset / --seed-defects）则只重建 cum。
-    if (run_dir.exists() and not args.dry_run
-            and args.round_offset == 0 and args.seed_defects is None):
+    resume = args.round_offset > 0 or args.seed_defects is not None
+    if args.in_place and not args.force:
+        raise SystemExit("[error] --in-place 会覆盖 models/<subject>/<base-work>；"
+                         "确认请加 --force")
+    if run_dir.exists() and not args.dry_run and not resume:
+        if not args.force:
+            raise SystemExit(
+                f"[error] 运行目录已存在：{run_dir}\n"
+                "         覆盖会删除旧的轮次与报告；确认请加 --force，"
+                "或换个 --prefix")
         shutil.rmtree(run_dir)
+    models_dir = Path(str(cfg.get("paths.models_dir", "models")))
+    if not args.dry_run and not args.in_place and not resume:
+        pattern = (f"{args.prefix}_none" if args.repair_mode == "none"
+                   else f"{args.prefix}_r*")
+        stale_models = sorted((models_dir / args.subject).glob(pattern))
+        if stale_models:
+            if not args.force:
+                raise SystemExit(
+                    f"[error] 已有同名模型版本：{stale_models[0].parent}/"
+                    f"{args.prefix}_r*；确认覆盖请加 --force，或换个 --prefix")
+            for path in stale_models:
+                shutil.rmtree(path)
     run_dir.mkdir(parents=True, exist_ok=True)
     cum = run_dir / "cum"
     if cum.exists() and not args.dry_run:
@@ -351,7 +397,7 @@ def main(argv: list[str] | None = None) -> int:
     cum.mkdir(parents=True, exist_ok=True)
 
     in_place = bool(args.in_place)
-    models_root = REPO_ROOT / "models"
+    models_root = models_dir
 
     if args.repair_mode == "none":
         # 消融：只用真实帧微调，不做任何选角/伪标签/SyncFix。
@@ -405,6 +451,8 @@ def main(argv: list[str] | None = None) -> int:
         }
         (run_dir / "report.json").write_text(
             json.dumps(out, ensure_ascii=False, indent=1), encoding="utf-8")
+        if rc == 0:
+            _drop_finetune_models(defects_dir / "finetune")
         print(f"完成 {args.prefix}（none）：{total_steps} 步，"
               f"{out['total_seconds']}s", flush=True)
         return 0 if out["accepted"] else 1
@@ -519,6 +567,7 @@ def main(argv: list[str] | None = None) -> int:
         refined_src = (gendir / "accepted"
                        if args.repair_mode == "mask_diffusion" else gendir)
         _merge_selected(cum, rdir, keep=keep, refined_src=refined_src)
+        _drop_round_raw(rdir, gendir)
         labels = len(list((cum / "refined").glob("*.png")))
         if labels == 0:
             print("[stop] 没有可用伪标签", flush=True)
@@ -589,6 +638,7 @@ def main(argv: list[str] | None = None) -> int:
             print("[stop] refine 失败", flush=True)
             break
         if best is None or q is None:
+            _drop_finetune_models(cum / "finetune")
             print("[stop] 没有通过的检查点", flush=True)
             break
         if not in_place:
@@ -605,6 +655,10 @@ def main(argv: list[str] | None = None) -> int:
         if (best["psnr"] < args.gross_psnr
                 or best["ssim"] < args.gross_ssim
                 or best["lpips"] > args.gross_lpips) and degraded:
+            if not in_place and rounds[-1].get("promoted"):
+                _drop_rejected_model(models_dir, args.subject, promote)
+                rounds[-1]["promoted"] = False
+            _drop_finetune_models(cum / "finetune")
             print(f"[stop] 严重崩坏（低于基座 {before}）：{best}", flush=True)
             break
 
@@ -615,6 +669,10 @@ def main(argv: list[str] | None = None) -> int:
         rounds[-1]["improved"] = bool(improved)
         rounds[-1]["accepted"] = bool(accepted)
         if not accepted:
+            if not in_place and rounds[-1].get("promoted"):
+                _drop_rejected_model(models_dir, args.subject, promote)
+                rounds[-1]["promoted"] = False
+            _drop_finetune_models(cum / "finetune")
             print(f"[stop] 质量分 {q:.4f} 低于最佳 {best_quality:.4f} "
                   f"超过 {args.quality_tol:g}，早停（保留上一版）", flush=True)
             break
@@ -633,9 +691,12 @@ def main(argv: list[str] | None = None) -> int:
             base = promote
             best_model_name = promote
         last_round = rounds[-1]
+        if rounds[-1].get("promoted"):
+            _drop_finetune_models(cum / "finetune")
         print(f"  下一轮 base={base}", flush=True)
 
     total = time.perf_counter() - start
+    _drop_finetune_models(cum / "finetune")
     # 选最后一个被接受的轮次
     best_round = last_round
     out = {

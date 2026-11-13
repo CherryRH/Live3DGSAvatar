@@ -281,3 +281,13 @@ def test_relative_paths_are_repo_root_even_from_other_cwd(tmp_path) -> None:
         os.chdir(cwd)
     assert cfg.paths.output_dir == expected
     assert cfg2.paths.output_dir == expected
+
+
+def test_output_dir_for_omits_same_dataset_level() -> None:
+    from live3dgsavatar.config import output_dir_for
+
+    cfg = Config({"paths": {"output_dir": "/tmp/out"}})
+    same = output_dir_for(cfg, "render_test", "biden", "base", "biden")
+    other = output_dir_for(cfg, "render_test", "biden", "base", "crh_1")
+    assert same == Path("/tmp/out/render_test/biden/base")
+    assert other == Path("/tmp/out/render_test/biden/base/crh_1")

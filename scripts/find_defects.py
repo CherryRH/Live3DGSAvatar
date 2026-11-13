@@ -19,7 +19,7 @@
 python scripts/find_defects.py --subject <对象> --work-name <版本> --dataset <对象>
 ```
 
-产物在 `output/defects/<对象>/<版本>/<数据集>/`。
+产物在 `output/defects/<对象>/<版本>/`；评测其它数据集时追加 `/<数据集>`。
 
 `yaw/pitch` 是**相对头部的绝对角度**：渲染时会用 `R_target @ R_head.T`
 精确抵消基帧头姿，所以 `yaw+20` 在原本已经 +39° 的帧上仍然渲染成 +20°，
@@ -85,7 +85,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     import numpy as np
 
-    from live3dgsavatar.config import load_config, resolve_model_ply
+    from live3dgsavatar.config import (load_config, output_dir_for,
+                                       resolve_model_ply)
     from live3dgsavatar.data.pose import head_pitch, head_yaw, rot6d_to_matrix
 
     cfg = load_config()
@@ -105,8 +106,7 @@ def main(argv: list[str] | None = None) -> int:
     except (FileNotFoundError, ValueError) as e:
         raise SystemExit(f"[error] {e}") from None
 
-    out_dir = args.out or (Path(str(cfg.get("paths.output_dir", "output")))
-                           / "defects" / subject / work / dataset)
+    out_dir = args.out or output_dir_for(cfg, "defects", subject, work, dataset)
 
     # ---- 候选（纯 CPU，先算出来打印）----
     from live3dgsavatar.evaluation import (axis_extremes, candidate_views,
@@ -428,7 +428,10 @@ def main(argv: list[str] | None = None) -> int:
 
     # ---- 落盘 ----
     out_dir.mkdir(parents=True, exist_ok=True)
-    (out_dir / "mass.npz").parent.mkdir(parents=True, exist_ok=True)
+    for stale in ("selected.json", "mass.npz"):
+        path = out_dir / stale
+        if path.is_file():
+            path.unlink()
     np.savez_compressed(out_dir / "mass.npz",
                         mass=mass.astype(np.float32),
                         coverage=cov_gauss.astype(np.int32),

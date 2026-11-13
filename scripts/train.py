@@ -128,8 +128,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="从已有 PLY warm start（默认从 UV 绑定新建）")
     p.add_argument("--lr-scale", type=float, default=1.0,
                    help="所有参数组学习率乘该系数（warm start 微调用，默认 1）")
-    p.add_argument("--no-overwrite", action="store_true",
-                   help="目标模型已存在则直接退出（保护旧模型做基线）")
+    p.add_argument("--force", action="store_true",
+                   help="覆盖已存在的产物目录/模型版本（默认拒绝）")
     p.add_argument("--nv-every", type=int, default=None,
                    help="每 N 步做一次新视角几何监督；0 关闭（默认取配置）")
     p.add_argument("--nv-hole-weight", type=float, default=None,
@@ -182,6 +182,10 @@ def main(argv: list[str] | None = None) -> int:
     data_dir = resolve_data_dir(cfg)
     out_dir = Path(args.output_dir) if args.output_dir else (
         Path(str(cfg.get("paths.output_dir", "output"))) / "train" / subject / work)
+    if not args.dry_run and out_dir.exists() and not args.force:
+        raise SystemExit(
+            f"[error] 产物目录已存在：{out_dir}\n"
+            "         覆盖会删除旧 checkpoint；确认请加 --force，或换个 --work-name")
 
     iterations = int(args.iterations if args.iterations is not None
                      else cfg.get("train.pipeline.iterations", 50_000))
@@ -269,10 +273,10 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit(f"[error] --init-ply 不存在：{init_path}")
     target_name = args.promote_name or work
     target_dir = models_dir / subject / target_name
-    if args.no_overwrite and target_dir.exists():
+    if not args.dry_run and target_dir.exists() and not args.force:
         raise SystemExit(
-            f"[error] 目标已存在：{target_dir}\n"
-            "         --no-overwrite：换个 --promote-name，或去掉该开关")
+            f"[error] 模型版本已存在：{target_dir}\n"
+            "         覆盖会替换旧模型；确认请加 --force，或换个 --promote-name")
     model_cfg = resolve_structure_config(
         models_dir, subject, work, explicit=args.model_config,
         repo_default=REPO_ROOT / "configs" / "model.yaml")
@@ -280,6 +284,13 @@ def main(argv: list[str] | None = None) -> int:
         sibling = init_path.parent / "config.yaml"
         if sibling.is_file():
             model_cfg = sibling
+    if not args.dry_run and out_dir.exists() and args.force:
+        if out_dir.resolve() in Path(model_cfg).resolve().parents:
+            raise SystemExit(
+                f"[error] --force 会删除结构配置所在目录：{model_cfg}\n"
+                "         请先把 config 移出产物目录")
+        shutil.rmtree(out_dir)
+
     from live3dgsavatar.core.avatar import AvatarConfig
 
     avatar_cfg = AvatarConfig.from_yaml(model_cfg)
@@ -457,7 +468,7 @@ def main(argv: list[str] | None = None) -> int:
                                     & surface_nv)
             out_nv = render_frame(
                 avatar, rasterizer, mesh_nv, weight_nv, cam_nv,
-                torch.zeros(1, 3, 1, 1, device=device))
+                torch.zeros(1, 3, 1, 1, device=device), build_graph=True)
             if nv_hole > 0 and supported_nv is not None:
                 out.nv_hole_loss = alpha_hole_loss(
                     out_nv.alpha, supported_nv.unsqueeze(0).unsqueeze(0))
@@ -707,8 +718,6 @@ def main(argv: list[str] | None = None) -> int:
         "stopped_early": report.stopped_early,
     }, indent=2, ensure_ascii=False), encoding="utf-8")
 
-    # 训练结束一律落盘：结果不装进 models/ 就没有可用的模型，
-    # 所以不提供"不保存"的开关。目标已存在时直接覆盖（同名即视为重训）。
     best_ply = out_dir / "model_best.ply"
     src = best_ply if best_ply.is_file() else final_ply
     print(f"  装入来源：{src.name}")
@@ -716,11 +725,15 @@ def main(argv: list[str] | None = None) -> int:
     target = models_dir / subject / name
     try:
         promote_model(source_ply=src, structure_config=model_cfg,
-                      report=report_path, target=target, force=True)
+                      report=report_path, target=target, force=args.force)
     except (FileExistsError, FileNotFoundError) as e:
         print(f"[error] {e}", file=sys.stderr)
         return 1
     print(f"已装入：{target}")
+    # 最终模型只保留在 models/；output/train 只留 checkpoint 与报告。
+    for duplicate in (final_ply, best_ply):
+        if duplicate.is_file():
+            duplicate.unlink()
     print(f"  评测：bash eval.sh --subject {subject} --work-name {name}")
     return 0
 

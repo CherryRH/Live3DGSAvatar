@@ -22,7 +22,7 @@ SD + Normal ControlNet 在低强度下重绘缺陷视角，再用几何与一致
 ```bash
 # 只生成伪标签（需要 diffusers；首次会下载 SD1.5 与 ControlNet 权重）
 python scripts/pseudo_label.py --subject <对象> --work-name <版本> \
-    --defects output/defects/<对象>/<版本>/<数据集> \
+    --defects output/defects/<对象>/<版本> \
     --install-refined
 
 # 只渲染法线与掩码（不需要 diffusers，可先检查几何是否对齐）
@@ -620,7 +620,8 @@ def main(argv: list[str] | None = None) -> int:
     import torch
     from PIL import Image
 
-    from live3dgsavatar.config import load_config, resolve_model_ply
+    from live3dgsavatar.config import (load_config, output_dir_for,
+                                       resolve_model_ply)
     from live3dgsavatar.core.camera import (orbit_w2c_matrix, roll_w2c,
                                            rotation_x, rotation_y)
     from live3dgsavatar.core.io import load_ply
@@ -643,9 +644,8 @@ def main(argv: list[str] | None = None) -> int:
     dataset = args.dataset or subject
     data_dir = resolve_dataset_dir(cfg, dataset)
     ply = resolve_model_ply(cfg)
-    defects_dir = Path(args.defects or (
-        Path(str(cfg.get("paths.output_dir", "output"))) / "defects"
-        / subject / work / dataset))
+    defects_dir = Path(args.defects or output_dir_for(
+        cfg, "defects", subject, work, dataset))
     selected = defects_dir / "selected.json"
     if not selected.is_file():
         raise SystemExit(f"[error] 找不到 {selected}（先跑 find_defects.py）")

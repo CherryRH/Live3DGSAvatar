@@ -5,6 +5,7 @@
 #   bash train.sh --subject biden --work-name base
 #   bash train.sh --subject biden --work-name base -- --dry-run
 #   bash train.sh --subject biden --work-name base -- --iterations 8000
+#   bash train.sh --subject biden --work-name base -- --force
 #
 # 产物：models/<对象>/<版本>/；中间产物 output/train/<对象>/<版本>/。
 # 后训练：bash post_train.sh --subject <对象> --work-name <版本> [--in-place]

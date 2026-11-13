@@ -193,7 +193,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     import numpy as np
 
-    from live3dgsavatar.config import load_config, resolve_model_ply
+    from live3dgsavatar.config import (load_config, output_dir_for,
+                                       resolve_model_ply)
     from live3dgsavatar.data.datasets import resolve_dataset_dir
     from live3dgsavatar.evaluation.views import LABEL_RE, parse_view_label
 
@@ -211,9 +212,8 @@ def main(argv: list[str] | None = None) -> int:
     except (FileNotFoundError, ValueError) as e:
         raise SystemExit(f"[error] {e}") from None
 
-    defects_dir = Path(args.defects or (
-        Path(str(cfg.get("paths.output_dir", "output"))) / "defects"
-        / subject / work / dataset))
+    defects_dir = Path(args.defects or output_dir_for(
+        cfg, "defects", subject, work, dataset))
     defects_dir.mkdir(parents=True, exist_ok=True)
     if args.real_only:
         args.refined_per_batch = 0
@@ -511,7 +511,8 @@ def main(argv: list[str] | None = None) -> int:
                         uv_faces=scene.uv_faces.to(device))
             outs.append(core_render(avatar, rasterizer, mesh,
                                     None if weight is None
-                                    else weight[i:i + 1].to(device), cam, bg))
+                                    else weight[i:i + 1].to(device), cam, bg,
+                                    build_graph=True))
         return SimpleNamespace(
             color=torch.cat([o.color for o in outs]),
             alpha=torch.cat([o.alpha for o in outs]))

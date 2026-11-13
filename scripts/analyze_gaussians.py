@@ -114,7 +114,8 @@ def main(argv: list[str] | None = None) -> int:
     import torch
     from PIL import Image, ImageDraw, ImageFont
 
-    from live3dgsavatar.config import load_config, resolve_model_ply
+    from live3dgsavatar.config import (load_config, output_dir_for,
+                                       resolve_model_ply)
     from live3dgsavatar.core.camera import orbit_w2c
     from live3dgsavatar.core.io import load_ply
     from live3dgsavatar.core.io.ply import read_embedded_config
@@ -141,8 +142,8 @@ def main(argv: list[str] | None = None) -> int:
     dataset = args.dataset or subject
     data_dir = resolve_dataset_dir(cfg, dataset)
     ply = resolve_model_ply(cfg)
-    out_dir = Path(args.out or (Path(str(cfg.get("paths.output_dir", "output")))
-                                / "analyze" / subject / work / dataset))
+    out_dir = Path(args.out or output_dir_for(
+        cfg, "analyze", subject, work, dataset))
     out_dir.mkdir(parents=True, exist_ok=True)
 
     if not torch.cuda.is_available():
@@ -184,8 +185,7 @@ def main(argv: list[str] | None = None) -> int:
         avatar.binding_face_id.detach().cpu().numpy(), n_faces)
     dead = dead_mask(opacity)
     coverage = None
-    mass_path = (Path(str(cfg.get("paths.output_dir", "output"))) / "defects"
-                 / subject / work / dataset / "mass.npz")
+    mass_path = output_dir_for(cfg, "defects", subject, work, dataset) / "mass.npz"
     if mass_path.is_file():
         with np.load(mass_path, allow_pickle=True) as d:
             if "coverage" in d.files:

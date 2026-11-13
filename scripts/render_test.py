@@ -40,7 +40,8 @@ if str(REPO_ROOT / "src") not in sys.path:
 import numpy as np  # noqa: E402
 
 from live3dgsavatar.config import (Config, load_config,  # noqa: E402
-                                   resolve_model_config, resolve_model_ply)
+                                   output_dir_for, resolve_model_config,
+                                   resolve_model_ply)
 
 
 # ------------------------------------------------------------------ CLI --
@@ -74,7 +75,7 @@ def clean_previous_outputs(out_root: Path, share_dir: Path | None) -> int:
         for path in Path(sub).glob("*.png"):
             path.unlink()
             removed += 1
-    for pattern in ("compare.mp4", "compare.webp",
+    for pattern in ("report.json", "compare.mp4", "compare.webp",
                     "showcase.mp4", "showcase.webp"):
         path = Path(out_root) / pattern
         if path.is_file():
@@ -118,7 +119,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--batch-size", type=int, default=1,
                    help="批大小（默认 1；FPS 按单帧口径统计）")
     p.add_argument("--output-dir", type=Path, default=None,
-                   help="产物根目录（默认 output/render_test/<对象>/<版本>/<数据集>）")
+                   help="产物根目录（默认 output/render_test/<对象>/<版本>/；数据集不同时追加 /<数据集>）")
     p.add_argument("--save-images", action="store_true",
                    help="额外落盘渲染 PNG（默认只出对比视频）")
     p.add_argument("--showcase", dest="showcase", action="store_true",
@@ -215,10 +216,9 @@ def _finalize(args: argparse.Namespace, cfg: Config) -> argparse.Namespace:
         raise SystemExit(f"[error] {e}") from None
     args.gt_dir = args.data / str(cfg.get("paths.image_subdir", "images"))
 
-    # 三层目录：<对象>/<版本>/<数据集>；内部统一 report.json + 对比视频
-    out_root = Path(args.output_dir) if args.output_dir else (
-        Path(str(cfg.get("paths.output_dir", "output"))) / "render_test"
-        / args.subject / args.work_name / args.dataset)
+    out_root = (Path(args.output_dir) if args.output_dir
+                else output_dir_for(cfg, "render_test", args.subject,
+                                    args.work_name, args.dataset))
     args.output_dir = out_root
 
     args.frames = int(cfg.get("render.frames", 20) if args.frames is None else args.frames)
@@ -403,6 +403,7 @@ def render_showcase(args, scene, avatar, rasterizer, bg,
     from PIL import Image, ImageDraw
 
     from live3dgsavatar.core.camera import orbit_w2c
+    from live3dgsavatar.core.render import render_gaussians
     from live3dgsavatar.core.types import Camera, Mesh
 
     mesh = Mesh(verts=scene.frames_tensor([frame_idx], device="cuda"),

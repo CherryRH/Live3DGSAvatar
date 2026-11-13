@@ -46,6 +46,9 @@ def main(argv=None) -> int:
     if not views.is_dir():
         raise SystemExit(f"[error] 没有待修复的 views：{views}")
     args.out.mkdir(parents=True, exist_ok=True)
+    # 输出目录按视角标签命名；先清掉上次残留，避免少视角时混入旧图。
+    for stale in args.out.glob("*.png"):
+        stale.unlink()
 
     py = Path(args.python).expanduser()
     if py.is_file():

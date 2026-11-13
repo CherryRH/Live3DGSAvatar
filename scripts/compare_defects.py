@@ -116,7 +116,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     import numpy as np
 
-    from live3dgsavatar.config import load_config
+    from live3dgsavatar.config import load_config, output_dir_for
     from live3dgsavatar.evaluation.views import LABEL_RE, parse_view_label
 
     cfg = load_config()
@@ -145,9 +145,8 @@ def main(argv: list[str] | None = None) -> int:
 
     # 默认用**对照版本**的缺陷目录：精修图正是在那里产出的；
     # 在微调后的模型上重跑 find_defects 会得到另一份 selected.json，那是另一件事。
-    defects_dir = Path(args.defects or (
-        Path(str(cfg.get("paths.output_dir", "output"))) / "defects"
-        / subject / args.base_work / dataset))
+    defects_dir = Path(args.defects or output_dir_for(
+        cfg, "defects", subject, args.base_work, dataset))
     selected = defects_dir / "selected.json"
     refined_dir = defects_dir / "refined"
     if not selected.is_file():
@@ -305,8 +304,12 @@ def main(argv: list[str] | None = None) -> int:
               f"{('—' if qn is None else f'{qn:.3f}')}")
 
     summary = summarize_rows(rows)
-    out_dir = Path(args.out or defects_dir)
+    out_dir = Path(args.out or output_dir_for(
+        cfg, "compare_defects", subject, new_work, dataset))
     out_dir.mkdir(parents=True, exist_ok=True)
+    stale = out_dir / "compare_defects.json"
+    if stale.is_file():
+        stale.unlink()
     (out_dir / "compare_defects.json").write_text(
         json.dumps({"rows": rows, "summary": summary}, indent=2,
                    ensure_ascii=False), encoding="utf-8")

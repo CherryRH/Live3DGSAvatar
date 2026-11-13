@@ -7,6 +7,7 @@
 #   bash post_train.sh --subject biden --work-name base --repair-mode syncfix
 #   bash post_train.sh --subject biden --work-name base --repair-mode none
 #   bash post_train.sh --subject biden --work-name base --plan
+#   bash post_train.sh --subject biden --work-name base --force   # 覆盖同名运行目录
 #
 # 修复方式：
 #   syncfix（默认）         选角 -> SyncFix 全图多视图 -> 微调
@@ -27,7 +28,7 @@ die() { echo "[error] $*" >&2; exit 1; }
 info() { echo "[post] $*"; }
 
 usage() {
-  sed -n '2,17p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '2,18p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
   exit 0
 }
 
@@ -38,6 +39,7 @@ PREFIX_SET=0
 IN_PLACE=0
 REPAIR_MODE=""
 PLAN=0
+FORCE=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -47,6 +49,7 @@ while [[ $# -gt 0 ]]; do
     --in-place)     IN_PLACE=1; shift ;;
     --repair-mode)  REPAIR_MODE="${2:-}"; shift 2 ;;
     --plan|--show-plan) PLAN=1; shift ;;
+    --force)        FORCE=1; shift ;;
     -h|--help)      usage ;;
     *)              die "未知参数：$1" ;;
   esac
@@ -108,6 +111,7 @@ work=$WORK
 post_prefix=$PREFIX
 post_dir=output/post/$SUBJECT/$PREFIX
 post_in_place=$IN_PLACE
+post_force=$FORCE
 post_repair_mode=$POST_REPAIR_MODE
 post_rings=$POST_RINGS
 post_steps=$POST_STEPS
@@ -155,6 +159,7 @@ post_args=(
   --repair-mode "$POST_REPAIR_MODE"
 )
 if (( IN_PLACE == 1 )); then post_args+=(--in-place); fi
+if (( FORCE == 1 )); then post_args+=(--force); fi
 
 # ---- 标签生成：各模式独有 ----
 if [[ "$POST_REPAIR_MODE" == "mask_diffusion" ]]; then

@@ -56,10 +56,9 @@ def test_comparison_ignores_empty_panels(tmp_path) -> None:
 
 
 def test_output_dir_is_per_experiment() -> None:
-    """产物按 `<对象>/<版本>/<数据集>` 分层，不同实验互不覆盖。"""
+    """产物按对象/版本分层，不同实验互不覆盖。"""
     src = SCRIPT.read_text(encoding="utf-8")
-    assert '"render_test"' in src
-    assert '/ args.subject / args.work_name / args.dataset' in src
+    assert 'output_dir_for(cfg, "render_test"' in src
 
 
 def test_single_model_only() -> None:
@@ -119,10 +118,10 @@ def test_no_arbitrary_directory_option() -> None:
     assert 'add_argument("--data"' not in src
 
 
-def test_output_dir_has_three_levels() -> None:
-    """产物目录 = <对象>/<版本>/<数据集>，内部是 report + 对比视频。"""
+def test_output_dir_has_dataset_axis() -> None:
+    """产物目录按对象/版本分层；不同数据集追加一层。"""
     src = SCRIPT.read_text(encoding="utf-8")
-    assert '/ args.subject / args.work_name / args.dataset' in src
+    assert 'output_dir_for(cfg, "render_test"' in src
     assert 'out_root / "report.json"' in src
     assert 'out_root / "compare"' in src, "对比视频写在产物根目录"
     assert 'out_root / "images"' in src, "可选：--save-images 时才落图"
@@ -175,11 +174,11 @@ def test_clean_previous_outputs_removes_stale_images(tmp_path) -> None:
 
     removed = m.clean_previous_outputs(out, images)
 
-    assert removed == 5, "3 张图 + 对比视频 + 展示视频"
+    assert removed == 6, "3 张图 + 对比/展示视频 + 旧报告"
     assert list(images.glob("*.png")) == []
     assert not (out / "compare.webp").exists()
     assert not (out / "showcase.webp").exists()
-    assert (out / "report.json").is_file(), "指标文件不该被清理"
+    assert not (out / "report.json").exists(), "旧报告必须清掉，避免失败时被当成新结果"
 
 
 # ------------------------------------------------------------- 对比视频 --

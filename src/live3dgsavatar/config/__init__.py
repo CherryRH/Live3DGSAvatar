@@ -30,7 +30,7 @@ from typing import Any, Iterable
 __all__ = [
     "Config", "load_config", "repo_root", "CONFIG_DIR",
     "model_dir", "resolve_model_ply",
-    "resolve_model_config",
+    "resolve_model_config", "output_dir_for",
 ]
 
 # 仓库根：src/live3dgsavatar/config/__init__.py → 上溯 4 层
@@ -415,6 +415,19 @@ def resolve_model_config(cfg: "Config" | None = None) -> Path | None:
     if not path.is_absolute():
         path = model_dir(cfg) / path
     return path if path.exists() else None
+
+
+def output_dir_for(cfg: Config, kind: str, subject: str, work: str,
+                   dataset: str | None = None) -> Path:
+    """统一的产物目录：`<output_dir>/<kind>/<subject>/<work>[/<dataset>]`。
+
+    `dataset` 与 `subject` 相同时省略最后一层（默认评测/诊断不重复对象名）；
+    评测其它数据集时才追加，避免不同数据集互相覆盖。
+    """
+    root = Path(str(cfg.get("paths.output_dir", "output"))) / kind / subject / work
+    if dataset is not None and str(dataset) != str(subject):
+        root = root / str(dataset)
+    return root
 
 
 def resolve_data_dir(cfg: Config) -> Path:

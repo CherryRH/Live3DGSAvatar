@@ -80,6 +80,26 @@ bash eval.sh --subject <对象> --work-name <版本> --frames 200
 bash eval.sh --subject <对象> --work-name <版本> --base-work <基线版本>
 ```
 
+## 产物
+
+```text
+output/
+  train/<对象>/<版本>/          训练 checkpoint、报告、结构快照
+  post/<对象>/<前缀>/           后训练报告；rN/ 每轮选角，cum/ 累计标签
+  render_test/<对象>/<版本>/      评测报告/对比视频/展示视频
+  defects/<对象>/<版本>/          独立缺陷选角
+  compare_defects/<对象>/<版本>/  修复前后对比报告
+  analyze/<对象>/<版本>/          解剖与消融
+  online_update/<实验名>/        在线更新状态与对比图
+  cache/                          可重建缓存（FLAME 拓扑等）
+models/<对象>/<版本>/            最终 model.ply + config.yaml + report.json
+```
+
+评测其它数据集时，上述 `render_test`/`defects`/`compare_defects`/`analyze`
+路径末尾追加 `/<数据集>`，避免不同数据集覆盖。最终模型只保留在 `models/`；
+`output/train/` 只留 checkpoint，`output/post/` 只留报告与标签，避免 60 MB 级
+PLY 多份并存。同名目录/版本默认拒绝覆盖，确认重跑需显式 `--force`。
+
 ## 配置
 
 - 路径/设备：`configs/system.yaml`
