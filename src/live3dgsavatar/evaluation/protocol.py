@@ -185,6 +185,7 @@ class EvaluationReport:
     quality: dict = field(default_factory=dict)
     no_reference: dict = field(default_factory=dict)
     perf: dict = field(default_factory=dict)
+    params: dict = field(default_factory=dict)
     extra: dict = field(default_factory=dict)
 
     @property
@@ -207,6 +208,8 @@ class EvaluationReport:
             out["no_reference"] = self.no_reference
         if self.perf:
             out["perf"] = self.perf
+        if self.params:
+            out["params"] = self.params
         if self.extra:
             out["extra"] = self.extra
         return out

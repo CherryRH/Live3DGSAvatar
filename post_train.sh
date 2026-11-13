@@ -86,10 +86,9 @@ POST_HEAD_CUT_MARGIN="${POST_HEAD_CUT_MARGIN:-$CFG_POST_HEAD_CUT_MARGIN}"
 POST_PROMPT="${POST_PROMPT:-$CFG_POST_PROMPT}"
 POST_NEGATIVE="${POST_NEGATIVE:-$CFG_POST_NEGATIVE}"
 POST_REPAIR_MODE="${POST_REPAIR_MODE:-${REPAIR_MODE:-${CFG_POST_REPAIR_MODE:-syncfix}}}"
-POST_SYNCFIX_READY="${POST_SYNCFIX_READY:-${CFG_POST_SYNCFIX_READY:-false}}"
-POST_SYNCFIX_REPO="${POST_SYNCFIX_REPO:-${CFG_POST_SYNCFIX_REPO:-/home/test/Projects/SyncFix}}"
+POST_SYNCFIX_REPO="${POST_SYNCFIX_REPO:-${CFG_POST_SYNCFIX_REPO:-}}"
 POST_SYNCFIX_PYTHON="${POST_SYNCFIX_PYTHON:-${CFG_POST_SYNCFIX_PYTHON:-syncfix}}"
-POST_SYNCFIX_MODEL="${POST_SYNCFIX_MODEL:-${CFG_POST_SYNCFIX_MODEL:-/home/test/Projects/SyncFix/models/paper}}"
+POST_SYNCFIX_MODEL="${POST_SYNCFIX_MODEL:-${CFG_POST_SYNCFIX_MODEL:-}}"
 POST_SYNCFIX_N_PER_PASS="${POST_SYNCFIX_N_PER_PASS:-${CFG_POST_SYNCFIX_N_PER_PASS:-4}}"
 POST_SYNCFIX_REF_SIZE="${POST_SYNCFIX_REF_SIZE:-${CFG_POST_SYNCFIX_REF_SIZE:-4}}"
 
@@ -117,7 +116,6 @@ post_rings=$POST_RINGS
 post_steps=$POST_STEPS
 post_quality_tol=$POST_QUALITY_TOL
 post_base_model=$POST_BASE_MODEL
-post_syncfix_ready=$POST_SYNCFIX_READY
 post_syncfix_repo=$POST_SYNCFIX_REPO
 post_syncfix_model=$POST_SYNCFIX_MODEL
 post_syncfix_n_per_pass=$POST_SYNCFIX_N_PER_PASS
@@ -138,10 +136,12 @@ preflight() {
     "${PY_RUN[@]}" -c "import diffusers" >/dev/null 2>&1 || \
       die "mask_diffusion 需要 diffusers：先跑 bash setup_env.sh"
   elif [[ "$POST_REPAIR_MODE" == "syncfix" ]]; then
-    [[ "${POST_SYNCFIX_READY,,}" == "true" ]] || \
-      die "SyncFix 环境未配置（syncfix_ready=false）；本次不会调用。配置好后再设 true"
+    [[ -n "$POST_SYNCFIX_REPO" && -d "$POST_SYNCFIX_REPO" ]] || \
+      die "找不到 SyncFix 仓库：${POST_SYNCFIX_REPO:-<空>}；在 configs/local.yaml 配置 syncfix_repo"
+    [[ -n "$POST_SYNCFIX_MODEL" && -d "$POST_SYNCFIX_MODEL" ]] || \
+      die "找不到 SyncFix 权重：${POST_SYNCFIX_MODEL:-<空>}；在 configs/local.yaml 配置 syncfix_model"
     [[ -f "$POST_SYNCFIX_MODEL/model.safetensors" ]] || \
-      die "找不到 SyncFix 权重：$POST_SYNCFIX_MODEL"
+      die "找不到 SyncFix 权重文件：$POST_SYNCFIX_MODEL/model.safetensors"
   fi
   "${PY_RUN[@]}" -c "import torch,sys; sys.exit(0 if torch.cuda.is_available() else 1)" \
     >/dev/null 2>&1 || die "CUDA 不可用：后训练需要 GPU"
@@ -181,7 +181,6 @@ elif [[ "$POST_REPAIR_MODE" == "syncfix" ]]; then
     --syncfix-n-per-pass "$POST_SYNCFIX_N_PER_PASS"
     --syncfix-ref-size "$POST_SYNCFIX_REF_SIZE"
   )
-  if [[ "${POST_SYNCFIX_READY,,}" == "true" ]]; then post_args+=(--syncfix-ready); fi
 fi
 # none 模式只传共用参数（top_n/rings/steps/real/lr/quality），不传标签生成参数
 

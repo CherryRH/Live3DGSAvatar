@@ -67,8 +67,8 @@ def to_frames(dump: dict, flame_dir: Path, device: str | torch.device = "cpu"):
     - **补牙齿**：RDF 只有 5023 顶点，模型是 5083（`tracking/mesh_build.py`）
     - **参数映射**：118 维 `x` → 129 维 `blend_weight`（`tracking/param_map.py`）
     """
-    from ..tracking.mesh_build import TeethBuilder
-    from ..tracking.param_map import to_blend_weight
+    from .mesh_build import TeethBuilder
+    from .param_map import to_blend_weight
 
     teeth = TeethBuilder(Path(flame_dir))
     frames: list[dict] = []

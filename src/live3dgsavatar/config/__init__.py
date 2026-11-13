@@ -70,7 +70,6 @@ _FALLBACK: dict[str, Any] = {
     "app.autostart": True,
     "app.preload_frames": -1,
     "app.stats_log_interval_s": 10.0,
-    "runtime.split": "all",
     "smoke.max_frames": 0,
     "tracking.enabled": True,
     "tracking.host": "127.0.0.1",
@@ -84,11 +83,8 @@ _FALLBACK: dict[str, Any] = {
     "render.encode": "jpeg",
     "render.encode_quality": 85,
     "render.scale": 1.0,
-    "render.batch_size": 1,
-    "render.frames": 1,
-    "render.max_batch_size": 10,
-    "render.max_gaussian_size": 60353,
-    "render.num_streams": 3,
+    "render.batch_size": 4,
+    "render.frames": 20,
     "model.network.tex_size": 256,
     "model.network.num_basis_in": 129,
     "model.network.num_basis_blend": 20,
@@ -97,11 +93,11 @@ _FALLBACK: dict[str, Any] = {
     "dataset.use_shape_weight": True,
     "dataset.use_pose_weight": True,
     "dataset.pin_memory": False,
-    "test.dump_diff": False,
+    "test.dump_diff": True,
     "render.video_fps": 30.0,
     "render.test_seed": 0,
     # ---- 训练 / 在线更新（configs/train.yaml）----
-    "train.pipeline.enabled": False,
+    "train.pipeline.enabled": True,
     "train.pipeline.iterations": 50_000,
     "train.pipeline.batch_size": 10,
     "train.pipeline.blend_start": 3_000,
@@ -134,11 +130,6 @@ _PATH_FIELDS = (
     # 目录型字段：必须解析成绝对路径，否则脚本从别处运行会按 cwd 解析
     "paths.flame_dir",
 )
-
-# 仓库根下不存在的相对路径，按 cwd 解析更符合直觉的字段。
-# （例如 `--output-dir out` 通常指用户当前目录）
-_CWD_RELATIVE = ("paths.output_dir",)
-
 
 class Config(dict):
     """支持点路径访问的嵌套配置。
@@ -250,15 +241,14 @@ def _resolve_path(value: Any, field: str) -> Any:
 
     - `~` 展开
     - 绝对路径原样
-    - 相对路径：`output_dir` 按 **cwd**（用户直觉），其余按**仓库根**
+    - 相对路径：统一按**仓库根**解析（脚本从任意 cwd 运行结果一致）
     """
     if value is None:
         return None
     p = Path(str(value)).expanduser()
     if p.is_absolute():
         return p
-    base = Path.cwd() if field in _CWD_RELATIVE else REPO_ROOT
-    return (base / p).resolve()
+    return (REPO_ROOT / p).resolve()
 
 
 def load_config(

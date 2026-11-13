@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import gc
 import json
+import shlex
 import sys
 import time
 from pathlib import Path
@@ -265,7 +266,8 @@ def render_core(args, scene, frames: list[int], out_dir: Path,
 
     from live3dgsavatar.core.avatar import AvatarConfig
     from live3dgsavatar.core.io import load_ply
-    from live3dgsavatar.core.render import SimpleRasterizer
+    from live3dgsavatar.core.render import (SimpleRasterizer, render_frame,
+                                            render_gaussians)
     from live3dgsavatar.core.types import Camera, Mesh
 
     # 结构优先级：命令行显式 > PLY 内嵌的自描述 > 配置/默认值。
@@ -310,21 +312,14 @@ def render_core(args, scene, frames: list[int], out_dir: Path,
         camera = Camera(K=K, w2c=w2c.expand(len(idx), 4, 4).contiguous(),
                         width=scene.width, height=scene.height).to("cuda")
         weight = scene.weights_tensor(idx, device="cuda")
-        with torch.no_grad():
-            if args.profile:
-                torch.cuda.synchronize()
-                t0 = time.perf_counter()
-                gs = avatar.deform(mesh, weight)
-                torch.cuda.synchronize()
-                t1 = time.perf_counter()
-                out = rasterizer.render(gs, camera, bg)
-                torch.cuda.synchronize()
-                t2 = time.perf_counter()
-                stages["deform"].append((t1 - t0) * 1000.0 / len(idx))
-                stages["rasterize"].append((t2 - t1) * 1000.0 / len(idx))
-                return out
-            gs = avatar.deform(mesh, weight)
-            return rasterizer.render(gs, camera, bg)
+        timings: dict[str, float] = {}
+        out = render_frame(avatar, rasterizer, mesh, weight, camera, bg,
+                           timings=timings if args.profile else None,
+                           sync=bool(args.profile))
+        if args.profile:
+            stages["deform"].append(timings["deform"] / len(idx))
+            stages["rasterize"].append(timings["rasterize"] / len(idx))
+        return out
 
     run_batch(frames[:1])                       # 预热
     torch.cuda.synchronize()
@@ -426,8 +421,7 @@ def render_showcase(args, scene, avatar, rasterizer, bg,
         view = orbit_w2c(w2c_data, center, yaw, pitch)
         cam = Camera(K=K, w2c=view.unsqueeze(0),
                      width=scene.width, height=scene.height).to("cuda")
-        with torch.no_grad():
-            out = rasterizer.render(gs, cam, bg)
+        out = render_gaussians(gs, rasterizer, cam, bg)
         arr = (out.color.clamp(0, 1).permute(0, 2, 3, 1) * 255).byte()
         img = Image.fromarray(arr[0].cpu().numpy())
         draw = ImageDraw.Draw(img)
@@ -570,16 +564,55 @@ def main() -> int:
 
     images, perf, showcase = render_core(args, scene, indices, out_root, share_dir)
 
+    env = {"python": sys.version.split()[0], "torch": torch.__version__,
+           "cuda": torch.version.cuda}
+    if torch.cuda.is_available():
+        env["gpu"] = torch.cuda.get_device_name(0)
+    params = {
+        "command": shlex.join(sys.argv),
+        "model_path": str(args.ply),
+        "model_config": str(args.model_config) if args.model_config else None,
+        "model_structure": {
+            "tex_size": args.tex_size,
+            "num_basis_in": args.num_basis_in,
+            "num_basis_blend": args.num_basis_blend,
+            "mlp_hidden": args.mlp_hidden,
+            "use_weight_proj": args.use_weight_proj,
+        },
+        "dataset_dir": str(args.data),
+        "gt_dir": str(args.gt_dir),
+        "frames": {
+            "mode": args.frame_mode,
+            "count": n,
+            "indices": indices,
+            "range": ([indices[0], indices[-1]] if indices else []),
+            "test_ratio": args.test_ratio,
+            "seed": args.seed,
+            "offset": args.frame_offset,
+        },
+        "render": {
+            "background": args.background,
+            "batch_size": args.batch_size,
+            "video_fps": args.video_fps,
+            "lpips": not args.no_lpips,
+            "showcase": bool(args.showcase),
+            "showcase_frames": args.showcase_frames,
+            "showcase_fps": args.showcase_fps,
+        },
+        "config": cfg.resolved(),
+        "environment": env,
+    }
     result = EvaluationReport(
         subject=args.subject, work_name=args.work_name, dataset=args.dataset,
         num_frames=n, dataset_frames=total,
         width=scene.width, height=scene.height,
-        perf=perf, extra={"model_path": str(args.ply),
-                          "frame_mode": args.frame_mode,
-                          "frame_range": ([indices[0], indices[-1]]
-                                          if indices else []),
-                          "test_ratio": args.test_ratio,
-                          "showcase_frames": len(showcase) if showcase else 0})
+        perf=perf, params=params,
+        extra={"model_path": str(args.ply),
+               "frame_mode": args.frame_mode,
+               "frame_range": ([indices[0], indices[-1]]
+                               if indices else []),
+               "test_ratio": args.test_ratio,
+               "showcase_frames": len(showcase) if showcase else 0})
     report: dict = result.to_dict()
 
     print(f"  读取原图：{n} 张（解码 512² PNG，约 {n * 14 / 1000:.0f} s）…",

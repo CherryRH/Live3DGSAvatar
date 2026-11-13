@@ -178,7 +178,8 @@ def main(argv: list[str] | None = None) -> int:
                                            rotation_y)
     from live3dgsavatar.core.io import load_ply
     from live3dgsavatar.core.io.ply import read_embedded_config
-    from live3dgsavatar.core.render import SimpleRasterizer
+    from live3dgsavatar.core.render import (SimpleRasterizer, render_frame,
+                                            render_gaussians)
     from live3dgsavatar.core.render.faceid import face_id_map
     from live3dgsavatar.core.types import Camera, Mesh
     from live3dgsavatar.data.scene import load_scene
@@ -269,9 +270,10 @@ def main(argv: list[str] | None = None) -> int:
                      width=scene.width, height=scene.height).to(device)
         if j == 0:
             with torch.no_grad():
-                gs0 = avatar.deform(mesh_input(verts),
-                                    frame["blend_weight"].unsqueeze(0).to(device))
-                a0 = rasterizer.render(gs0, cam, bg).alpha[0, 0].detach().cpu().numpy()
+                a0 = render_frame(
+                    avatar, rasterizer, mesh_input(verts),
+                    frame["blend_weight"].unsqueeze(0).to(device), cam, bg
+                ).alpha[0, 0].detach().cpu().numpy()
             flip_y, scores = detect_flip(verts, faces, cam, glctx, a0)
             print(f"  光栅 y 翻转={flip_y}（IoU 不翻 {scores[False]:.3f} / "
                   f"翻 {scores[True]:.3f}）", flush=True)
@@ -312,7 +314,7 @@ def main(argv: list[str] | None = None) -> int:
             weight = base_frame["blend_weight"].unsqueeze(0).to(device)
             with torch.no_grad():
                 gs = avatar.deform(mesh_input(base_verts), weight)
-                out = rasterizer.render(gs, cam, bg)
+                out = render_gaussians(gs, rasterizer, cam, bg)
                 ids = face_id_map(base_verts, faces, cam, glctx,
                                   flip_y=flip_y)
                 # 飞点：变形后的高斯应贴在**该帧**的表面附近
@@ -467,9 +469,8 @@ def main(argv: list[str] | None = None) -> int:
                         spec_view["roll"], head_R)
         weight = scene.frames[int(cand.payload["base_frame"])][
             "blend_weight"].unsqueeze(0).to(device)
-        with torch.no_grad():
-            gs = avatar.deform(mesh_input(base_verts), weight)
-            out = rasterizer.render(gs, cam, bg)
+        out = render_frame(avatar, rasterizer, mesh_input(base_verts),
+                           weight, cam, bg)
         img = (out.color[0].clamp(0, 1).permute(1, 2, 0).cpu().numpy()
                * 255.0).astype(np.uint8)
         from PIL import Image

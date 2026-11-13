@@ -30,11 +30,13 @@ set -eo pipefail
 PY_VER="${PY_VER:-3.10}"
 ENV_NAME="${ENV_NAME:-live3dgs}"
 CUDA_CHANNEL="${CUDA_CHANNEL:-nvidia/label/cuda-13.0.0}"
+# 与 CUDA 13.0 配套的 PyTorch；可用环境变量覆盖做临时实验
+TORCH_VERSION="${TORCH_VERSION:-2.14.1}"
+TORCHVISION_VERSION="${TORCHVISION_VERSION:-0.29.1}"
 # CUDA 工具链来源：auto | system | conda（见文件头的说明）
 CUDA_MODE="${LIVE3DGS_CUDA:-auto}"
 # 期望的 CUDA 版本（主.次）；与 torch 的 cu130 对应
 EXPECTED_CUDA="${EXPECTED_CUDA:-13.0}"
-TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST:-8.9}"   # RTX 4090 = sm_89
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SUBMODULES="$REPO_ROOT/submodules"
@@ -158,11 +160,11 @@ else
 fi
 
 # ------------------------------------------------- 3. PyTorch ----
-log "3/7 安装 PyTorch（由 pip 解析与 CUDA 13 匹配的版本）"
+log "3/7 安装 PyTorch $TORCH_VERSION / torchvision $TORCHVISION_VERSION（CUDA 13）"
 if python -c "import torch" 2>/dev/null; then
     warn "torch 已安装，跳过"
 else
-    pip install torch torchvision
+    pip install "torch==$TORCH_VERSION" "torchvision==$TORCHVISION_VERSION"
 fi
 python - <<'PY'
 import torch, torchvision
@@ -229,8 +231,6 @@ if numpy.__version__.split('.')[0] >= '2':
 PY
 
 # ------------------------------------- 5. nvdiffrast / fused-ssim ----
-export TORCH_CUDA_ARCH_LIST
-export MAX_JOBS NVCC_THREADS
 
 log "5/7 安装 nvdiffrast（submodules/）"
 if python -c "import nvdiffrast" 2>/dev/null; then
@@ -247,7 +247,7 @@ else
 fi
 
 # ------------------------------------------------ 6. 光栅化扩展 ----
-log "6/7 编译光栅化扩展（TORCH_CUDA_ARCH_LIST=$TORCH_CUDA_ARCH_LIST）"
+log "6/7 编译光栅化扩展"
 
 # CUDA_HOME 已在第 2 步确定（系统 CUDA 或 conda 的）；这里只兜底
 export CUDA_HOME="${CUDA_HOME:-$CONDA_PREFIX}"

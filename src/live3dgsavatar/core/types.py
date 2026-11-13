@@ -349,18 +349,3 @@ class RenderOutput:
     est_color: Optional[torch.Tensor] = None   # [B, N, 3]
     est_weight: Optional[torch.Tensor] = None  # [B, N]
     radii: Optional[torch.Tensor] = None       # [B, N] int32
-
-
-@dataclass
-class Frame:
-    """一帧的全部输入。训练与推理共用。"""
-
-    mesh: Mesh
-    blend_weight: torch.Tensor                  # [B, D]
-    camera: Camera
-    image: Optional[torch.Tensor] = None        # [B, 3, H, W] GT，推理时为 None
-    mask: Optional[torch.Tensor] = None         # [B, 1, H, W]
-
-    @property
-    def batch_size(self) -> int:
-        return self.mesh.batch_size

@@ -32,7 +32,7 @@ from dataclasses import dataclass, field
 import torch
 
 from ..core.avatar import GaussianAvatar
-from ..core.render import SimpleRasterizer
+from ..core.render import SimpleRasterizer, render_gaussians
 from ..core.types import Camera, GaussianSet
 from .losses import PhotometricLoss
 from .observations import BatchObservation, FrameObservation
@@ -327,7 +327,8 @@ class OnlineUpdater:
             opacity = opacity + state.opacity_delta
         patched = GaussianSet(xyz=gs.xyz, rotation=gs.rotation, scaling=gs.scaling,
                               opacity=opacity, color=color, space=gs.space)
-        return self.rasterizer.render(patched, camera, background)
+        return render_gaussians(patched, self.rasterizer, camera, background,
+                                build_graph=torch.is_grad_enabled())
 
     def _evaluate(self, batch: BatchObservation, background, state: UpdateState) -> dict[str, float]:
         psnrs, losses = [], []

@@ -131,7 +131,7 @@ def main(argv: list[str] | None = None) -> int:
     argv = raw
 
     ap = argparse.ArgumentParser()
-    ap.add_argument("--subject", default="biden")
+    ap.add_argument("--subject", required=True)
     ap.add_argument("--dataset", default=None)
     ap.add_argument("--base-work", required=True,
                     help="当前模型名（models/<subject>/<name>）")
@@ -139,6 +139,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--in-place", action="store_true",
                     help="每轮只把改进后的模型写回 --base-work（如 best），"
                          "不产生 <prefix>_rN；基座 checkpoint 仍在 output/train/")
+    # 这些数值默认由 post_train.sh 从 configs/train.yaml 传入；
+    # 直接调用时保留低层默认，但对象/模型/前缀必须显式给。
     ap.add_argument("--top-n", type=int, default=2)
     ap.add_argument("--rings", required=True,
                     help="每轮 (yaw,pitch) 上限，如 '30,20;40,30;50,30'；"
@@ -161,12 +163,9 @@ def main(argv: list[str] | None = None) -> int:
                     default="syncfix",
                     help="syncfix=全图+SyncFix（默认）；"
                          "mask_diffusion=掩码+扩散；none=纯真实帧消融")
-    ap.add_argument("--syncfix-ready", action="store_true",
-                    help="确认 SyncFix 环境可用；否则 syncfix 拒绝启动")
-    ap.add_argument("--syncfix-repo", default="/home/test/Projects/SyncFix")
+    ap.add_argument("--syncfix-repo", default="")
     ap.add_argument("--syncfix-python", default="syncfix")
-    ap.add_argument("--syncfix-model",
-                    default="/home/test/Projects/SyncFix/models/paper")
+    ap.add_argument("--syncfix-model", default="")
     ap.add_argument("--syncfix-n-per-pass", type=int, default=4)
     ap.add_argument("--syncfix-ref-size", type=int, default=4)
     ap.add_argument("--base-model", default="emilianJR/epiCRealism")
@@ -234,6 +233,16 @@ def main(argv: list[str] | None = None) -> int:
                          "每次运行落在 <out-root>/<subject>/<prefix>/")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args(argv)
+
+    if args.repair_mode == "syncfix":
+        if not args.syncfix_repo or not Path(args.syncfix_repo).is_dir():
+            raise SystemExit(
+                f"[error] 找不到 SyncFix 仓库：{args.syncfix_repo or '<空>'}；"
+                "请用 --syncfix-repo 或 configs/local.yaml 配置")
+        if not args.syncfix_model or not Path(args.syncfix_model).is_dir():
+            raise SystemExit(
+                f"[error] 找不到 SyncFix 权重：{args.syncfix_model or '<空>'}；"
+                "请用 --syncfix-model 或 configs/local.yaml 配置")
 
     dataset = args.dataset or args.subject
     rings = parse_rings(args.rings)
@@ -440,8 +449,7 @@ def main(argv: list[str] | None = None) -> int:
                        "--model", args.syncfix_model,
                        "--n-per-pass", str(args.syncfix_n_per_pass),
                        "--ref-size", str(args.syncfix_ref_size),
-                       "--height", "512", "--width", "512",
-                       *(["--ready"] if args.syncfix_ready else [])]
+                       "--height", "512", "--width", "512"]
         rc, dt_gen = run(gen_cmd, dry=args.dry_run)
         if rc != 0:
             print(f"[stop] 标签生成失败（{args.repair_mode}）", flush=True)

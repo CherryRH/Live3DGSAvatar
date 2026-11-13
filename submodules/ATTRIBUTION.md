@@ -41,9 +41,9 @@ error: could not delete 'build/lib.linux-x86_64-cpython-310/nvdiffrast/__init__.
 
 Vendoring 到本仓库后：构建可复现、随仓库固定版本、不依赖工作区外的路径。
 
-详见 `docs/ARCHITECTURE.md` §4.2 与 `docs/ENVIRONMENT.md`。
+构建与环境见 `setup_env.sh` 与 `docs/ARCHITECTURE.md`。
 
 ## 修改约定
 
-对本目录任何文件的修改，必须先在 `docs/MIGRATION.md` 中登记（P1 建立该文件）。
+对本目录任何文件的修改，必须在本文件的清单/差异表中登记。
 未登记的修改视为违规。

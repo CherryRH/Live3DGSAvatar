@@ -268,7 +268,7 @@ def main(argv: list[str] | None = None) -> int:
     from live3dgsavatar.core.io import load_ply, save_ply
     from live3dgsavatar.core.io.ply import read_embedded_config
     from live3dgsavatar.core.metrics import psnr_masked
-    from live3dgsavatar.core.render import SimpleRasterizer
+    from live3dgsavatar.core.render import SimpleRasterizer, render_frame as core_render
     from live3dgsavatar.core.render.faceid import face_id_map
     from live3dgsavatar.core.types import Camera, Mesh
     from live3dgsavatar.data.models import models_root, promote_model
@@ -295,9 +295,7 @@ def main(argv: list[str] | None = None) -> int:
     def render_frame(frame, cam, weights):
         mesh = Mesh(verts=frame["mesh"].unsqueeze(0), faces=scene.faces,
                     uvs=scene.uvs, uv_faces=scene.uv_faces)
-        with torch.no_grad():
-            gs = avatar.deform(mesh, weights)
-            return rasterizer.render(gs, cam, bg)
+        return core_render(avatar, rasterizer, mesh, weights, cam, bg)
 
     # ---- 建构精修视角的观测 ----
     obs, skipped = [], []
@@ -511,9 +509,9 @@ def main(argv: list[str] | None = None) -> int:
             mesh = Mesh(verts=mesh_verts[i:i + 1].to(device),
                         faces=scene.faces.to(device), uvs=scene.uvs.to(device),
                         uv_faces=scene.uv_faces.to(device))
-            gs = avatar.deform(mesh, None if weight is None
-                               else weight[i:i + 1].to(device))
-            outs.append(rasterizer.render(gs, cam, bg))
+            outs.append(core_render(avatar, rasterizer, mesh,
+                                    None if weight is None
+                                    else weight[i:i + 1].to(device), cam, bg))
         return SimpleNamespace(
             color=torch.cat([o.color for o in outs]),
             alpha=torch.cat([o.alpha for o in outs]))

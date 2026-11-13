@@ -4,8 +4,8 @@
 这是后训练的第二种标签来源：
     find_defects 的 views/  -> SyncFix 多视图 -> <out>/*.png -> refine
 
-⚠️ SyncFix 是独立仓库/环境（默认 /home/test/Projects/SyncFix），当前只做
-接口与守卫，不在环境未就绪时调用。
+⚠️ SyncFix 是独立仓库/环境；仓库与权重路径必须显式给出（configs/local.yaml
+或命令行），运行时检测失败会直接报错，不再维护 syncfix_ready 开关。
 """
 from __future__ import annotations
 
@@ -20,26 +20,20 @@ def parse_args(argv=None):
     p.add_argument("--defects", type=Path, required=True,
                    help="find_defects 产物目录（含 views/、refs/）")
     p.add_argument("--out", type=Path, required=True)
-    p.add_argument("--repo", default="/home/test/Projects/SyncFix")
+    p.add_argument("--repo", required=True)
     p.add_argument("--python", default="syncfix",
                    help="SyncFix 的 conda 环境名或 python 可执行文件")
-    p.add_argument("--model", default="/home/test/Projects/SyncFix/models/paper")
+    p.add_argument("--model", required=True)
     p.add_argument("--n-per-pass", type=int, default=4)
     p.add_argument("--ref-size", type=int, default=4)
     p.add_argument("--height", type=int, default=512)
     p.add_argument("--width", type=int, default=512)
-    p.add_argument("--ready", action="store_true",
-                   help="确认 SyncFix 环境已配置；否则拒绝调用")
     p.add_argument("--dry-run", action="store_true")
     return p.parse_args(argv)
 
 
 def main(argv=None) -> int:
     args = parse_args(argv)
-    if not args.ready:
-        raise SystemExit(
-            "[error] SyncFix 环境未配置（syncfix_ready=false），本次不调用。\n"
-            "        配好环境后在 configs/train.yaml 里设 post_train.syncfix_ready: true")
     repo = Path(args.repo).expanduser()
     infer = repo / "inference.py"
     model = Path(args.model).expanduser()

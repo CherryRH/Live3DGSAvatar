@@ -265,3 +265,19 @@ def test_model_ply_accepts_absolute_path(tmp_path) -> None:
         resolve_model_ply(cfg)
     # 错误里必须给出**实际查找的完整路径**，否则用户无从下手
     assert str(tmp_path / "missing.ply") in str(exc.value)
+
+
+def test_relative_paths_are_repo_root_even_from_other_cwd(tmp_path) -> None:
+    """配置里的相对路径统一按仓库根解析，不随调用 cwd 变化。"""
+    import os
+
+    cfg = load_config()
+    expected = REPO_ROOT / "output"
+    cwd = os.getcwd()
+    try:
+        os.chdir(tmp_path)
+        cfg2 = load_config()
+    finally:
+        os.chdir(cwd)
+    assert cfg.paths.output_dir == expected
+    assert cfg2.paths.output_dir == expected

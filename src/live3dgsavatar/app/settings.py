@@ -4,8 +4,8 @@
 
 设置面板要同时做到三件事：
 
-1. **全量展示** —— 用户能看到项目所有可配项，包括不能改的（否则会困惑
-   "这个参数去哪了"）
+1. **集中展示** —— 常用项与锁定项都在同一张表里（锁定项给原因，避免
+   用户去猜"这个参数去哪了"）
 2. **只放开一部分** —— 结构性的参数（模型结构、路径、设备）改了会让
    运行中的服务失效，必须锁住并说明原因
 3. **按重要性/常用性排序** —— 而不是按 YAML 里的字母序
@@ -145,12 +145,6 @@ FIELDS: tuple[Field, ...] = (
        editable=True, minimum=1, maximum=64, help="仅脚本使用"),
     _f("render.frames", "采样帧数（脚本）", "render", "int", order=80,
        editable=True, minimum=1, maximum=10000, help="仅脚本使用"),
-    _f("render.max_batch_size", "训练预分配批上限", "render", "int", order=90,
-       reason="训练用，需重启"),
-    _f("render.max_gaussian_size", "训练预分配高斯上限", "render", "int", order=100,
-       reason="训练用，需重启"),
-    _f("render.num_streams", "训练并行流数", "render", "int", order=110,
-       reason="训练用，需重启"),
     _f("model.network.tex_size", "UV 纹理边长", "render", "int", order=120,
        reason="模型结构，需重载"),
     _f("model.network.num_basis_in", "驱动参数维度", "render", "int", order=130,
@@ -243,7 +237,7 @@ FIELDS: tuple[Field, ...] = (
        editable=True, minimum=0.0, maximum=1.0, step=0.1,
        help="1=背景同权；0=只看前景（易出现背景发散）", requires="reload"),
     _f("train.pipeline.max_frames", "训练采样上限", "train", "int", order=130,
-       reason="训练尚未接入"),
+       reason="需重载后生效"),
 
     # ---------------------------------------------------------- 系统 --
     # ⚠️ 这里**刻意没有** `subject` / `work_name`：
@@ -253,9 +247,6 @@ FIELDS: tuple[Field, ...] = (
     _f("runtime.device", "运行设备", "system", "enum", order=30,
        editable=True, choices=("cuda", "cpu"),
        help="cuda 或 cpu，改完需重启", requires="restart"),
-    _f("runtime.split", "数据集切分", "system", "enum", order=40,
-       editable=True, choices=("all", "train", "test"),
-       help="数据集切分方式", requires="reload"),
     _f("paths.data_root", "数据集根目录", "system", "path", order=50,
        editable=True, help="数据集都放在这个目录下；改完点「刷新列表」"),
     _f("paths.models_dir", "模型根目录", "system", "path", order=70,

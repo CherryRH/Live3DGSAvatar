@@ -4,9 +4,11 @@
 避免它们在后续迭代中被无声破坏。
 
 规则来源：
-- §2.3 依赖方向严格单向，`core/` 不得 import `data/` / `training/` / `app/` / `tracking/` / `runtime/`；
-- §2.2 `ext/`（现 `submodules/`）只被 `core/render/` 引用；
-- §3.1 `core/` 不做文件 I/O 与参数解析。
+- `docs/ARCHITECTURE.md` §2：依赖方向严格单向；
+- `core/` 不得 import `data/` / `training/` / `app/` / `tracking/` / `evaluation/`；
+- `data/` 不得反向 import `tracking/`；
+- `core/` 不做文件 I/O 与参数解析（`core/io/` 的序列化除外）；
+- CUDA 扩展只允许在显式白名单里出现。
 """
 
 from __future__ import annotations
@@ -18,7 +20,7 @@ from support import REPO_ROOT
 
 SRC = REPO_ROOT / "src" / "live3dgsavatar"
 CORE = SRC / "core"
-DATA = SRC / "data"
+SCRIPTS = REPO_ROOT / "scripts"
 
 # core/ 的允许依赖（子包 + 标准库 + 第三方）
 CORE_FORBIDDEN_PREFIXES = (
@@ -31,19 +33,15 @@ CORE_FORBIDDEN_PREFIXES = (
     "live3dgsavatar.evaluation",      # 评估需要数据集，属于上层
 )
 
-# 唯一允许接触 CUDA 扩展的位置
-CUDA_EXTENSION_PACKAGES = ("diff_gaussian_rasterization",)
-# CUDA 扩展的允许位置。
-#
-# ⚠️ 这条规则的**本意是约束 `core/`**：`core/` 只应在这两处接触 CUDA 扩展，
-#    这样替换/升级扩展时改动面可控。
-#    `data/reference.py` 是**参照实现的适配层**（给等价门与渲染测试用），
-#    它本来就要用参照的 `linear_blending`，且不在 `core/` 的运行路径上，
-#    因此明确列入白名单而不是放宽规则。
+# 唯一允许接触 CUDA 扩展的包
+CUDA_EXTENSION_PACKAGES = ("diff_gaussian_rasterization", "nvdiffrast")
+# CUDA 扩展的允许位置：全部在 core/，替换/升级扩展时改动面可控。
 CUDA_ALLOWED_FILES = {
-    CORE / "render" / "rasterizer.py",       # 光栅化封装
+    CORE / "render" / "rasterizer.py",       # 3DGS 光栅化封装
     CORE / "deform" / "blend.py",            # 可选的 CUDA linear_blending 加速路径
-    DATA / "reference.py",                   # 参照实现适配层（非 core 运行路径）
+    CORE / "deform" / "binding.py",          # UV 域绑定光栅化
+    CORE / "render" / "faceid.py",           # 面 id 图
+    CORE / "render" / "normals.py",          # 法线图
 }
 
 
@@ -90,8 +88,8 @@ def test_cuda_extension_only_imported_where_allowed() -> None:
     这条规则的意义：`submodules/` 里的扩展与 CUDA/torch 版本强耦合，
     一旦 import 散落到各处，替换或升级的成本会迅速失控。
 
-    核心约束是 **`core/` 只在这两处接触扩展**；`data/reference.py` 是
-    参照实现适配层，明确列入白名单（它不在 `core/` 的运行路径上）。
+    `diff_gaussian_rasterization` 与 `nvdiffrast` 都只允许出现在
+    `core/` 的显式白名单文件里；`scripts/` 可以使用，但不在本测试范围。
     """
     violations: list[str] = []
     for path in _iter_modules():
@@ -818,3 +816,33 @@ def test_data_package_is_packaged_and_typed() -> None:
     assert "live3dgsavatar.data" in packages, packages
     assert (SRC / "py.typed").is_file(), \
         "pyproject.toml 的 package-data 声明了 py.typed，文件必须存在"
+
+
+def test_data_does_not_import_tracking() -> None:
+    """RDF 转化归 `tracking/`，`data/` 不能再反向依赖 tracking。"""
+    offenders: list[str] = []
+    for path in sorted((SRC / "data").rglob("*.py")):
+        if "__pycache__" in path.parts:
+            continue
+        for lineno, module in _imports(path):
+            if module.startswith("live3dgsavatar.tracking"):
+                offenders.append(f"{path.relative_to(SRC)}:{lineno} → {module}")
+    assert not offenders, "data/ 反向依赖 tracking/：\n  " + "\n  ".join(offenders)
+
+
+def test_app_and_scripts_use_the_shared_render_path() -> None:
+    """GUI 必须走 `render_frame`；脚本不得再直接拼 `rasterizer.render`。"""
+    session = (SRC / "app" / "session.py").read_text(encoding="utf-8")
+    assert "render_frame(" in session, "GUI 应统一走 core/render/pipeline.render_frame"
+    assert "rasterizer.render(" not in session, "GUI 不应直接调用光栅化器"
+
+    offenders: list[str] = []
+    for path in sorted(SCRIPTS.rglob("*.py")):
+        if "__pycache__" in path.parts:
+            continue
+        text = path.read_text(encoding="utf-8")
+        if "rasterizer.render(" in text:
+            offenders.append(path.relative_to(REPO_ROOT).as_posix())
+    assert not offenders, (
+        "脚本仍在直接拼 rasterizer.render；改用 render_frame / render_gaussians：\n  "
+        + "\n  ".join(offenders))

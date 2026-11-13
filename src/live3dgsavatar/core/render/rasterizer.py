@@ -1,16 +1,13 @@
 """光栅化封装。**整个代码库中唯一允许出现 CUDA 扩展调用的地方。**
 
-对上层只暴露 `Rasterizer` 协议与两个实现：
-
-- :class:`SimpleRasterizer` —— 推理：逐帧前向，不分配梯度缓冲
-- :class:`BatchRasterizer`  —— 训练：`BatchGaussianRasterizer` + 预分配缓冲 + 多流
+对上层只暴露 :class:`SimpleRasterizer`：逐帧前向，不分配梯度缓冲。
+训练/推理/热更新共用这一条路径，避免多套光栅化实现产生不可比的结果。
 
 背景色语义（与参照实现对齐）见 docs/CORE.md。
 """
 
 from __future__ import annotations
 
-import math
 from typing import Optional
 
 import torch
@@ -122,107 +119,3 @@ class SimpleRasterizer:
             est_weight=torch.stack(est_weights),
             radii=torch.stack(radii),
         )
-
-
-class BatchRasterizer:
-    """训练用：`BatchGaussianRasterizer` + 预分配张量 + 多 CUDA 流。
-
-    对应参照实现的 `diff_renderer.batch_gaussian.BatchGaussianRenderer`。
-    缓冲在构造时按 `max_batch_size` / `max_gaussian_size` 一次性分配，
-    每步只做 zero_ + 调用，避免反复申请显存。
-
-    Args:
-        max_batch_size / max_gaussian_size: 预分配上限，超出即报错
-        num_streams: 批并行使用的 CUDA 流数（参照实现固定为 3）
-    """
-
-    def __init__(
-        self,
-        camera: Camera,
-        max_batch_size: int,
-        max_gaussian_size: int,
-        bg_color: torch.Tensor,
-        sh_degree: int = 0,
-        scaling_modifier: float = 1.0,
-        num_streams: int = 3,
-    ) -> None:
-        from diff_gaussian_rasterization import (  # noqa: PLC0415
-            BatchGaussianRasterizer,
-            GaussianRasterizationSettings,
-        )
-
-        self.max_batch_size = max_batch_size
-        self.max_gaussian_size = max_gaussian_size
-        self.scaling_modifier = scaling_modifier
-        self.sh_degree = sh_degree
-
-        bg = _normalize_bg(bg_color, 1)
-        ci = 0
-        self._settings = GaussianRasterizationSettings(
-            image_height=int(camera.height),
-            image_width=int(camera.width),
-            tanfovx=float(camera.tan_fov_x[ci]),
-            tanfovy=float(camera.tan_fov_y[ci]),
-            bg=bg[0],
-            scale_modifier=scaling_modifier,
-            viewmatrix=to_kernel_matrix(camera.w2c[ci]),
-            projmatrix=to_kernel_matrix(camera.full_proj[ci]),
-            sh_degree=sh_degree,
-            campos=camera.position[ci].contiguous(),
-            prefiltered=False,
-            debug=False,
-        )
-        self._rasterizer = BatchGaussianRasterizer(
-            max_gaussian_size=max_gaussian_size,
-            max_batch_size=max_batch_size,
-            raster_settings=self._settings,
-        )
-        if num_streams != 3:
-            # 参照实现的流数硬编码为 3；此处显式提示而非静默忽略
-            self._rasterizer.raster_tensors.stream_list = [
-                torch.cuda.Stream() for _ in range(num_streams)
-            ]
-
-    def render(
-        self,
-        gaussians: GaussianSet,
-        bg_color: torch.Tensor,
-        target_image: Optional[torch.Tensor] = None,
-    ) -> RenderOutput:
-        b, n = gaussians.batch_size, gaussians.num_gaussians
-        if b > self.max_batch_size:
-            raise ValueError(f"batch {b} 超过预分配上限 {self.max_batch_size}")
-        if n != self.max_gaussian_size:
-            raise ValueError(
-                f"高斯数 {n} 与预分配 {self.max_gaussian_size} 不一致；"
-                "训练态要求每帧高斯数恒定（绑定后不增删）")
-
-        bg = bg_color.reshape(-1, 3)
-        if bg.shape[0] == 1:
-            bg = bg.repeat(b, 1)
-        # 训练态需要 [B,3] 的背景（随机背景色时逐样本不同）
-        self._rasterizer.raster_settings.bg = bg.contiguous()
-
-        g = GaussianSet(
-            xyz=gaussians.xyz.contiguous(),
-            rotation=gaussians.rotation.contiguous(),
-            scaling=gaussians.scaling.contiguous(),
-            opacity=gaussians.opacity.contiguous(),
-            color=gaussians.color.contiguous(),
-            space="world",
-        )
-        means2d = _screenspace_points(g.xyz)
-        if target_image is not None:
-            target_image = target_image.contiguous()
-
-        color, alpha, est_color, est_weight, radii = self._rasterizer(
-            means3D=g.xyz,
-            means2D=means2d,
-            opacities=g.opacity,
-            shs=g.color,
-            scales=g.scaling,
-            rotations=g.rotation,
-            target_image=target_image,
-        )
-        return RenderOutput(color=color, alpha=alpha, est_color=est_color,
-                            est_weight=est_weight, radii=radii)

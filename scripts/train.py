@@ -334,7 +334,8 @@ def main(argv: list[str] | None = None) -> int:
     from live3dgsavatar.core.deform.binding import build_binding
     from live3dgsavatar.core.io import load_ply
     from live3dgsavatar.core.camera import orbit_w2c
-    from live3dgsavatar.core.render import SimpleRasterizer
+    from live3dgsavatar.core.render import (SimpleRasterizer, render_frame,
+                                            render_gaussians)
     from live3dgsavatar.core.render.faceid import detect_flip, face_id_map
     from live3dgsavatar.evaluation import (RobustConfig, alpha_deficit,
                                            robust_score, robust_views,
@@ -380,7 +381,7 @@ def main(argv: list[str] | None = None) -> int:
               f"（{robust_cfg.frames} 帧，λ={robust_cfg.weight:g}）")
 
     plan = ParameterPlan.rgba_avatar_defaults(
-        scene_extent=float(cfg.get("render.scene_extent", 1.0)))
+        scene_extent=float(cfg.get("train.pipeline.scene_extent", 1.0)))
     if lr_scale != 1.0:
         plan = plan.scaled(lr_scale)
         print(f"  lr 缩放 : {lr_scale:g}")
@@ -424,9 +425,11 @@ def main(argv: list[str] | None = None) -> int:
     def render_fn(mesh_verts, weight, batch, iteration):
         mesh = Mesh(verts=mesh_verts.to(device), faces=scene.faces.to(device),
                     uvs=scene.uvs.to(device), uv_faces=scene.uv_faces.to(device))
-        gs = avatar.deform(mesh, None if weight is None else weight.to(device))
         bg = torch.zeros(batch.image.shape[0], 3, 1, 1, device=device)
-        out = rasterizer.render(gs, camera, bg, target_image=batch.image.to(device))
+        out = render_frame(avatar, rasterizer, mesh,
+                           None if weight is None else weight.to(device),
+                           camera, bg, target_image=batch.image.to(device),
+                           build_graph=True)
 
         if nv_enabled and (int(iteration) + 1) % int(nv_every) == 0:
             from live3dgsavatar.training.losses import (alpha_hole_loss,
@@ -452,8 +455,8 @@ def main(argv: list[str] | None = None) -> int:
                     supported_nv = (surface_nv
                                     & supported_face[ids_nv.clamp(min=0)]
                                     & surface_nv)
-            out_nv = rasterizer.render(
-                avatar.deform(mesh_nv, weight_nv), cam_nv,
+            out_nv = render_frame(
+                avatar, rasterizer, mesh_nv, weight_nv, cam_nv,
                 torch.zeros(1, 3, 1, 1, device=device))
             if nv_hole > 0 and supported_nv is not None:
                 out.nv_hole_loss = alpha_hole_loss(
@@ -487,10 +490,9 @@ def main(argv: list[str] | None = None) -> int:
         for batch in batches:
             mesh = Mesh(verts=batch.mesh.to(device), faces=scene.faces.to(device),
                         uvs=scene.uvs.to(device), uv_faces=scene.uv_faces.to(device))
-            with torch.no_grad():
-                gs = avatar.deform(mesh, batch.blend_weight.to(device))
-                bg = torch.zeros(batch.image.shape[0], 3, 1, 1, device=device)
-                out = rasterizer.render(gs, camera, bg)
+            bg = torch.zeros(batch.image.shape[0], 3, 1, 1, device=device)
+            out = render_frame(avatar, rasterizer, mesh,
+                               batch.blend_weight.to(device), camera, bg)
             pred, tgt, mask = out.color, batch.image.to(device), batch.mask.to(device)
             mse = (((pred - tgt) ** 2) * mask).sum() / (mask.sum() * 3).clamp(min=1)
             total += float(10.0 * torch.log10(1.0 / mse.clamp(min=1e-10))) * len(batch)
@@ -524,8 +526,9 @@ def main(argv: list[str] | None = None) -> int:
                                          w2c=view_w2c.unsqueeze(0).to(device),
                                          width=scene.width,
                                          height=scene.height).to(device)
-                            out = rasterizer.render(
-                                gs, cam, torch.zeros(1, 3, 1, 1, device=device))
+                            out = render_gaussians(
+                                gs, rasterizer, cam,
+                                torch.zeros(1, 3, 1, 1, device=device))
                             ids = face_id_map(verts, scene.faces, cam, glctx)
                             surface = ids >= 0
                             if bool(surface.any()):
@@ -621,8 +624,8 @@ def main(argv: list[str] | None = None) -> int:
                                     uvs=scene.uvs.to(device),
                                     uv_faces=scene.uv_faces.to(device))
                         with torch.no_grad():
-                            gs = avatar.deform(mesh, weight_i)
-                            out = rasterizer.render(gs, camera, bg_stats)
+                            out = render_frame(avatar, rasterizer, mesh,
+                                               weight_i, camera, bg_stats)
                         flip, _ = detect_flip(
                             verts, scene.faces, camera, glctx,
                             out.alpha[0, 0].detach().cpu().numpy())

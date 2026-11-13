@@ -93,14 +93,14 @@ def _render(avatar, rasterizer, mesh, weight, cam, bg, remove=None):
     import numpy as np
     import torch
 
+    from live3dgsavatar.core.render import render_frame
+
     orig = avatar.opacity.detach().clone()
     try:
         if remove is not None and bool(np.any(remove)):
             avatar.opacity.data[torch.from_numpy(np.asarray(remove)).to(
                 avatar.opacity.device)] = -30.0
-        with torch.no_grad():
-            gs = avatar.deform(mesh, weight)
-            out = rasterizer.render(gs, cam, bg)
+        out = render_frame(avatar, rasterizer, mesh, weight, cam, bg)
     finally:
         avatar.opacity.data.copy_(orig)
     rgb = (out.color[0].clamp(0, 1).permute(1, 2, 0).cpu().numpy()
@@ -118,7 +118,7 @@ def main(argv: list[str] | None = None) -> int:
     from live3dgsavatar.core.camera import orbit_w2c
     from live3dgsavatar.core.io import load_ply
     from live3dgsavatar.core.io.ply import read_embedded_config
-    from live3dgsavatar.core.render import SimpleRasterizer
+    from live3dgsavatar.core.render import SimpleRasterizer, render_frame
     from live3dgsavatar.core.render.faceid import detect_flip, face_id_map
     from live3dgsavatar.core.types import Camera, Mesh
     from live3dgsavatar.data.datasets import resolve_dataset_dir
@@ -245,9 +245,7 @@ def main(argv: list[str] | None = None) -> int:
 
     flip = None
     for yaw, cam in views:
-        with torch.no_grad():
-            gs = avatar.deform(mesh, weight)
-            out0 = rasterizer.render(gs, cam, bg)
+        out0 = render_frame(avatar, rasterizer, mesh, weight, cam, bg)
         a0 = out0.alpha[0, 0].detach().cpu().numpy()
         if flip is None:
             flip, _ = detect_flip(verts, faces, cam, glctx, a0)

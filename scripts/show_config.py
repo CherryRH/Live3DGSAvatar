@@ -34,7 +34,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--sources", action="store_true",
                    help="显示配置文件来源与是否存在")
     p.add_argument("--shell-post", action="store_true",
-                   help="输出 post_train 的 shell 变量 CFG_POST_*（train.sh 用）")
+                   help="输出 post_train 的 shell 变量 CFG_POST_*（post_train.sh 用）")
     p.add_argument("--config-dir", type=Path, default=None)
     return p.parse_args()
 
@@ -45,7 +45,7 @@ def main() -> int:
 
     if args.sources:
         print(f"配置目录: {CONFIG_DIR if args.config_dir is None else args.config_dir}")
-        for name in ("system.yaml", "render.yaml", "local.yaml"):
+        for name in ("system.yaml", "render.yaml", "train.yaml", "local.yaml"):
             path = (args.config_dir or CONFIG_DIR) / name
             mark = "✓ 已加载" if path.exists() else "· 不存在（跳过）"
             print(f"  {mark}  {path}")
@@ -53,8 +53,8 @@ def main() -> int:
 
         print("\n环境变量覆盖:")
         for var in ("LIVE3DGS_DATA_ROOT", "LIVE3DGS_OUTPUT_DIR",
-                    "LIVE3DGS_REFERENCE_ROOT", "LIVE3DGS_SUBJECT",
-                    "LIVE3DGS_DEVICE"):
+                    "LIVE3DGS_MODELS_DIR", "LIVE3DGS_SUBJECT",
+                    "LIVE3DGS_WORK_NAME", "LIVE3DGS_DEVICE"):
             value = os.environ.get(var)
             print(f"  {var} = {value!r}" if value is not None
                   else f"  {var} 未设置")
@@ -97,7 +97,6 @@ def _warn_missing(data: dict) -> None:
     """对关键路径做存在性提醒 —— 只是提醒，不当成错误。"""
     checks = [
         ("paths.data_root", "数据集根目录"),
-        ("paths.model_ply", "预训练模型"),
     ]
     missing = []
     for key, label in checks:

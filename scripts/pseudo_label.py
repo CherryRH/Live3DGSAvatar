@@ -625,7 +625,7 @@ def main(argv: list[str] | None = None) -> int:
                                            rotation_x, rotation_y)
     from live3dgsavatar.core.io import load_ply
     from live3dgsavatar.core.io.ply import read_embedded_config
-    from live3dgsavatar.core.render import SimpleRasterizer
+    from live3dgsavatar.core.render import SimpleRasterizer, render_frame
     from live3dgsavatar.core.render.faceid import face_id_map
     from live3dgsavatar.core.render.normals import normal_map
     from live3dgsavatar.core.types import Camera, Mesh
@@ -766,8 +766,7 @@ def main(argv: list[str] | None = None) -> int:
                     uvs=scene.uvs, uv_faces=scene.uv_faces)
         weight = frame["blend_weight"].unsqueeze(0).to(device)
         with torch.no_grad():
-            gs = avatar.deform(mesh, weight)
-            out = rasterizer.render(gs, cam, bg)
+            out = render_frame(avatar, rasterizer, mesh, weight, cam, bg)
             alpha_np = out.alpha[0, 0].detach().cpu().numpy()
             if forced_flip is None:
                 flip, ious = pick_flip(alpha_np, mesh.verts, cam)

@@ -125,7 +125,7 @@ def check_destination(out_dir: Path, source: Path, *,
     Raises:
         FileExistsError: 会覆盖别的数据集
     """
-    from live3dgsavatar.data.tracked import frames_schema
+    from live3dgsavatar.tracking.tracked import frames_schema
 
     out_dir, source = Path(out_dir), Path(source)
     npz = out_dir / "render_inputs.npz"
@@ -145,7 +145,7 @@ def build(*, source: Path, out_dir: Path, flame_dir: Path,
     import numpy as np
     from PIL import Image
 
-    from live3dgsavatar.data.tracked import (find_frames_file, frames_schema,
+    from live3dgsavatar.tracking.tracked import (find_frames_file, frames_schema,
                                             load_frames_dir)
 
     source = Path(source)

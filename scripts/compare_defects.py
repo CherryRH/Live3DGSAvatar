@@ -183,7 +183,7 @@ def main(argv: list[str] | None = None) -> int:
     from live3dgsavatar.core.io import load_ply
     from live3dgsavatar.core.io.ply import read_embedded_config
     from live3dgsavatar.core.metrics import psnr_masked, ssim
-    from live3dgsavatar.core.render import SimpleRasterizer
+    from live3dgsavatar.core.render import SimpleRasterizer, render_frame
     from live3dgsavatar.core.render.faceid import face_id_map
     from live3dgsavatar.core.types import Camera, Mesh
     from live3dgsavatar.data.scene import load_scene
@@ -226,8 +226,8 @@ def main(argv: list[str] | None = None) -> int:
         mesh = Mesh(verts=frame["mesh"].unsqueeze(0), faces=scene.faces,
                     uvs=scene.uvs, uv_faces=scene.uv_faces)
         with torch.no_grad():
-            gs = avatar.deform(mesh, frame["blend_weight"].unsqueeze(0))
-            out = rasterizer.render(gs, cam, bg)
+            out = render_frame(avatar, rasterizer, mesh,
+                               frame["blend_weight"].unsqueeze(0), cam, bg)
             alpha_t = out.alpha[0, 0].detach().cpu().numpy()
             flip = _flip_for(frame["mesh"].unsqueeze(0), cam, alpha_t)
             ids = face_id_map(frame["mesh"].unsqueeze(0), faces, cam, glctx,

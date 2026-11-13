@@ -28,6 +28,8 @@ from ..config import Config, model_dir, resolve_data_dir, resolve_model_ply
 
 # ⚠️ 直接从 `..core.types` 导入 `Mesh`。若写成 `import ..core.types as types`
 #    会遮蔽标准库的 `types` 模块，间接依赖随之行为异常且极难排查。
+from ..core.metrics import psnr_pair
+from ..core.render.pipeline import render_frame
 from ..core.types import Mesh
 from .protocol import FrameTimeline, merge_params, output_size
 
@@ -606,19 +608,11 @@ class Session:
                  uvs=self.scene.uvs, uv_faces=self.scene.uv_faces)
         bg = torch.tensor(self.params.background, dtype=torch.float32, device=self.device)
 
-        with torch.no_grad():
-            t0 = time.perf_counter()
-            gs = self.avatar.deform(m, blend_weight)
-            torch.cuda.synchronize()
-            timings["deform"] = (time.perf_counter() - t0) * 1000.0
-
-            # 相机与缩放系数可能在运行期改过
-            self._rasterizer.scaling_modifier = self.params.scaling_modifier
-            cam = self._view_camera(mesh)
-            t0 = time.perf_counter()
-            out = self._rasterizer.render(gs, cam, bg)
-            torch.cuda.synchronize()
-            timings["rasterize"] = (time.perf_counter() - t0) * 1000.0
+        # 相机与缩放系数可能在运行期改过
+        self._rasterizer.scaling_modifier = self.params.scaling_modifier
+        cam = self._view_camera(mesh)
+        out = render_frame(self.avatar, self._rasterizer, m, blend_weight,
+                           cam, bg, timings=timings, sync=True)
 
         rgb = (out.color[0].clamp(0, 1).permute(1, 2, 0) * 255).byte().cpu()
 
@@ -683,7 +677,7 @@ class Session:
                 and now - cached_psnr[2] < 0.5):
             psnr = cached_psnr[1]
         else:
-            full, masked = _psnr_pair(rgb.numpy(), target, mask)
+            full, masked = psnr_pair(rgb.numpy(), target, mask)
             psnr = masked if masked is not None else full
             self._psnr_cache = (key, psnr, now)
         return torch.from_numpy(target), psnr
@@ -940,38 +934,3 @@ class Session:
     def model_dir_hint(self) -> str:
         """模型缺失时给出的提示路径。"""
         return str(model_dir(self.cfg))
-
-
-def _psnr_pair(render, target, mask) -> tuple[float | None, float | None]:
-    """返回 `(全图 PSNR, 掩码内 PSNR)`（dB）。MSE 为 0 时给 99.0。
-
-    与离线评估口径一致：0–255、按 alpha>0.5 取前景。
-
-    ## 为什么不用 `((a - b) ** 2).mean()`
-
-    那样每帧要分配 3 个 float32 大数组（512² RGB ≈ 3 MB 一个），实测
-    **13 ms/帧**，直接变成开启对比时的瓶颈（曾经让 FPS 从 60 掉到 30）。
-    改成"一次转换 + 原地减法 + einsum 求平方和"后 **2.8 ms**，
-    且结果与旧写法**逐位相同**（同样是 float32 求和）。
-    """
-    import numpy as np
-
-    a = np.asarray(render)
-    b = np.asarray(target)
-    if a.shape != b.shape:
-        return None, None
-
-    def _psnr(mse: float) -> float:
-        return 99.0 if mse <= 0.0 else float(10.0 * np.log10((255.0 ** 2) / mse))
-
-    # 原地转 float32 再原地相减：只占一块临时内存
-    diff = a.astype(np.float32)
-    np.subtract(diff, b, out=diff)
-
-    full = _psnr(float(np.einsum("ijk,ijk->", diff, diff)) / diff.size)
-    if mask is None or not bool(np.any(mask)):
-        return full, None
-
-    sub = diff[mask]
-    mse = float(np.einsum("ij,ij->", sub, sub)) / sub.size
-    return full, _psnr(mse)

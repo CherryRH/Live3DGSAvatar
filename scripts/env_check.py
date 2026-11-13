@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 OK, WARN, FAIL = "ok", "warn", "fail"
+EXPECTED_CUDA = "13.0"
 _MARK = {OK: "\033[1;32m  ok \033[0m", WARN: "\033[1;33m warn\033[0m", FAIL: "\033[1;31m fail\033[0m"}
 
 
@@ -129,7 +130,6 @@ def _parse_pybind_defs(ext_cpp: Path) -> list[str]:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--strict", action="store_true", help="有警告即视为失败")
-    ap.add_argument("--arch", default="8.6", help="期望的 TORCH_CUDA_ARCH_LIST")
     args = ap.parse_args()
 
     r = Report()
@@ -151,8 +151,8 @@ def main() -> int:
         import torch  # noqa: PLC0415
         tv = importlib.import_module("torchvision")
         torch = torch
-        r.add("torch", OK if torch.version.cuda else FAIL,
-              f"{torch.__version__}  (cuda {torch.version.cuda})")
+        r.add("torch", OK if (torch.version.cuda or "").startswith("13.") else FAIL,
+              f"{torch.__version__}  (cuda {torch.version.cuda}，期望 {EXPECTED_CUDA})")
         r.add("torchvision", OK, tv.__version__)
     except Exception as e:  # pragma: no cover
         r.add("torch", FAIL, f"import 失败: {e}")
@@ -175,12 +175,6 @@ def main() -> int:
         r.add("头文件 ↔ torch.version.cuda", OK if hdr_v == want else WARN,
               f"header {hdr_v} / torch {want}")
 
-    # ---- 编译期架构 ----
-    arch = os.environ.get("TORCH_CUDA_ARCH_LIST", "")
-    r.add("TORCH_CUDA_ARCH_LIST", OK if arch else WARN, arch or "<未设置>")
-    if arch and args.arch not in arch:
-        r.add(f"含 sm_{args.arch.replace('.', '')}", WARN, f"当前为 '{arch}'")
-
     # ---- 第三方 Python 依赖 ----
     for mod, dist, required in [
         ("numpy", "numpy", True),
@@ -190,10 +184,14 @@ def main() -> int:
         ("roma", "roma", True),
         ("plyfile", "plyfile", True),
         ("trimesh", "trimesh", True),
+        ("fastapi", "fastapi", True),
+        ("uvicorn", "uvicorn", True),
         ("smplx", "smplx", False),
         ("scipy", "scipy", False),
         ("tensorboard", "tensorboard", False),
         ("lpips", "lpips", False),
+        ("imageio", "imageio", False),
+        ("diffusers", "diffusers", False),
         ("fused_ssim", "fused-ssim", False),
     ]:
         try:
@@ -236,10 +234,8 @@ def main() -> int:
     try:
         if torch.cuda.is_available():
             p = torch.cuda.get_device_properties(0)
-            r.add("GPU", OK, f"{p.name}, {p.total_memory / 2**30:.1f} GiB, sm_{p.major}{p.minor}")
-            cap = f"{p.major}.{p.minor}"
-            r.add("GPU ↔ 编译架构", OK if cap in arch else WARN,
-                  f"device sm_{p.major}{p.minor} / built for '{arch or '?'}'")
+            r.add("GPU", OK, f"{p.name}, {p.total_memory / 2**30:.1f} GiB, "
+                             f"sm_{p.major}{p.minor}")
         else:
             r.add("GPU", WARN,
                   "torch.cuda.is_available() == False：确认已激活正确环境，且当前会话可访问 GPU 设备"

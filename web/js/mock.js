@@ -5,7 +5,7 @@
  * 这样界面与解析路径能被真实验证；等后端就绪时把本模块摘掉即可，
  * 其余代码一行不用改。
  *
- * 见 docs/GUI_PROTOCOL.md §4「mock 模式」。
+ * 见 docs/APP.md「mock 模式」。
  */
 
 import { HEADER_BYTES, MSG_RENDER, PROTOCOL_VERSION } from "./protocol.js";

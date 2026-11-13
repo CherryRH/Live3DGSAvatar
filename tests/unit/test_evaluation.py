@@ -173,9 +173,11 @@ def test_report_to_dict_is_json_serialisable() -> None:
     r = EvaluationReport(subject="s", work_name="w", dataset="d",
                          num_frames=3, dataset_frames=10, width=8, height=8,
                          quality={"psnr_full": {"median": 1.0}},
+                         params={"frame_mode": "heldout"},
                          extra={"model_path": "m.ply"})
     text = json.dumps(r.to_dict())
     assert '"dataset": "d"' in text and r.has_reference is True
+    assert r.to_dict()["params"] == {"frame_mode": "heldout"}
 
     empty = EvaluationReport(subject="s", work_name="w", dataset="d",
                              num_frames=0, dataset_frames=0, width=8, height=8)

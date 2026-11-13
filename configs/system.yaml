@@ -10,6 +10,9 @@
 # 环境变量可覆盖任意字段（便于换机器 / CI 不改文件）：
 #   LIVE3DGS_DATA_ROOT  → paths.data_root
 #   LIVE3DGS_OUTPUT_DIR → paths.output_dir
+#   LIVE3DGS_MODELS_DIR → paths.models_dir
+#   LIVE3DGS_SUBJECT / LIVE3DGS_WORK_NAME → 当前对象/版本
+#   LIVE3DGS_DEVICE     → runtime.device
 #
 # 用 `python scripts/show_config.py` 查看**解析后**的最终值。
 
@@ -60,7 +63,6 @@ tracking:
 # 运行设备与精度。
 runtime:
   device: cuda          # cuda | cpu（cpu 仅供不依赖 CUDA 内核的自检）
-  split: all            # 参照数据集切分：all | train | test
 
 # GUI 服务。仅本地单用户使用，不做鉴权、不绑公网地址。
 app:

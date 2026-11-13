@@ -1,5 +1,5 @@
 /**
- * 帧协议解析（见 docs/GUI_PROTOCOL.md §3.1）。
+ * 帧协议解析（见 docs/APP.md）。
  *
  * 二进制帧布局：
  *   偏移 0   4 字节   seq，uint32 小端
