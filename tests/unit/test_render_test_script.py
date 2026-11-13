@@ -244,3 +244,27 @@ def test_showcase_poses_turns_yaw_then_pitch() -> None:
     assert poses[-1][0] == 0.0 and poses[-1][1] == 0.0
     # smoothstep：第一段起步比线性慢（线性第 1 帧应为 40/6）
     assert poses[1][0] < 40.0 / 6.0
+
+
+def test_showcase_base_prefers_frontal_frame() -> None:
+    """showcase 默认基帧应选头姿最接近正脸的一帧，而不是盲取第一帧。"""
+    import math
+
+    import torch
+
+    m = _load()
+
+    def yaw_rot6d(deg: float) -> list[float]:
+        a = math.radians(deg)
+        return [math.cos(a), 0.0, math.sin(a), 0.0, 1.0, 0.0]
+
+    weights = torch.zeros(3, 129)
+    weights[0, 100:106] = torch.tensor(yaw_rot6d(30.0))
+    weights[1, 100:106] = torch.tensor(yaw_rot6d(0.0))
+    weights[2, 100:106] = torch.tensor(yaw_rot6d(-10.0))
+
+    class _Scene:
+        def weights_tensor(self, idx, device=None):
+            return weights[idx]
+
+    assert m._frontal_frame(_Scene(), [0, 1, 2]) == 1

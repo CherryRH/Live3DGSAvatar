@@ -133,7 +133,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--showcase-fps", type=float, default=None,
                    help="展示视频帧率（默认与 --video-fps 一致）")
     p.add_argument("--showcase-frame", type=int, default=None,
-                   help="展示用的基础帧下标（默认取本次评测的第一帧）")
+                   help="展示用的基础帧下标（默认取本次评测中头姿最正的一帧）")
     p.add_argument("--no-lpips", action="store_true",
                    help="跳过 LPIPS（首次使用需下载 AlexNet 权重）")
     p.add_argument("--profile", action="store_true",
@@ -254,6 +254,18 @@ from live3dgsavatar.evaluation.protocol import (  # noqa: E402
 # ------------------------------------------------------------- 渲染 --
 
 
+def _frontal_frame(scene, frames: list[int]) -> int:
+    """在本次评测帧里选头姿最接近正脸的一帧做 showcase 基帧。"""
+    import numpy as np
+
+    from live3dgsavatar.data.pose import head_pitch, head_yaw
+
+    w = scene.weights_tensor(frames, device="cpu").detach().cpu().numpy()
+    yaw = np.abs(head_yaw(w))
+    pitch = np.abs(head_pitch(w))
+    return int(frames[int(np.argmin(yaw + pitch))])
+
+
 def render_core(args, scene, frames: list[int], out_dir: Path,
                 share_dir: Path | None = None):
     """用本项目 `core/` 渲染。
@@ -365,7 +377,8 @@ def render_core(args, scene, frames: list[int], out_dir: Path,
     showcase = None
     if args.showcase:
         base = (int(args.showcase_frame) if args.showcase_frame is not None
-                else int(frames[0]))
+                else _frontal_frame(scene, frames))
+        args._showcase_frame_used = base
         showcase = render_showcase(args, scene, avatar, rasterizer, bg, base)
     return images, perf, showcase
 
@@ -398,13 +411,15 @@ def showcase_poses(n: int = 30) -> list[tuple[float, float]]:
 
 def render_showcase(args, scene, avatar, rasterizer, bg,
                     frame_idx: int) -> list[np.ndarray]:
-    """用同一个基础帧，绕头部渲染大角度展示序列。"""
+    """用同一个基础帧，按绝对头姿绕头部渲染大角度展示序列。"""
     import torch
     from PIL import Image, ImageDraw
 
-    from live3dgsavatar.core.camera import orbit_w2c
+    from live3dgsavatar.core.camera import (orbit_w2c_matrix, rotation_x,
+                                            rotation_y)
     from live3dgsavatar.core.render import render_gaussians
     from live3dgsavatar.core.types import Camera, Mesh
+    from live3dgsavatar.data.pose import rot6d_to_matrix
 
     mesh = Mesh(verts=scene.frames_tensor([frame_idx], device="cuda"),
                 faces=scene.faces, uvs=scene.uvs, uv_faces=scene.uv_faces)
@@ -414,11 +429,16 @@ def render_showcase(args, scene, avatar, rasterizer, bg,
     w2c_data[:3, :3] = scene.R
     w2c_data[:3, 3] = scene.T
     center = mesh.verts[0].mean(dim=0).detach().cpu()
+    # 基帧自身的头姿；showcase 的 yaw/pitch 是**绝对**头部角度，必须抵消它，
+    # 否则基帧头已经转过去时，0° 仍会显示那张侧脸。
+    head_R = torch.from_numpy(
+        rot6d_to_matrix(weight.detach().cpu().numpy()[:, 100:106])[0]).float()
     with torch.no_grad():
         gs = avatar.deform(mesh, weight)
     frames = []
     for yaw, pitch in showcase_poses(args.showcase_frames):
-        view = orbit_w2c(w2c_data, center, yaw, pitch)
+        R_target = (rotation_x(pitch) @ rotation_y(yaw))[:3, :3]
+        view = orbit_w2c_matrix(w2c_data, center, R_target @ head_R.T)
         cam = Camera(K=K, w2c=view.unsqueeze(0),
                      width=scene.width, height=scene.height).to("cuda")
         out = render_gaussians(gs, rasterizer, cam, bg)
@@ -596,6 +616,7 @@ def main() -> int:
             "video_fps": args.video_fps,
             "lpips": not args.no_lpips,
             "showcase": bool(args.showcase),
+            "showcase_frame": getattr(args, "_showcase_frame_used", None),
             "showcase_frames": args.showcase_frames,
             "showcase_fps": args.showcase_fps,
         },
