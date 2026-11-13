@@ -1,7 +1,7 @@
 """GUI 后端：FastAPI 应用（HTTP + WebSocket）+ 推流循环。
 
 层次：本模块只做**消息编解码与调度**，不碰张量；
-所有 GPU 相关工作在 `session.py` 里。协议见 `docs/GUI_PROTOCOL.md`。
+所有 GPU 相关工作在 `session.py` 里。协议见 `docs/APP.md`。
 
 并发模型（刻意简单）：
 

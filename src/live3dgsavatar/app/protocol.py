@@ -1,7 +1,7 @@
 """GUI 后端的协议编解码与背压工具。
 
 **刻意不依赖 FastAPI / torch**：这些是纯函数，可以在没有 GPU、
-没有 Web 依赖的环境里直接单元测试。`docs/GUI_PROTOCOL.md` 是权威定义。
+没有 Web 依赖的环境里直接单元测试。`docs/APP.md` 是权威定义。
 """
 
 from __future__ import annotations
@@ -306,7 +306,7 @@ def frame_interval(target_fps: float) -> float:
 def sleep_after(elapsed: float, interval: float, tolerance: float = 0.5) -> float:
     """按「帧数上限 + 等待」语义算出本轮还应睡多久（秒）。
 
-    语义（见 docs/GUI_PROTOCOL.md §1）：
+    语义（见 docs/APP.md）：
 
     - 上一轮耗时 < 间隔 → 睡满差额，使触发间隔恒为 `interval`
     - 上一轮耗时 ≥ 间隔 → **不睡**，立刻开始下一轮

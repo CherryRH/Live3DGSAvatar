@@ -39,7 +39,7 @@ render:
   # 太小会占满控制通道，太大会让播放时的帧号看起来一跳一跳。
   status_interval_s: 0.25
 
-  # 球谐阶数。本项目只用 SH 的 DC 项（见 docs/CONVENTIONS.md）。
+  # 球谐阶数。本项目只用 SH 的 DC 项（见 docs/CORE.md）。
   sh_degree: 0
 
   # 批量渲染的批大小。core 与参照实现**共用**该值，

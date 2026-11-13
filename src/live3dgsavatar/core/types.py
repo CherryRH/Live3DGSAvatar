@@ -1,6 +1,6 @@
 """跨层核心数据类型。
 
-设计原则（见 docs/CONVENTIONS.md）：
+设计原则（见 docs/CORE.md）：
 - 所有张量 **batch-first**，第一维恒为 batch（单帧为 1）；
 - `GaussianSet` 内**永远存放已激活的物理量**（opacity∈[0,1]、scaling>0、rotation 单位四元数）；
 - 空间归属**显式标注**，不靠调用顺序隐含约定；
@@ -160,7 +160,7 @@ class Mesh:
 
 @dataclass
 class Camera:
-    """针孔相机。**只存 K 与 w2c**，其余全部派生（见 docs/CONVENTIONS.md §2.3）。
+    """针孔相机。**只存 K 与 w2c**，其余全部派生（见 docs/CORE.md）。
 
     Attributes:
         K:     [B, 3, 3] 或 [3, 3] 内参

@@ -1,6 +1,6 @@
 """RDF 跟踪结果目录 → 渲染帧。
 
-跟踪目录的约定与数据集相同（`docs/CONVENTIONS.md` §6）：
+跟踪目录的约定与数据集相同（`docs/CORE.md）：
 
 ```
 <目录>/images/ + render_inputs.npz

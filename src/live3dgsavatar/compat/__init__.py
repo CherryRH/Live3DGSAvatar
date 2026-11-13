@@ -133,7 +133,7 @@ except Exception as _e:  # pragma: no cover
     raise ImportError(
         f"chumpy 兼容补丁未生效（numpy {_np.__version__}）：{type(_e).__name__}: {_e}\n"
         "请同步更新 src/live3dgsavatar/compat/__init__.py 与 scripts/_compat_shim.py，"
-        "参见 docs/ISSUES.md §3.6"
+        "参见 docs/ISSUES.md"
     ) from _e
 
 __all__ = ["patched_aliases", "patched_getargspec"]

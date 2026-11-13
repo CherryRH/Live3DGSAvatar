@@ -4,7 +4,7 @@
 评估、精修输入生成、脚本都从这里取同一套实现 —— 早前这条公式在脚本里各写一份，
 其中一份绕世界原点旋转，导致头被转出画面。
 
-约定与 `docs/CONVENTIONS.md` §2 一致：`w2c` 是 world→camera，相机沿 **+z** 看。
+约定与 `docs/CORE.md 一致：`w2c` 是 world→camera，相机沿 **+z** 看。
 """
 
 from __future__ import annotations

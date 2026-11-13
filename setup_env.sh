@@ -34,7 +34,7 @@ CUDA_CHANNEL="${CUDA_CHANNEL:-nvidia/label/cuda-13.0.0}"
 CUDA_MODE="${LIVE3DGS_CUDA:-auto}"
 # 期望的 CUDA 版本（主.次）；与 torch 的 cu130 对应
 EXPECTED_CUDA="${EXPECTED_CUDA:-13.0}"
-TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST:-8.6}"   # RTX 3060 = sm_86
+TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST:-8.9}"   # RTX 4090 = sm_89
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SUBMODULES="$REPO_ROOT/submodules"

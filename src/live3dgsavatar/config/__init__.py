@@ -2,7 +2,7 @@
 
 **为什么放在 `src/live3dgsavatar/config/` 而不是 core/**
     `core/` 是纯计算层，不允许依赖配置、路径、YAML（见
-    `docs/ARCHITECTURE.md` §2.3）。配置属于**应用层**基础设施。
+    `docs/ARCHITECTURE.md）。配置属于**应用层**基础设施。
 
 用法::
 

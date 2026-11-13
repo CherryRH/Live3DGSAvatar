@@ -39,7 +39,7 @@ paths:
   image_subdir: images
 
 # 实时驱动。追踪器以**独立进程**运行（环境不兼容），本项目把画面发过去、
-# 拿回参数与顶点。见 docs/LIVE_DRIVING.md。
+# 拿回参数与顶点。见 docs/TRACKING.md。
 tracking:
   # 总开关。关闭后实时驱动不可用，界面会显示原因。
   enabled: true
