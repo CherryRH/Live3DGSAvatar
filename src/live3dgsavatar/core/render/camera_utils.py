@@ -1,6 +1,6 @@
 """相机矩阵与内核之间的边界转换。
 
-**本模块是「行主序 → 列主序」转置的唯一发生地**（见 docs/DESIGN.md §2.2）。
+**本模块是「行主序 → 列主序」转置的唯一发生地**（见 docs/CONVENTIONS.md §2.2）。
 
 参照实现把这个转置散落在每个调用点（`camera.get_w2v.transpose(0, 1)` 与
 `camera.get_full_proj.transpose(0, 1)`），并被三份重复的渲染函数各复制一遍。

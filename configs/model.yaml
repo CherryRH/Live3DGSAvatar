@@ -5,7 +5,7 @@
 # 那时优先用它 —— 这样"复现/续训"与"新建"用的是同一套读取逻辑
 # （见 scripts/train.py 的 resolve_structure_config）。
 #
-# 字段含义见 docs/PARAMETERS.md；默认值与 crh_1 的模型配置一致。
+# 字段含义见 docs/CONFIG.md；默认值与 crh_1 的模型配置一致。
 
 model:
   # UV 图边长：决定高斯数量（有效 texel 数，256² → 约 6 万）

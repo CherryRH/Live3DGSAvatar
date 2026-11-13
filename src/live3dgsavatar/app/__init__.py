@@ -4,7 +4,7 @@
 - `session.py` ：渲染会话（唯一接触 GPU 与 `core/` 的部分）
 - `server.py`  ：FastAPI 应用 + WebSocket 推流循环 + CLI
 
-协议见 `docs/DESIGN.md`。启动用顶层 `bash run_gui.sh`，
+协议见 `docs/GUI_PROTOCOL.md`。启动用顶层 `bash run_gui.sh`，
 或 `python -m live3dgsavatar.app`。
 
 `server` / `session` 需要 FastAPI 与 torch。未安装时本模块仍可导入

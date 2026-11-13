@@ -52,7 +52,7 @@ def compute_face_tbn(
         后果：`R` 一般不是正交阵，故 `Rᵀ ≠ R⁻¹`。绑定步骤使用 `Rᵀ` 时，
         变换会被 UV 剪切污染 —— 这是 `mode="orthonormal"` 存在的理由。
 
-    公式（见 docs/DESIGN.md §3.1）::
+    公式（见 docs/CONVENTIONS.md §3.1）::
 
         e1, e2   = v1 - v0, v2 - v0
         d1, d2   = uv1 - uv0, uv2 - uv0

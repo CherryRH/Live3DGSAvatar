@@ -19,7 +19,7 @@
 
 `trainer` 通过**注入 `render_fn`** 与渲染解耦：训练逻辑（调度、钩子、
 早停）可以脱离 CUDA 扩展单独测试。`updater` 将来会收敛成
-`trainer + ParameterPlan.appearance_only()` 的薄壳（见 docs/DESIGN.md）。
+`trainer + ParameterPlan.appearance_only()` 的薄壳（见 docs/ARCHITECTURE.md）。
 
 **边界**：热更新只改外观，不碰几何与驱动参数 —— 原因见 `updater` 模块文档。
 """

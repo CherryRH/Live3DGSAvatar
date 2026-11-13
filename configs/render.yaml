@@ -1,7 +1,7 @@
 # Live3DGSAvatar —— 渲染配置
 #
 # 本文件集中存放**渲染相关默认量**；路径与设备见 configs/system.yaml。
-# 字段说明见 docs/PARAMETERS.md。
+# 字段说明见 docs/CONFIG.md。
 #
 # 所有字段都可通过命令行临时覆盖，例如：
 #   python scripts/render_test.py --batch-size 2 --frames 5
@@ -39,7 +39,7 @@ render:
   # 太小会占满控制通道，太大会让播放时的帧号看起来一跳一跳。
   status_interval_s: 0.25
 
-  # 球谐阶数。本项目只用 SH 的 DC 项（见 docs/DESIGN.md）。
+  # 球谐阶数。本项目只用 SH 的 DC 项（见 docs/CONVENTIONS.md）。
   sh_degree: 0
 
   # 批量渲染的批大小。core 与参照实现**共用**该值，
