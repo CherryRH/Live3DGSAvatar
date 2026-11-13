@@ -35,6 +35,11 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PY = sys.executable
 
+if str(REPO_ROOT / "src") not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT / "src"))
+
+from live3dgsavatar.config import load_config  # noqa: E402
+
 
 def parse_rings(text: str) -> list[tuple[float, float]]:
     if str(text).strip().lower() == "auto":
@@ -139,10 +144,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--in-place", action="store_true",
                     help="每轮只把改进后的模型写回 --base-work（如 best），"
                          "不产生 <prefix>_rN；基座 checkpoint 仍在 output/train/")
-    # 这些数值默认由 post_train.sh 从 configs/train.yaml 传入；
-    # 直接调用时保留低层默认，但对象/模型/前缀必须显式给。
-    ap.add_argument("--top-n", type=int, default=2)
-    ap.add_argument("--rings", required=True,
+    # 未给出的数值由 configs/train.yaml 的 post_train 兜底；
+    # post_train.sh 会显式传全部用户参数。
+    ap.add_argument("--top-n", type=int, default=None)
+    ap.add_argument("--rings", default=None,
                     help="每轮 (yaw,pitch) 上限，如 '30,20;40,30;50,30'；"
                          "填 auto 则按数据集覆盖边缘自动生成")
     ap.add_argument("--ring-quantile", type=float, default=0.90,
@@ -154,69 +159,63 @@ def main(argv: list[str] | None = None) -> int:
                     help="第一轮编号偏移（top2 从 r2 开始时填 1）")
     ap.add_argument("--seed-defects", type=Path, default=None,
                     help="已有累计 defects（top2 从 r1 续跑时传 r1）")
-    ap.add_argument("--steps", type=int, default=200)
-    ap.add_argument("--refined-per-batch", type=int, default=2)
-    ap.add_argument("--real-per-batch", type=int, default=8)
-    ap.add_argument("--lr-xyz", type=float, default=1e-5)
+    ap.add_argument("--steps", type=int, default=None)
+    ap.add_argument("--refined-per-batch", type=int, default=None)
+    ap.add_argument("--real-per-batch", type=int, default=None)
+    ap.add_argument("--lr-xyz", type=float, default=None)
     ap.add_argument("--repair-mode",
                     choices=("syncfix", "mask_diffusion", "none"),
-                    default="syncfix",
+                    default=None,
                     help="syncfix=全图+SyncFix（默认）；"
                          "mask_diffusion=掩码+扩散；none=纯真实帧消融")
-    ap.add_argument("--syncfix-repo", default="")
-    ap.add_argument("--syncfix-python", default="syncfix")
-    ap.add_argument("--syncfix-model", default="")
-    ap.add_argument("--syncfix-n-per-pass", type=int, default=4)
-    ap.add_argument("--syncfix-ref-size", type=int, default=4)
-    ap.add_argument("--base-model", default="emilianJR/epiCRealism")
+    ap.add_argument("--syncfix-repo", default=None)
+    ap.add_argument("--syncfix-python", default=None)
+    ap.add_argument("--syncfix-model", default=None)
+    ap.add_argument("--syncfix-n-per-pass", type=int, default=None)
+    ap.add_argument("--syncfix-ref-size", type=int, default=None)
+    ap.add_argument("--base-model", default=None)
     ap.add_argument("--ip-adapter", choices=("none", "faceid", "faceid_plus"),
-                    default="none")
+                    default=None)
     ap.add_argument("--ip-adapter-weight", default="ip-adapter-faceid_sd15.bin")
     ap.add_argument("--ip-adapter-image-encoder",
                     default="h94/IP-Adapter/sdxl_models/image_encoder")
     ap.add_argument("--ip-adapter-scale", type=float, default=0.6)
-    ap.add_argument("--trusted-tol", type=float, default=3.0)
-    ap.add_argument("--mask-dilate", type=int, default=12,
+    ap.add_argument("--trusted-tol", type=float, default=None)
+    ap.add_argument("--mask-dilate", type=int, default=None,
                     help="伪标签掩码向周围扩多少像素（默认 12；扩散上下文）")
-    ap.add_argument("--core-dilate", type=int, default=12,
+    ap.add_argument("--core-dilate", type=int, default=None,
                     help="真正替换回渲染图的 core 外扩（默认 12 = 整掩码替换）")
-    ap.add_argument("--strength", type=float, default=0.85,
+    ap.add_argument("--strength", type=float, default=None,
                     help="重绘强度（SD1.5 人脸加强版默认 0.85）")
     ap.add_argument("--identity-threshold", type=float, default=0.30,
                     help="ArcFace 身份相似度下限（默认 0.30）")
     ap.add_argument("--color-match", dest="color_match", action="store_true",
-                    default=False,
+                    default=None,
                     help="把生成图颜色分布对齐到周围渲染（默认关：实测压锐度）")
     ap.add_argument("--no-color-match", dest="color_match", action="store_false",
-                    help="关闭颜色对齐（默认）")
+                    default=None, help="关闭颜色对齐（覆盖配置）")
     ap.add_argument("--color-mean-only", action="store_true",
                     help="只对齐颜色均值，保留对比度")
-    ap.add_argument("--color-ring", type=int, default=8,
+    ap.add_argument("--color-ring", type=int, default=None,
                     help="取渲染图周围多少像素的分布做对齐")
-    ap.add_argument("--feather", type=int, default=4,
+    ap.add_argument("--feather", type=int, default=None,
                     help="core 边界羽化半径（0=硬替换）")
-    ap.add_argument("--prompt",
-                    default="close-up of a bare face and neck, natural bare "
-                            "skin, visible pores, eyes looking straight ahead, "
-                            "soft light, plain background, sharp focus")
-    ap.add_argument("--negative",
-                    default="looking at camera, looking at viewer, eye contact, "
-                            "side glance, cross-eyed, clothing, shirt, collar, "
-                            "jacket, scarf, necklace, earrings, jewelry, hat, "
-                            "glasses, makeup, lipstick, eyeshadow, blush, "
-                            "painted face, beauty filter, blurry, smooth plastic, "
-                            "deformed, extra eyes, low resolution, watermark")
-    ap.add_argument("--head-cut", action="store_true",
+    ap.add_argument("--prompt", default=None)
+    ap.add_argument("--negative", default=None)
+    ap.add_argument("--head-cut", dest="head_cut", action="store_true",
+                    default=None,
                     help="unsupported 掩码只修到最低观测像素附近，"
                          "避免补出脖子/胸口/衣服")
-    ap.add_argument("--head-cut-margin", type=int, default=0)
-    ap.add_argument("--min-fill", type=float, default=0.45,
+    ap.add_argument("--no-head-cut", dest="head_cut", action="store_false",
+                    default=None, help="关闭 head_cut（覆盖配置）")
+    ap.add_argument("--head-cut-margin", type=int, default=None)
+    ap.add_argument("--min-fill", type=float, default=None,
                     help="大掩码下填充率门限（默认 0.45）")
-    ap.add_argument("--sharpen", type=float, default=0.35,
+    ap.add_argument("--sharpen", type=float, default=None,
                     help="SD 往返后的 unsharp 增益")
-    ap.add_argument("--min-sharp", type=float, default=0.95,
+    ap.add_argument("--min-sharp", type=float, default=None,
                     help="整幅前景锐度比下限")
-    ap.add_argument("--min-mask-sharp", type=float, default=0.90,
+    ap.add_argument("--min-mask-sharp", type=float, default=None,
                     help="掩码内锐度比下限（大掩码可适当放宽）")
     ap.add_argument("--sharp-tolerance", type=float, default=0.12)
     ap.add_argument("--ssim-tolerance", type=float, default=0.03)
@@ -224,15 +223,79 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--gross-psnr", type=float, default=30.0)
     ap.add_argument("--gross-ssim", type=float, default=0.93)
     ap.add_argument("--gross-lpips", type=float, default=0.10)
-    ap.add_argument("--quality-tol", type=float, default=0.01,
+    ap.add_argument("--quality-tol", type=float, default=None,
                     help="质量分(SSIM-LPIPS+psnr_weight*PSNR)相对最佳下降超过该值即早停")
-    ap.add_argument("--psnr-weight", type=float, default=0.002,
+    ap.add_argument("--psnr-weight", type=float, default=None,
                     help="PSNR 在质量分中的小权重（默认 0.002/dB）")
     ap.add_argument("--out-root", type=Path, default=None,
                     help="运行根目录；默认 output/post。"
                          "每次运行落在 <out-root>/<subject>/<prefix>/")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args(argv)
+
+    # 命令行未给出的参数由 configs/train.yaml 的 post_train 兜底。
+    cfg = load_config()
+    def _post(key, default):
+        return cfg.get(f"train.pipeline.post_train.{key}", default)
+    args.top_n = int(_post("top_n", 2)) if args.top_n is None else args.top_n
+    args.rings = str(_post("rings", "auto")) if args.rings is None else args.rings
+    args.steps = int(_post("steps", 100)) if args.steps is None else args.steps
+    args.real_per_batch = (int(_post("real_per_batch", 6))
+                           if args.real_per_batch is None else args.real_per_batch)
+    args.refined_per_batch = (int(_post("refined_per_batch", 2))
+                              if args.refined_per_batch is None
+                              else args.refined_per_batch)
+    args.lr_xyz = float(_post("lr_xyz", 1e-5)) if args.lr_xyz is None else args.lr_xyz
+    args.repair_mode = (str(_post("repair_mode", "syncfix"))
+                        if args.repair_mode is None else args.repair_mode)
+    args.syncfix_repo = (str(_post("syncfix_repo", ""))
+                         if args.syncfix_repo is None else args.syncfix_repo)
+    args.syncfix_python = (str(_post("syncfix_python", "syncfix"))
+                           if args.syncfix_python is None else args.syncfix_python)
+    args.syncfix_model = (str(_post("syncfix_model", ""))
+                          if args.syncfix_model is None else args.syncfix_model)
+    args.syncfix_n_per_pass = (int(_post("syncfix_n_per_pass", 4))
+                               if args.syncfix_n_per_pass is None
+                               else args.syncfix_n_per_pass)
+    args.syncfix_ref_size = (int(_post("syncfix_ref_size", 4))
+                             if args.syncfix_ref_size is None
+                             else args.syncfix_ref_size)
+    args.base_model = str(_post("base_model", "emilianJR/epiCRealism")) \
+        if args.base_model is None else args.base_model
+    args.ip_adapter = str(_post("ip_adapter", "none")) \
+        if args.ip_adapter is None else args.ip_adapter
+    args.trusted_tol = float(_post("trusted_tol", 3.0)) \
+        if args.trusted_tol is None else args.trusted_tol
+    args.mask_dilate = int(_post("mask_dilate", 12)) \
+        if args.mask_dilate is None else args.mask_dilate
+    args.core_dilate = int(_post("core_dilate", 12)) \
+        if args.core_dilate is None else args.core_dilate
+    args.strength = float(_post("strength", 0.6)) \
+        if args.strength is None else args.strength
+    args.color_match = bool(_post("color_match", False)) \
+        if args.color_match is None else args.color_match
+    args.color_ring = int(_post("color_ring", 8)) \
+        if args.color_ring is None else args.color_ring
+    args.feather = int(_post("feather", 4)) \
+        if args.feather is None else args.feather
+    args.head_cut = bool(_post("head_cut", True)) \
+        if args.head_cut is None else args.head_cut
+    args.head_cut_margin = int(_post("head_cut_margin", 0)) \
+        if args.head_cut_margin is None else args.head_cut_margin
+    args.min_fill = float(_post("min_fill", 0.4)) \
+        if args.min_fill is None else args.min_fill
+    args.sharpen = float(_post("sharpen", 0.35)) \
+        if args.sharpen is None else args.sharpen
+    args.min_sharp = float(_post("min_sharp", 0.85)) \
+        if args.min_sharp is None else args.min_sharp
+    args.min_mask_sharp = float(_post("min_mask_sharp", 0.85)) \
+        if args.min_mask_sharp is None else args.min_mask_sharp
+    args.quality_tol = float(_post("quality_tol", 0.01)) \
+        if args.quality_tol is None else args.quality_tol
+    args.psnr_weight = float(_post("psnr_weight", 0.002)) \
+        if args.psnr_weight is None else args.psnr_weight
+    args.prompt = str(_post("prompt", "")) if args.prompt is None else args.prompt
+    args.negative = str(_post("negative", "")) if args.negative is None else args.negative
 
     if args.repair_mode == "syncfix":
         if not args.syncfix_repo or not Path(args.syncfix_repo).is_dir():
