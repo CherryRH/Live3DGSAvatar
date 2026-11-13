@@ -94,7 +94,7 @@ class _ArgSpec(tuple):
     """`inspect.ArgSpec` 的替身。
 
     `ArgSpec` 本身也在 Python 3.11 被移除，所以不能复用它 ——
-    直接给一个 4 元组，字段顺序与旧版一致（args, varargs, keywords, defaults）。
+    直接给一个 4 元组，字段顺序为 (args, varargs, keywords, defaults)。
     """
 
     __slots__ = ()
@@ -133,7 +133,7 @@ except Exception as _e:  # pragma: no cover
     raise ImportError(
         f"chumpy 兼容补丁未生效（numpy {_np.__version__}）：{type(_e).__name__}: {_e}\n"
         "请同步更新 src/live3dgsavatar/compat/__init__.py 与 scripts/_compat_shim.py，"
-        "参见 docs/ISSUES.md"
+        "见项目问题日志"
     ) from _e
 
 __all__ = ["patched_aliases", "patched_getargspec"]

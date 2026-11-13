@@ -258,7 +258,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # ---- 1) 覆盖统计 ----
     # 光栅化方向：用 alpha 轮廓自动判定（见 core/render/faceid.detect_flip）。
-    # 之前按"投影是 +y 向下"推导成必须翻 y，真机上这是错的（上下镜像）。
+    # 不能按"投影是 +y 向下"推导翻 y；用 alpha 轮廓自动判定。
     from live3dgsavatar.core.render.faceid import detect_flip
 
     flip_y = False

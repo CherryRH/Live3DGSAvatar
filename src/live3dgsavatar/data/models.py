@@ -64,7 +64,7 @@ def list_models(cfg: Config) -> list[ModelInfo]:
             ply = work_dir / "model.ply"
             if not ply.is_file():
                 # 目录里有别的 .ply 却没有 model.ply：几乎一定是命名不对
-                # （旧版本曾把增强训练的模型存成 model_aug.ply）。这类目录
+                # （例如把主模型存成了 model_aug.ply）。这类目录
                 # 在界面上会"凭空消失"，所以要明确说出来怎么修。
                 strays = sorted(p.name for p in work_dir.glob("*.ply"))
                 if strays:

@@ -5,7 +5,7 @@
     find_defects 的 views/  -> SyncFix 多视图 -> <out>/*.png -> refine
 
 ⚠️ SyncFix 是独立仓库/环境；仓库与权重路径必须显式给出（configs/local.yaml
-或命令行），运行时检测失败会直接报错，不再维护 syncfix_ready 开关。
+或命令行），运行时检测失败会直接报错。
 """
 from __future__ import annotations
 

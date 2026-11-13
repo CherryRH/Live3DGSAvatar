@@ -68,7 +68,7 @@ def preflight(root: Path, model: str = "vits") -> list[tuple[str, str]]:
     """确认在正确的环境里、且资产齐备。
 
     **环境与资产分开报**：前者说明"该用哪个解释器"，后者说明"该拷哪些文件" ——
-    部署到新机器时最常缺的就是后者，而它原来只在构建模型时才暴露。
+    部署到新机器时最常缺的就是后者；缺它时会在构建模型阶段才暴露。
     """
     problems: list[tuple[str, str]] = []
     if sys.version_info < (3, 11):

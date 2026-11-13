@@ -55,9 +55,6 @@ def test_post_in_place_and_repair_modes() -> None:
     assert plan["post_prefix"] == "w"
     plan = _plan("--repair-mode", "syncfix")
     assert plan["post_repair_mode"] == "syncfix"
-    # 旧名仍可用，但内部统一成 syncfix
-    plan = _plan("--repair-mode", "joint_syncfix")
-    assert plan["post_repair_mode"] == "syncfix"
     plan = _plan("--repair-mode", "mask_diffusion")
     assert plan["post_repair_mode"] == "mask_diffusion"
     plan = _plan("--repair-mode", "none")

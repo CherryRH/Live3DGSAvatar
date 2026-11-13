@@ -1,7 +1,7 @@
 """颜色与物理量的共享约定：SH DC ↔ RGB、死点不透明度阈值。
 
 放在 `core/` 是因为 `training/` 与 `evaluation/` 都要用，但两者之间不允许互相
-依赖（见 `docs/ARCHITECTURE.md）。这里只有纯 numpy 运算，不做 I/O。
+依赖：仅 numpy；这里只有纯 numpy 运算，不做 I/O。
 """
 
 from __future__ import annotations

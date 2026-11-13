@@ -238,7 +238,7 @@ def coverage_defect(coverage: np.ndarray, saturate: float = 50.0) -> np.ndarray:
     按 P90 归一化会让"看过 850 次"的中位数也算作 86% 缺陷 —— 那等于把整张脸都
     标成坏的，选择器就退化成"谁看得最多先选谁"。
 
-    这里改成**饱和**：看过 `saturate` 次即视为充分，权重线性降到 0。
+    采用**饱和**：看过 `saturate` 次即视为充分，权重线性降到 0。
     """
     cov = np.asarray(coverage, dtype=np.float64).reshape(-1)
     if saturate <= 0:

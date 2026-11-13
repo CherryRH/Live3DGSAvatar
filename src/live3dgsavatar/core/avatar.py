@@ -1,6 +1,6 @@
 """高斯 avatar 的参数容器。
 
-职责边界（见 docs/ARCHITECTURE.md）：
+职责边界：
 - **只持有参数与绑定**，不持有优化器、不做渲染、不做 I/O 之外的副作用；
 - 序列化只做「参数 ↔ PLY」的映射，模型定义（层数/维度）由 `AvatarConfig` 显式给出。
 
@@ -185,7 +185,7 @@ class GaussianAvatar(nn.Module):
             "rotation_b": self.rotation_b,
             "f_dc_b": self.color_b,
             # 权重投影 MLP：训练时要单独给学习率（RGBAvatar 的 weight_module_lr），
-            # 而它不在上面那些"基"里 —— 之前漏了这一组，训练脚本只能自己再拼。
+            # 它不属于上面的基，但优化器必须能单独配置它。
             **({"weight_module": self.weight_module} if
                self.config.use_weight_proj else {}),
         }

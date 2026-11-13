@@ -3,7 +3,7 @@
 对上层只暴露 :class:`SimpleRasterizer`：逐帧前向，不分配梯度缓冲。
 训练/推理/热更新共用这一条路径，避免多套光栅化实现产生不可比的结果。
 
-背景色语义（与参照实现对齐）见 docs/CORE.md。
+背景色语义与参照实现对齐。
 """
 
 from __future__ import annotations

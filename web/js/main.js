@@ -494,7 +494,7 @@ if (forceMock || isFileProtocol) {
 }
 
 // 前端 FPS 独立刷新：不依赖后端的 status 推送节奏
-// （后端刻意不推周期心跳，见 docs/APP.md）。
+// （后端刻意不推周期心跳）。
 setInterval(() => { el.fps.textContent = fpsMeter.display; }, 250);
 
 window.addEventListener("beforeunload", () => {

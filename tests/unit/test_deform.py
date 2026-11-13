@@ -364,7 +364,7 @@ def test_binding_is_rigidly_equivariant() -> None:
         R(QM)ᵀ · x ≠ Q·(R(M)ᵀ·x)      ← Rᵀ·x 形式仅在 R 正交时等变
 
     真实网格的 TBN 一般**不正交**（UV 参数化带剪切），故 `Rᵀ·x` 不等变。
-    参照实现的 `mesh_binding` 用的正是 `Rᵀ·x`。见 docs/ISSUES.md D 节。
+    参照实现的 `mesh_binding` 用的正是 `Rᵀ·x`。
     """
     from live3dgsavatar.core.deform.tbn import compute_face_tbn
 
@@ -591,7 +591,7 @@ def test_matrix_to_quaternion_matches_branchwise_reference() -> None:
     # ⚠️ 随机面里会混进**退化三角形**（UV 面积为 0）→ `f = 1/denom = inf`
     #    → `inf * 0 = NaN`。此时 TBN 本身就是 NaN，不是四元数转换的问题。
     #    这里只对**有限**输入断言逐位一致。
-    #    （退化面的 NaN 是独立隐患，见 docs/ISSUES.md O2；真实 duda 数据未触发。）
+    #    （退化面的 NaN 是独立隐患；真实 duda 数据未触发。）
     finite = torch.isfinite(tbn).all(dim=(-1, -2))
     assert int(finite.sum()) > 0, "用例应至少包含一些有限面"
     clean = tbn[finite]

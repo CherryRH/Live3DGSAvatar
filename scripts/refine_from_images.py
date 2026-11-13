@@ -13,7 +13,7 @@
 4. **真实帧锚定**：每批混入真实数据，且验证帧从锚定里剔除，避免自己考自己。
 
 `--ssim-weight` 默认 0（单独调用时只做 L1）；后训练流程传 0.2 + LPIPS 0.1。
-SSIM 已改为纯 torch 实现，不再依赖 `fused-ssim` 的 backward。
+SSIM 用纯 torch 实现，不依赖 `fused-ssim` 的 backward。
 
 不改模型格式、不改数据。
 

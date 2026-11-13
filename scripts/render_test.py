@@ -30,7 +30,7 @@ import time
 from pathlib import Path
 
 # ⚠️ 必须在导入任何可能触发 pickle 的模块之前施加 numpy 兼容补丁。
-#    （本项目已不再加载 FLAME 封装，但保留这一步以防间接依赖。）
+#    （保留这一步以防间接依赖触发 pickle。）
 import live3dgsavatar  # noqa: F401
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -49,9 +49,8 @@ from live3dgsavatar.config import (Config, load_config,  # noqa: E402
 def _normalize_argv(argv: list[str]) -> list[str]:
     """把 `--work_name` 这类**选项名**规整成 `--work-name`（两种写法都接受）。
 
-    只改以 `--` 开头的 token。之前对**所有**参数做替换，会把取值也改掉：
-    `--subject my_name` 变成 `my-name`、路径里的下划线被改掉 —— 后者只在测试里
-    暴露（真实运行时 `main()` 走的是未规整的分支），很难查。
+    只改以 `--` 开头的 token，不能碰取值：`--subject my_name` 必须保持
+    `my_name`，路径里的下划线也不能被改写。
     """
     return [a.replace("_", "-") if a.startswith("--") else a
             for a in argv if a.strip()]
@@ -243,7 +242,7 @@ def _finalize(args: argparse.Namespace, cfg: Config) -> argparse.Namespace:
 
 # --------------------------------------------------------------- 指标 --
 # 口径与 GUI/在线更新一致：图像度量来自 `core.metrics`，
-# 聚合与报告结构来自 `evaluation.protocol`（脚本不再自己算一遍）。
+# 聚合与报告结构来自 `evaluation.protocol`。
 
 from live3dgsavatar.core.metrics import psnr, psnr_masked  # noqa: E402
 from live3dgsavatar.evaluation import (  # noqa: E402
@@ -470,8 +469,8 @@ def load_gt(args, frames: list[int], offset: int = 0):
     """读取数据集原图（RGBA）。返回 `{i: (rgb HxWx3, mask HxW bool)}`。
 
     `frames` 是**场景内的下标**（0..n-1），`offset` 是它们在数据集里的起始
-    帧号。GT 文件必须按 `offset + i` 取 —— 之前漏了这一步，`--frame-offset`
-    时会把"渲染第 2513 帧"和"原图第 0 帧"相比，PSNR 直接掉到 13 dB 以下。
+    帧号。GT 文件必须按 `offset + i` 取，否则 `--frame-offset` 会把
+    "渲染第 2513 帧"和"原图第 0 帧"相比。
     """
     from PIL import Image
 

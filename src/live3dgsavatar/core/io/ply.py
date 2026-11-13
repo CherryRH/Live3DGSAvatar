@@ -15,11 +15,11 @@
     [face_id]                         # i4，可选
     [face_bary_0..2]                  # f4，可选
 
-相对参照实现修掉的两个缺陷（见 docs/ISSUES.md）：
+PLY 自描述与一致性校验：
 
-- **K4** `save_ply` 引用了不存在的 `self.binding_face_id`，任何模型都保存失败；
-- **K3** `load_ply` 从配置读 `num_basis_blend` 而非文件列数，配置与文件不一致时静默出错。
-  本实现在 PLY 头写一行 `comment gaussian_config ...` 自描述，并在加载时与文件列数交叉校验。
+- 保存时在头部写一行 `comment gaussian_config ...`，记录结构参数；
+- 加载时以文件实际列数为准校验 `num_basis_blend`，并用 `tex_size²`
+  校验容量，避免配置与文件不一致时静默读错列。
 """
 
 from __future__ import annotations
@@ -217,7 +217,7 @@ def load_ply(
     if k_from_file <= 0:
         raise ValueError(f"{path} 缺少 xyz_b_* 基参数列，无法载入 blendshape 基")
 
-    # ---- 配置解析与一致性校验（修掉参照实现的 K3 缺陷）----
+    # ---- 配置解析与一致性校验 ----
     meta = _read_config_comment(plydata)
     if config is None:
         if meta is None:

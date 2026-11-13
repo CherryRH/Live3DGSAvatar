@@ -176,7 +176,7 @@ class ParameterPlan:
 
         - 单个 `nn.Parameter`（大多数高斯属性）
         - 一个 `nn.Module`（`weight_module` 是 `nn.Sequential`，
-          之前的实现把它整个塞给 Adam，报
+          把整个模块塞给 Adam 会报
           "optimizer can only optimize Tensors"）
         - 可迭代的 `Parameter`
 

@@ -1,10 +1,10 @@
 """架构一致性测试（**不需要 GPU**）。
 
-把 `docs/ARCHITECTURE.md` 里声明的分层规则变成可执行的检查，
+把分层规则变成可执行的检查，
 避免它们在后续迭代中被无声破坏。
 
 规则来源：
-- `docs/ARCHITECTURE.md` §2：依赖方向严格单向；
+- 依赖方向严格单向；
 - `core/` 不得 import `data/` / `training/` / `app/` / `tracking/` / `evaluation/`；
 - `data/` 不得反向 import `tracking/`；
 - `core/` 不做文件 I/O 与参数解析（`core/io/` 的序列化除外）；
@@ -474,7 +474,7 @@ def test_setup_env_installs_project() -> None:
     cmd = project_install[0]
     assert "--no-deps" in cmd, (
         "安装本项目必须加 --no-deps：torch 与三个 CUDA 扩展有自己的安装顺序"
-        "（见 docs/ISSUES.md），让 pip 顺着 pyproject 解析会与它们打架")
+        "，让 pip 顺着 pyproject 解析会与它们打架")
 
     # 安装后立刻自检导入，而不是等 run_gui.sh 才 ModuleNotFoundError
     assert "import live3dgsavatar" in text, "setup_env.sh 应在安装后自检导入"

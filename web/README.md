@@ -3,7 +3,7 @@
 图形化前端。**无构建步骤**：原生 ES modules，直接由后端静态托管。
 
 > **状态**：前后端均已实现。启动：`bash run_gui.sh`（见根 `README.md`）。
-> 协议见 [`docs/APP.md`](../docs/APP.md)。
+> 协议实现见 `web/js/protocol.js`。
 
 ## 为什么不用 Vite / TypeScript / 框架
 
@@ -41,7 +41,7 @@ web/
 bash run_gui.sh          # 浏览器打开 http://localhost:8000
 ```
 
-由后端在同一端口同时提供静态文件与 `/api/*`、`/ws`（见 `docs/APP.md`）。
+由后端在同一端口同时提供静态文件与 `/api/*`、`/ws`。
 
 ### 只看界面（mock 模式）
 

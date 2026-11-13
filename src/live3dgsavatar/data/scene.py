@@ -128,7 +128,7 @@ def load_scene(
         raise FileNotFoundError(
             f"数据集格式无法识别：{data_dir}\n"
             f"需要 {MANIFEST_NAME}（自包含清单），或 checkpoint/（每帧 3DMM 参数）。\n"
-            "见 docs/CONFIG.md「数据集格式」。")
+            "数据集格式见 configs/ 与 build_dataset.sh。")
     _warn_if_images_missing(data_dir, cfg)
     return scene
 
@@ -200,10 +200,10 @@ def _flame_model(cfg: Config):
 
 # --------------------------------------------------------- manifest 格式 --
 
-#: 自包含清单的文件名。存在它时走 manifest 分支，不再需要 FLAME 文件。
+#: 自包含清单的文件名。存在它时走 manifest 分支，不需要 FLAME 文件。
 MANIFEST_NAME = "render_inputs.npz"
 
-#: FLAME 资产目录（本项目自带，不再依赖参照仓库）
+#: FLAME 资产目录（本项目自带）
 _FLAME_DIR_REL = "data/FLAME2020"
 
 

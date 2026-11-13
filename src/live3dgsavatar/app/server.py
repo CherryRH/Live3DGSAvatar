@@ -1,7 +1,7 @@
 """GUI 后端：FastAPI 应用（HTTP + WebSocket）+ 推流循环。
 
 层次：本模块只做**消息编解码与调度**，不碰张量；
-所有 GPU 相关工作在 `session.py` 里。协议见 `docs/APP.md`。
+所有 GPU 相关工作在 `session.py` 里。
 
 并发模型（刻意简单）：
 
@@ -269,8 +269,7 @@ async def _serve_client(app: FastAPI, ws: WebSocket, session: Session) -> None:
     queue: asyncio.Queue = asyncio.Queue(maxsize=1)
     stop = asyncio.Event()
     # 本连接的发送字节统计：`total` 为累计，`logged` 是上次打日志时的值。
-    # ⚠️ 速率必须用**区间增量**算：拿累计值除以固定间隔会得到"只增不减"的假速率
-    #    （曾经把 4722 MiB 当成 472 MiB/s 打了出来）。
+    # ⚠️ 速率必须用**区间增量**算：累计值除以固定间隔会得到"只增不减"的假速率。
     sent = {"total": 0, "logged": 0, "at": asyncio.get_running_loop().time()}
     stats_log_interval_s = float(
         session.cfg.get("app.stats_log_interval_s", 10.0))
@@ -339,10 +338,8 @@ async def _serve_client(app: FastAPI, ws: WebSocket, session: Session) -> None:
                 await asyncio.sleep(0.1)
                 continue
             except Exception as e:  # noqa: BLE001
-                # ⚠️ 曾经这里是 `break`：一次渲染异常就永久结束这个连接的渲染循环，
-                #    前端画面停在最后一帧，而此后"切换模型成功"也不会有任何新帧
-                #    —— 表现为"加载成功了但画面还卡在旧模型"。
-                #    正确做法是报错但不退出：短暂等待后继续重试。
+                # ⚠️ 渲染异常必须报错并重试，不能结束渲染循环：
+                #    否则前端停在最后一帧，切换模型也不会有新帧。
                 now = loop.time()
                 if err_log.due(now):
                     logger.exception("渲染失败（将重试）")
@@ -840,7 +837,7 @@ def _missing_flame_assets(cfg) -> list[str]:
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    """命令行 = 对 `configs/*.yaml` 的覆盖层（见 docs/CONFIG.md）。"""
+    """命令行 = 对 `configs/*.yaml` 的覆盖层。"""
     p = argparse.ArgumentParser(
         prog="python -m live3dgsavatar.app",
         description="Live3DGSAvatar GUI 服务（浏览器实时预览）",

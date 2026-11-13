@@ -40,12 +40,11 @@ def resolve_avatar_config(cfg: Config, model_ply: Path,
                           model_cfg: Path | None = None):
     """按“PLY 内嵌 → 模型 config.yaml → render.yaml 兜底”解析模型结构。
 
-    `render_test` 早已按这个顺序读结构，但 GUI 之前直接读 `render.yaml`，
-    导致“评测能开、GUI 开不了”的结构漂移。这里把顺序收敛到一处：
+    结构来源顺序固定在这里，评测与 GUI 共用：
 
     1. PLY 头里的 `comment gaussian_config`（训练产物自带，最可信）
-    2. `<模型目录>/config.yaml`（早期模型/参照实现可能只有这个）
-    3. `configs/render.yaml` 的 `model.network.*`（无任何模型侧信息时才兜底）
+    2. `<模型目录>/config.yaml`
+    3. `configs/render.yaml` 的 `model.network.*`（无模型侧信息时兜底）
 
     Args:
         cfg: 运行配置（兜底与 `paths.models_config` 用）
@@ -86,7 +85,7 @@ def resolve_avatar_config(cfg: Config, model_ply: Path,
 
 @dataclass
 class RenderParams:
-    """前端可实时调整的参数（对应 docs/APP.md 的 `params`）。
+    """前端可实时调整的参数。
 
     校验与合并逻辑放在 `protocol.merge_params` —— 那是**纯函数**，
     没有 GPU、没有 Web 依赖，可以直接单元测试。
@@ -213,8 +212,8 @@ class Session:
         #: PSNR 缓存 `(key, value, at)` —— 同一帧短期内不重算
         self._psnr_cache = None
         #: 模型自带数据集的拓扑 `(顶点数, 面数)` —— 切换驱动数据集时用它校验。
-        #: ⚠️ 不能用 `avatar.num_basis`：那是约简基的**个数 K**（20），
-        #:    不是顶点数。曾经拿它跟 5083 比，导致换任何数据集都报"不匹配"。
+        #: ⚠️ 不能用 `avatar.num_basis`：那是约简基的**个数 K**，不是顶点数。
+        #:    切换数据集时比较 (顶点数, 面数)。
         self._model_topology: tuple[int, int] | None = None
 
         from ..tracking.live_source import LiveSource  # noqa: PLC0415
@@ -284,8 +283,6 @@ class Session:
         preload = int(cfg.get("app.preload_frames", -1))
         # ⚠️ 显式给出设备：`load_scene` 会把**帧、拓扑、相机**统一搬到该设备，
         #    下面的 `load_ply(device="cuda")` 与 `Camera.to("cuda")` 才与之一致。
-        #    曾经这里漏传，`scene.faces` 留在 CPU，而 `mesh.verts` 在 GPU，
-        #    `mesh.verts[:, mesh.faces[used]]` 抛设备不匹配错误。
         scene = load_scene(cfg, frames=preload, device=self.device)
 
         av_cfg = resolve_avatar_config(cfg, model_ply)

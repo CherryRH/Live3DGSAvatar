@@ -48,7 +48,7 @@ def _ssim(pred: torch.Tensor, target: torch.Tensor,
           mask: torch.Tensor | None) -> torch.Tensor:
     """`1 - SSIM`（纯 PyTorch 局部窗口）。
 
-    **不再走 `fused_ssim`**：该算子的 backward 在本机构建上与光栅化 backward
+    **不使用 `fused_ssim`**：该算子的 backward 在本机构建上与光栅化 backward
     同进程时会触发 CUDA illegal memory access（2026-11-11 实测）。
     """
     return local_ssim_loss(pred, target, mask)

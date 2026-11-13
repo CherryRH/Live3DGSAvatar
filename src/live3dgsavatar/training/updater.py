@@ -251,7 +251,7 @@ class OnlineUpdater:
             loss = torch.zeros((), device=background.device)
             # **每步轮转一批帧**，而不是永远取前 `frame_chunk` 个。
             #
-            # 之前的写法是 `batch.frames[:frame_chunk]` —— 若观测有 300 帧、
+            # `batch.frames[:frame_chunk]` 在观测有 300 帧、
             # `frame_chunk=8`，那**只有前 8 帧产生过梯度**，另外 292 帧只在
             # 评估时被用到。用户以为"用 300 帧更新"，实际只用了 8 帧。
             #

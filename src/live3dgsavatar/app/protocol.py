@@ -1,7 +1,7 @@
 """GUI 后端的协议编解码与背压工具。
 
 **刻意不依赖 FastAPI / torch**：这些是纯函数，可以在没有 GPU、
-没有 Web 依赖的环境里直接单元测试。`docs/APP.md` 是权威定义。
+没有 Web 依赖的环境里直接单元测试。
 """
 
 from __future__ import annotations
@@ -204,7 +204,7 @@ def merge_params(current: dict, msg: dict) -> dict:
 
     # ⚠️ 刻意**没有** `drive.mode`。是否推进帧号完全由 `playing` 表达：
     #    暂停 ≠ 停止渲染，只是帧号停住（渲染仍按帧数上限全速进行）。
-    #    原本的 still/play 与播放按钮语义重复，已删除。
+    #    播放/暂停由 `playing` 表达，不额外引入 still/play 模式。
     if "frame" in drive:
         frame = int(drive["frame"])
         if frame < 0:
@@ -306,7 +306,7 @@ def frame_interval(target_fps: float) -> float:
 def sleep_after(elapsed: float, interval: float, tolerance: float = 0.5) -> float:
     """按「帧数上限 + 等待」语义算出本轮还应睡多久（秒）。
 
-    语义（见 docs/APP.md）：
+    语义：
 
     - 上一轮耗时 < 间隔 → 睡满差额，使触发间隔恒为 `interval`
     - 上一轮耗时 ≥ 间隔 → **不睡**，立刻开始下一轮

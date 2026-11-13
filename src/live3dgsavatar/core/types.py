@@ -1,6 +1,6 @@
 """跨层核心数据类型。
 
-设计原则（见 docs/CORE.md）：
+设计原则：
 - 所有张量 **batch-first**，第一维恒为 batch（单帧为 1）；
 - `GaussianSet` 内**永远存放已激活的物理量**（opacity∈[0,1]、scaling>0、rotation 单位四元数）；
 - 空间归属**显式标注**，不靠调用顺序隐含约定；
@@ -160,7 +160,7 @@ class Mesh:
 
 @dataclass
 class Camera:
-    """针孔相机。**只存 K 与 w2c**，其余全部派生（见 docs/CORE.md）。
+    """针孔相机。**只存 K 与 w2c**，其余全部派生。
 
     Attributes:
         K:     [B, 3, 3] 或 [3, 3] 内参
@@ -290,7 +290,7 @@ class Camera:
 
         rot = R_t.transpose(0, 1)                 # view→world
         pos = -(rot @ T_t)                        # 相机位置
-        # ⚠️ **必须继承输入的设备**。曾经写成 `torch.eye(4, dtype=...)`（无 device=），
+        # ⚠️ **必须继承输入的设备**。`torch.eye(4, dtype=...)` 不带 device，
         #    w2c 就永远留在 CPU；而 K 保留了输入设备。跨设备赋值 `copy_` 不会报错，
         #    于是 Camera 一半在 GPU、一半在 CPU。之后 w2c 被当作 CUDA 指针传给
         #    光栅化内核，表现为 `CUDA error: an illegal memory access` —— 

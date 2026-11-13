@@ -85,7 +85,7 @@ def _merge_selected(dst: Path, src: Path, *, keep: set[str],
     """把 src 的 selected.json 合并到 dst，只保留累计 chosen。
 
     `refined_src` 指定这一轮通过门控的标签目录。新流程用
-    `pseudo/accepted/`，不再往 `defects/refined/` 复制一份；旧目录
+    `pseudo/accepted/`，不往 `defects/refined/` 复制一份；
     （`src/refined`）仍然兼容。
     """
     sd = json.loads((src / "selected.json").read_text(encoding="utf-8"))
@@ -122,19 +122,6 @@ def label_stems(defects: Path) -> set[str]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    # 兼容旧名：joint_syncfix -> syncfix（只保留一个规范名，旧命令仍可跑）
-    raw = list(sys.argv[1:] if argv is None else argv)
-    for i, token in enumerate(raw):
-        if token == "--repair-mode" and i + 1 < len(raw) and raw[i + 1] == "joint_syncfix":
-            print("[post] repair-mode 'joint_syncfix' 已更名为 'syncfix'，"
-                  "本次按 syncfix 执行", file=sys.stderr)
-            raw[i + 1] = "syncfix"
-        elif token == "--repair-mode=joint_syncfix":
-            print("[post] repair-mode 'joint_syncfix' 已更名为 'syncfix'，"
-                  "本次按 syncfix 执行", file=sys.stderr)
-            raw[i] = "--repair-mode=syncfix"
-    argv = raw
-
     ap = argparse.ArgumentParser()
     ap.add_argument("--subject", required=True)
     ap.add_argument("--dataset", default=None)
@@ -649,7 +636,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  下一轮 base={base}", flush=True)
 
     total = time.perf_counter() - start
-    # 选“最后一个被接受的轮次”，不再按分数挑 best
+    # 选最后一个被接受的轮次
     best_round = last_round
     out = {
         "prefix": args.prefix, "base": args.base_work,

@@ -1,13 +1,9 @@
 """「几何 + 驱动参数 → 图像」的唯一组合路径。
 
-**为什么要有这个函数**：同一条组合（`deform` → `rasterize`）以前在
-`app/session.py`、`scripts/render_test.py`、诊断脚本里各写一遍。热更新也要
-用它，如果各处自己拼装，**任何一处漏掉背景色/缩放/无梯度上下文都会造成
-"同一模型两处结果不一致"**。
-
-现在 GUI、评测、缺陷定位、训练、后训练都走这里；需要复用同一份形变结果
-渲染多个相机时走 `render_gaussians`。调用方只决定"用哪些帧、什么相机、
-要不要梯度"。
+`deform` → `rasterize` 只在 `render_frame` / `render_gaussians` 里组合。
+GUI、评测、缺陷定位、训练、后训练都走这里，避免各处漏掉背景色、缩放或
+无梯度上下文。需要复用同一份形变结果渲染多个相机时走 `render_gaussians`。
+调用方只决定"用哪些帧、什么相机、要不要梯度"。
 """
 
 from __future__ import annotations

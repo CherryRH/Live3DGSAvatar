@@ -93,9 +93,6 @@ POST_SYNCFIX_N_PER_PASS="${POST_SYNCFIX_N_PER_PASS:-${CFG_POST_SYNCFIX_N_PER_PAS
 POST_SYNCFIX_REF_SIZE="${POST_SYNCFIX_REF_SIZE:-${CFG_POST_SYNCFIX_REF_SIZE:-4}}"
 
 case "$POST_REPAIR_MODE" in
-  joint_syncfix)
-    info "repair-mode 'joint_syncfix' 已更名为 'syncfix'，本次按 syncfix 执行"
-    POST_REPAIR_MODE=syncfix ;;
   mask_diffusion|syncfix|none) ;;
   *) die "未知 --repair-mode：$POST_REPAIR_MODE（syncfix / mask_diffusion / none）" ;;
 esac
