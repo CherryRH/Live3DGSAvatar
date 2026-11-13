@@ -3,29 +3,6 @@
 面向视频通话的 3DGS 头部重建：从单目视频 / RDF 跟踪结果训练可驱动高斯头像，
 支持后训练修复、留出集评测、浏览器预览和实时驱动。
 
-## 架构
-
-```text
-数据构建        build_dataset.sh
-                  ├─ RDF 跟踪：FLAME 网格、表情/姿态、相机
-                  └─ datasets/<对象>/{images, input, render_inputs.npz}
-
-训练            scripts/train.py
-                  ├─ data/       数据集、场景、样本源、姿态
-                  ├─ training/   训练循环、损失、参数计划
-                  └─ core/       高斯、形变、绑定、相机、光栅化
-
-后训练          post_train.sh / scripts/iterative_repair.py
-                  ├─ find_defects  选缺陷视角
-                  ├─ 标签生成      mask_diffusion / joint_syncfix
-                  └─ refine        真实帧 + 修复帧混合微调
-
-评测 / 预览     eval.sh / run_gui.sh
-                  ├─ app/        HTTP + WebSocket 后端
-                  ├─ web/        原生前端
-                  └─ tracking/   RDF 实时驱动桥
-```
-
 | 模块 | 职责 |
 |---|---|
 | `core/` | 高斯表示、FLAME 形变与绑定、相机、光栅化；不依赖上层 |
