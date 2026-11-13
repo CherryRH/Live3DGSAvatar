@@ -1,6 +1,6 @@
 """架构一致性测试（**不需要 GPU**）。
 
-把 `docs/ARCHITECTURE.md` 里声明的分层规则变成可执行的检查，
+把 `docs/DESIGN.md` 里声明的分层规则变成可执行的检查，
 避免它们在后续迭代中被无声破坏。
 
 规则来源：
@@ -476,7 +476,7 @@ def test_setup_env_installs_project() -> None:
     cmd = project_install[0]
     assert "--no-deps" in cmd, (
         "安装本项目必须加 --no-deps：torch 与三个 CUDA 扩展有自己的安装顺序"
-        "（见 docs/ENVIRONMENT.md §2），让 pip 顺着 pyproject 解析会与它们打架")
+        "（见 docs/ISSUES.md §2），让 pip 顺着 pyproject 解析会与它们打架")
 
     # 安装后立刻自检导入，而不是等 run_gui.sh 才 ModuleNotFoundError
     assert "import live3dgsavatar" in text, "setup_env.sh 应在安装后自检导入"

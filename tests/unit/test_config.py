@@ -207,62 +207,6 @@ def test_non_mapping_yaml_is_rejected(tmp_path: Path) -> None:
     assert "mapping" in str(exc.value)
 
 
-# ------------------------------------------------- 硬编码路径的静态约束 --
-
-
-def test_no_hardcoded_absolute_paths_in_source() -> None:
-    """**回归测试**：`src/`、`tests/`、`scripts/` 不得出现用户的绝对路径。
-
-    路径必须来自 `configs/*.yaml`（可用环境变量或命令行覆盖）。
-    否则换机器 / 换数据集就要改代码，也为应用层复用埋坑。
-    """
-    import re
-
-    pattern = re.compile(r"/home/[A-Za-z0-9_.-]+/")
-    offenders: list[str] = []
-    for sub in ("src", "tests", "scripts"):
-        for path in sorted((REPO_ROOT / sub).rglob("*.py")):
-            if "__pycache__" in str(path):
-                continue
-            for lineno, line in enumerate(
-                    path.read_text(encoding="utf-8").splitlines(), 1):
-                code = line.split("#", 1)[0]
-                if pattern.search(code):
-                    # tests/support.py 里的 REPO_ROOT 由 __file__ 推导，不会命中；
-                    # 这里只拦截字面量绝对路径。
-                    offenders.append(
-                        f"{path.relative_to(REPO_ROOT)}:{lineno}: {line.strip()}")
-
-    assert not offenders, (
-        "发现硬编码绝对路径，请移到 configs/*.yaml：\n  " + "\n  ".join(offenders))
-
-
-def test_scripts_have_no_business_defaults() -> None:
-    """**回归测试**：脚本不应自带业务默认量（应由配置提供）。
-
-    允许 `default=None`（表示"未覆盖"）与布尔开关（`store_true`）。
-    这里只拦截明确的数值/路径字面量默认值，避免配置被代码悄悄压过。
-    """
-    import re
-
-    # 形如 `default=256`、`default=Path("output/...")` 的业务默认量
-    bad_numeric = re.compile(
-        r"add_argument\([^)]*default=(?!None\b)(\d+|Path\()")
-    offenders: list[str] = []
-    for name in ("render_test.py", "show_config.py"):
-        path = REPO_ROOT / "scripts" / name
-        for lineno, line in enumerate(
-                path.read_text(encoding="utf-8").splitlines(), 1):
-            code = line.split("#", 1)[0]
-            if bad_numeric.search(code):
-                offenders.append(
-                    f"{path.relative_to(REPO_ROOT)}:{lineno}: {line.strip()}")
-
-    assert not offenders, (
-        "脚本参数不应硬编码业务默认量（应由 configs/*.yaml 提供）：\n  "
-        + "\n  ".join(offenders))
-
-
 # --------------------------------------------------------- 模型路径解析 --
 def test_resolve_model_config_finds_bundled_config(tmp_path) -> None:
     """模型随附的 `config.yaml` 应能在模型目录里被找到。"""

@@ -1,7 +1,7 @@
 """GUI 后端：FastAPI 应用（HTTP + WebSocket）+ 推流循环。
 
 层次：本模块只做**消息编解码与调度**，不碰张量；
-所有 GPU 相关工作在 `session.py` 里。协议见 `docs/GUI_PROTOCOL.md`。
+所有 GPU 相关工作在 `session.py` 里。协议见 `docs/DESIGN.md`。
 
 并发模型（刻意简单）：
 
@@ -840,7 +840,7 @@ def _missing_flame_assets(cfg) -> list[str]:
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    """命令行 = 对 `configs/*.yaml` 的覆盖层（见 docs/CONFIG.md）。"""
+    """命令行 = 对 `configs/*.yaml` 的覆盖层（见 docs/PARAMETERS.md）。"""
     p = argparse.ArgumentParser(
         prog="python -m live3dgsavatar.app",
         description="Live3DGSAvatar GUI 服务（浏览器实时预览）",

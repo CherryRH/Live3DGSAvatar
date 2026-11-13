@@ -128,7 +128,7 @@ def load_scene(
         raise FileNotFoundError(
             f"数据集格式无法识别：{data_dir}\n"
             f"需要 {MANIFEST_NAME}（自包含清单），或 checkpoint/（每帧 3DMM 参数）。\n"
-            "见 docs/CONFIG.md「数据集格式」。")
+            "见 docs/PARAMETERS.md「数据集格式」。")
     _warn_if_images_missing(data_dir, cfg)
     return scene
 

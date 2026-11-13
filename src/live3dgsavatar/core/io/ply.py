@@ -15,7 +15,7 @@
     [face_id]                         # i4，可选
     [face_bary_0..2]                  # f4，可选
 
-相对参照实现修掉的两个缺陷（见 docs/MIGRATION.md）：
+相对参照实现修掉的两个缺陷（见 docs/ISSUES.md）：
 
 - **K4** `save_ply` 引用了不存在的 `self.binding_face_id`，任何模型都保存失败；
 - **K3** `load_ply` 从配置读 `num_basis_blend` 而非文件列数，配置与文件不一致时静默出错。

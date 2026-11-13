@@ -2,7 +2,7 @@
 #
 # 本文件集中存放**路径类与设备类**配置；
 # 渲染参数见 configs/render.yaml，训练/在线更新见 configs/train.yaml。
-# 字段说明见 docs/CONFIG.md。所有路径支持三种写法：
+# 字段说明见 docs/PARAMETERS.md。所有路径支持三种写法：
 #   1. 绝对路径                     /home/you/Datasets/INSTA
 #   2. 以 ~ 开头                     ~/Datasets/INSTA
 #   3. 相对仓库根                    ../other-project
@@ -39,7 +39,7 @@ paths:
   image_subdir: images
 
 # 实时驱动。追踪器以**独立进程**运行（环境不兼容），本项目把画面发过去、
-# 拿回参数与顶点。见 docs/LIVE_DRIVING.md。
+# 拿回参数与顶点。见 docs/DESIGN.md。
 tracking:
   # 总开关。关闭后实时驱动不可用，界面会显示原因。
   enabled: true

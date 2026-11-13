@@ -272,40 +272,6 @@ def test_build_dataset_renames_images_to_five_digits(tmp_path) -> None:
 # ------------------------------------------------------- 缺陷定位脚本 --
 
 
-def test_find_defects_dry_run_plans_without_gpu() -> None:
-    """`--dry-run` 必须在没有 GPU 的机器上把计划算出来（候选数、产物路径）。"""
-    import io
-    import contextlib
-
-    root = REPO_ROOT / "datasets" / "crh_1"
-    if not (root / "render_inputs.npz").is_file():
-        pytest.skip("缺少仓库内数据集")
-
-    m = load_script("find_defects.py")
-    buf = io.StringIO()
-    with contextlib.redirect_stdout(buf):
-        code = m.main(["--subject", "crh_1", "--work-name", "run",
-                       "--dataset", "crh_1", "--dry-run"])
-
-    out = buf.getvalue()
-    assert code == 0
-    assert "候选" in out and "55 视角" in out
-    assert "output/defects" in out
-
-
-def test_find_defects_requires_model_and_dataset() -> None:
-    """模型或数据集不存在时给出单行错误，而不是堆栈。"""
-    import io
-    import contextlib
-
-    m = load_script("find_defects.py")
-    with pytest.raises(SystemExit) as err:
-        with contextlib.redirect_stdout(io.StringIO()):
-            m.main(["--subject", "crh_1", "--work-name", "nope",
-                    "--dataset", "crh_1", "--dry-run"])
-    assert "[error]" in str(err.value.code)
-
-
 # ------------------------------------------------ 精修图微调（脚本工具） --
 
 

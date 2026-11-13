@@ -1,7 +1,7 @@
 # Live3DGSAvatar —— 训练与在线更新配置
 #
 # 本文件集中存放**训练相关**的默认量；路径与设备见 configs/system.yaml，
-# 渲染相关见 configs/render.yaml。字段说明见 docs/CONFIG.md。
+# 渲染相关见 configs/render.yaml。字段说明见 docs/PARAMETERS.md。
 #
 # 这些参数都可以在 GUI 的「设置」浮窗里改并保存（写入 configs/local.yaml），
 # 但只有标记为可编辑的才会真正作用到运行中的服务 —— 见 app/settings.py。
@@ -42,7 +42,7 @@ train:
     prefetch_workers: 2
     # 大角度验证：早停时额外渲染 ±20/30/40° 视角，统计轮廓内的孔洞比例，
     # 用 `PSNR − λ·缺口` 作为早停指标。只按正脸 PSNR 早停会选出"只在正脸好"
-    # 的模型（详见 docs/REDESIGN.md）。
+    # 的模型（详见 docs/ISSUES.md）。
     robust_eval: true
     # 参与大角度统计的验证帧数（等间隔抽样，保证不同检查点可比）
     robust_eval_frames: 24
@@ -113,7 +113,7 @@ train:
       min_mask_sharp: 0.85
       lr_xyz: 1e-5
       base_model: emilianJR/epiCRealism
-      # 身份条件/颜色对齐是失败实验：默认关（见 docs/POSTTRAIN.md）
+      # 身份条件/颜色对齐是失败实验：默认关（见 docs/DESIGN.md）
       ip_adapter: none
       color_match: false
       color_ring: 8
@@ -128,7 +128,7 @@ train:
       negative: "looking at camera, looking at viewer, eye contact, side glance, cross-eyed, clothing, shirt, collar, jacket, scarf, necklace, earrings, jewelry, hat, glasses, makeup, lipstick, eyeshadow, blush, painted face, beauty filter, blurry, smooth plastic, deformed, extra eyes, low resolution, watermark"
 
   # 在线更新（热更新）：通话开始时用一小段观测微调外观。
-  # 见 docs/ONLINE_UPDATE.md。
+  # 见 docs/DESIGN.md。
   online_update:
     # ---- 门控 ----
     # 总开关。关闭后 GUI / 脚本都不会执行在线更新。

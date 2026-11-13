@@ -42,3 +42,6 @@ submodules/*/samples/data/
 # 数据集
 datasets/*
 !datasets/.gitkeep
+
+# 临时交付/归档目录
+/tmp/

@@ -18,7 +18,7 @@
 `transpose` 是针对**调用方传入布局**的修正，不能脱离"传入的是什么"来判断。
 
 回归测试：`test_bind_matches_reference_translation`、
-`test_mesh_binder_uses_R_not_transpose`。详见 `docs/MIGRATION.md` D 节。
+`test_mesh_binder_uses_R_not_transpose`。详见 `docs/ISSUES.md` D 节。
 """
 
 from __future__ import annotations

@@ -5,7 +5,7 @@
 - :class:`SimpleRasterizer` —— 推理：逐帧前向，不分配梯度缓冲
 - :class:`BatchRasterizer`  —— 训练：`BatchGaussianRasterizer` + 预分配缓冲 + 多流
 
-背景色语义（与参照实现对齐）见 docs/CONVENTIONS.md §5.1。
+背景色语义（与参照实现对齐）见 docs/DESIGN.md §5.1。
 """
 
 from __future__ import annotations

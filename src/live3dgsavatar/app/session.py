@@ -36,7 +36,7 @@ log = logging.getLogger(__name__)
 
 @dataclass
 class RenderParams:
-    """前端可实时调整的参数（对应 docs/GUI_PROTOCOL.md §3.2 的 `params`）。
+    """前端可实时调整的参数（对应 docs/DESIGN.md §3.2 的 `params`）。
 
     校验与合并逻辑放在 `protocol.merge_params` —— 那是**纯函数**，
     没有 GPU、没有 Web 依赖，可以直接单元测试。
