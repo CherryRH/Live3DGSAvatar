@@ -47,6 +47,9 @@ bash build_dataset.sh <图像目录> --name <对象>
 bash train.sh --subject <对象> --work-name base
 bash post_train.sh --subject <对象> --work-name base
 bash eval.sh --subject <对象> --work-name base
+# 多版本对比：原图 + N 个渲染并排，showcase 为 N 图并列
+bash eval.sh --subject <对象> --work-name base -- \
+  --work-names base <版本2> <版本3> <版本4>
 bash run_gui.sh --subject <对象> --work-name base
 ```
 
@@ -58,7 +61,7 @@ bash run_gui.sh --subject <对象> --work-name base
 | `build_dataset.sh` | 跟踪、对齐并烘焙训练数据 | `datasets/<对象>/` |
 | `train.sh` | 基础训练 | `models/<对象>/<版本>/` |
 | `post_train.sh` | 后训练：`syncfix`（默认）/ `mask_diffusion` / `none` | `models/<对象>/<版本>_post_rN/` |
-| `eval.sh` | 留出集渲染评测 | `output/render_test/.../report.json`、`compare.mp4`、`showcase.mp4` |
+| `eval.sh` | 留出集渲染评测（支持 `--work-names` 多版本） | `output/render_test/.../report.json`、`compare.mp4`、`showcase.mp4` |
 | `run_gui.sh` | 浏览器预览与实时驱动 | `http://localhost:8000` |
 | `run_tracking.sh` | 启动 RDF 实时追踪服务 | 追踪 sidecar |
 | `scripts/online_update.py` | 用少量观测做在线外观更新 | `output/online_update/` |
@@ -96,7 +99,8 @@ models/<对象>/<版本>/            最终 model.ply + config.yaml + report.jso
 ```
 
 评测其它数据集时，上述 `render_test`/`defects`/`compare_defects`/`analyze`
-路径末尾追加 `/<数据集>`，避免不同数据集覆盖。最终模型只保留在 `models/`；
+路径末尾追加 `/<数据集>`，避免不同数据集覆盖；多版本评测默认落在
+`render_test/<对象>/<主版本>_multi/`。最终模型只保留在 `models/`；
 `output/train/` 只留 checkpoint，`output/post/` 只留报告与标签，避免 60 MB 级
 PLY 多份并存。同名目录/版本默认拒绝覆盖，确认重跑需显式 `--force`。
 

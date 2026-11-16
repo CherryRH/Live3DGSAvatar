@@ -61,11 +61,12 @@ def test_output_dir_is_per_experiment() -> None:
     assert 'output_dir_for(cfg, "render_test"' in src
 
 
-def test_single_model_only() -> None:
-    """模型目录与 work-name 一一对应：不再扫描多个 `.ply`。"""
+def test_multi_model_comparison_is_supported() -> None:
+    """单模型仍走原路径；`--work-names` 支持一次比较多个版本。"""
     src = SCRIPT.read_text(encoding="utf-8")
-    assert "resolve_models" not in src
-    assert "model_aug" not in src
+    assert "--work-names" in src
+    assert "compose_panels" in src
+    assert "resolve_models" not in src, "仍按显式版本名找模型，不扫描目录"
 
 
 # ------------------------------------------------------------------ GT 偏移 --
@@ -95,6 +96,18 @@ def test_load_gt_follows_frame_offset(tmp_path) -> None:
 
 
 # ------------------------------------------------------ 参数与产物组织 --
+
+
+def test_cli_takes_multiple_work_names() -> None:
+    m = _load()
+    args = m.parse_args([
+        "--subject", "crh_1",
+        "--work-names", "base", "base_post_r2,wk1116_mask_r2",
+        "--dataset", "crh_1",
+    ])
+    assert args.work_names == ["base", "base_post_r2,wk1116_mask_r2"]
+    assert m._work_name_list(None, args.work_names) == [
+        "base", "base_post_r2", "wk1116_mask_r2"]
 
 
 def test_cli_takes_model_and_dataset(tmp_path) -> None:
@@ -182,6 +195,13 @@ def test_clean_previous_outputs_removes_stale_images(tmp_path) -> None:
 
 
 # ------------------------------------------------------------- 对比视频 --
+
+
+def test_compose_panels_supports_five_panels() -> None:
+    m = _load()
+    panel = np.zeros((8, 8, 3), np.uint8)
+    frame = m.compose_panels([(f"model{i}", panel) for i in range(5)])
+    assert frame.shape == (8 + 22, 8 * 5 + 4 * 4, 3)
 
 
 def test_compose_pair_is_two_panels_with_label_strip() -> None:

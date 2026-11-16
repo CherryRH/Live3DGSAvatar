@@ -11,12 +11,15 @@
 
     python scripts/render_test.py --frames 20
     python scripts/render_test.py --frames -1 --batch-size 4
+    python scripts/render_test.py --subject crh_1 --work-names base base_post_r2 wk1116_mask_r2 wk1116_none_none
     python scripts/render_test.py --dry-run          # 无需 GPU 的形状/约定自检
 
-产物：`report.json`（PSNR / SSIM / LPIPS / 锐度 / 性能）+ `compare.mp4`
+单模型时：`report.json`（PSNR / SSIM / LPIPS / 锐度 / 性能）+ `compare.mp4`
 （原图 | 渲染并排，每帧叠加指标）+ `showcase.mp4`（大角度展示：
 yaw 0→40→-40→0，再 pitch 20→-20→0；默认 120 帧 / 30 FPS（约 4 s），
 每段 smoothstep 缓动；缺 imageio 时退化为 `.webp`）。
+多模型时：`--work-names` 给多个版本，`compare.mp4` 为“原图 + N 个渲染”横排，
+`showcase.mp4` 为 N 个模型同角度横排；报告为每个模型单独记录指标。
 """
 
 from __future__ import annotations
@@ -72,7 +75,7 @@ def clean_previous_outputs(out_root: Path, share_dir: Path | None) -> int:
     for sub in dirs:
         if not Path(sub).is_dir():
             continue
-        for path in Path(sub).glob("*.png"):
+        for path in Path(sub).rglob("*.png"):
             path.unlink()
             removed += 1
     for pattern in ("report.json", "compare.mp4", "compare.webp",
@@ -97,7 +100,11 @@ def _images_have_alpha(directory: Path) -> bool:
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="渲染测试（本项目 core vs 数据集原图）")
     p.add_argument("--subject", default=None, help="模型所属对象（models/<对象>/...）")
-    p.add_argument("--work-name", default=None, help="模型版本名（models/<对象>/<版本>/）")
+    p.add_argument("--work-name", default=None,
+                   help="主模型版本名（models/<对象>/<版本>/）")
+    p.add_argument("--work-names", nargs="+", default=None,
+                   help="多版本对比：依次给出多个版本名；第一个为主版本。"
+                        "省略则只渲染 --work-name")
     p.add_argument("--dataset", default=None,
                    help="用哪个数据集评测（datasets/<名字>，必须是标准数据集；"
                         "默认取 --subject 同名数据集）")
@@ -121,7 +128,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--output-dir", type=Path, default=None,
                    help="产物根目录（默认 output/render_test/<对象>/<版本>/；数据集不同时追加 /<数据集>）")
     p.add_argument("--save-images", action="store_true",
-                   help="额外落盘渲染 PNG（默认只出对比视频）")
+                   help="额外落盘渲染 PNG（默认只出对比视频；多模型时按版本分子目录）")
     p.add_argument("--showcase", dest="showcase", action="store_true",
                    default=True,
                    help="额外输出大角度展示视频（默认开）：yaw 0→40→-40→0，"
@@ -151,6 +158,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     raw = list(_sys.argv[1:] if argv is None else argv)
     return p.parse_args(_normalize_argv(raw))
+
+
+def _work_name_list(primary: str | None, raw: list[str] | None) -> list[str]:
+    """合并 `--work-name` 与 `--work-names`，去重并保持顺序。"""
+    names: list[str] = []
+    if primary:
+        names.append(str(primary))
+    for item in raw or []:
+        for name in str(item).split(","):
+            name = name.strip()
+            if name and name not in names:
+                names.append(name)
+    return names
 
 
 def _validate(args: argparse.Namespace) -> None:
@@ -190,15 +210,17 @@ def _finalize(args: argparse.Namespace, cfg: Config) -> argparse.Namespace:
     args._explicit_mlp_hidden = args.mlp_hidden is not None
     if args.subject is not None:
         cfg.set("subject", args.subject)
-    if args.work_name is not None:
-        cfg.set("work_name", args.work_name)
-    if not (str(cfg.get("subject") or "").strip()
-            and str(cfg.get("work_name") or "").strip()):
+    names = _work_name_list(args.work_name, args.work_names)
+    if not (str(cfg.get("subject") or "").strip() and names):
         raise SystemExit(
-            "[error] 需要指定模型：--subject 与 --work-name\n"
-            "        例如 --subject <对象> --work-name <版本>")
+            "[error] 需要指定模型：--subject 与 --work-name/--work-names\n"
+            "        例如 --subject <对象> --work-name <版本>\n"
+            "        或 --subject <对象> --work-names base base_post_r2")
     args.subject = str(cfg.get("subject"))
-    args.work_name = str(cfg.get("work_name"))
+    args.work_names = names
+    args.work_name = names[0]
+    args._multi = len(names) > 1
+    cfg.set("work_name", args.work_name)
 
     # 数据集：必须是标准数据集（datasets/<名字>，含 images/ + render_inputs.npz）。
     # 不允许直接指任意目录 —— 数据集的构建走 build_dataset.sh，渠道唯一。
@@ -209,16 +231,26 @@ def _finalize(args: argparse.Namespace, cfg: Config) -> argparse.Namespace:
     # 改了就会去找 `models/<数据集>/<版本>/model.ply`（渲染别的数据集时必错）
     try:
         args.data = resolve_dataset_dir(cfg, args.dataset)
-        args.ply = resolve_model_ply(cfg)
-        args.model_config = resolve_model_config(cfg)
+        args.plies = []
+        args.model_configs = []
+        for name in names:
+            cfg.set("work_name", name)
+            args.plies.append(resolve_model_ply(cfg))
+            args.model_configs.append(resolve_model_config(cfg))
     except (FileNotFoundError, ValueError) as e:
         # 模型/数据集缺一不可，错误要能直接指出该补哪个
         raise SystemExit(f"[error] {e}") from None
+    finally:
+        cfg.set("work_name", args.work_name)
+    args.ply = args.plies[0]
+    args.model_config = args.model_configs[0]
     args.gt_dir = args.data / str(cfg.get("paths.image_subdir", "images"))
 
+    # 多模型时不要覆盖单模型目录：默认用 `<主版本>_multi` 作为对比实验名。
+    out_work = args.work_name if not args._multi else f"{args.work_name}_multi"
     out_root = (Path(args.output_dir) if args.output_dir
                 else output_dir_for(cfg, "render_test", args.subject,
-                                    args.work_name, args.dataset))
+                                    out_work, args.dataset))
     args.output_dir = out_root
 
     args.frames = int(cfg.get("render.frames", 20) if args.frames is None else args.frames)
@@ -267,11 +299,14 @@ def _frontal_frame(scene, frames: list[int]) -> int:
 
 
 def render_core(args, scene, frames: list[int], out_dir: Path,
-                share_dir: Path | None = None):
-    """用本项目 `core/` 渲染。
+                share_dir: Path | None = None, *, ply: Path | None = None,
+                draw_angle: bool = True):
+    """用本项目 `core/` 渲染一个模型。
 
     Args:
+        ply: 要加载的 PLY；``None`` 时用 ``args.ply``（单模型兼容路径）。
         share_dir: 非 ``None`` 时额外落盘 PNG。图像总是留在内存里（拼视频用）。
+        draw_angle: 单模型 showcase 时把角度写在图上；多模型由拼图标签统一写。
     """
     import torch
 
@@ -286,14 +321,15 @@ def render_core(args, scene, frames: list[int], out_dir: Path,
     # 这时回退到 `--tex-size` 等参数（默认取 configs/）。
     from live3dgsavatar.core.io.ply import read_embedded_config
 
+    ply = Path(ply) if ply is not None else Path(args.ply)
     explicit = (args._explicit_tex_size or args._explicit_basis_in
                 or args._explicit_basis_blend or args._explicit_mlp_hidden
                 or args.no_weight_proj)
-    embedded = None if explicit else read_embedded_config(args.ply)
+    embedded = None if explicit else read_embedded_config(ply)
     if embedded is not None:
         print(f"  结构  : 来自 PLY 内嵌（tex {embedded.tex_size}, "
               f"D {embedded.num_basis_in}, K {embedded.num_basis_blend}）")
-        avatar = load_ply(args.ply, config=embedded, device="cuda")
+        avatar = load_ply(ply, config=embedded, device="cuda")
     else:
         if not explicit:
             print("  结构  : 该 PLY 未内嵌结构，回退到配置/默认值")
@@ -301,7 +337,7 @@ def render_core(args, scene, frames: list[int], out_dir: Path,
                            num_basis_blend=args.num_basis_blend,
                            mlp_hidden=tuple(args.mlp_hidden),
                            use_weight_proj=args.use_weight_proj)
-        avatar = load_ply(args.ply, config=cfg, device="cuda")
+        avatar = load_ply(ply, config=cfg, device="cuda")
     print(f"  结构  : tex {avatar.config.tex_size}  D {avatar.config.num_basis_in}  "
           f"K {avatar.config.num_basis_blend}  "
           f"hidden {avatar.config.mlp_hidden}  "
@@ -379,7 +415,8 @@ def render_core(args, scene, frames: list[int], out_dir: Path,
         base = (int(args.showcase_frame) if args.showcase_frame is not None
                 else _frontal_frame(scene, frames))
         args._showcase_frame_used = base
-        showcase = render_showcase(args, scene, avatar, rasterizer, bg, base)
+        showcase = render_showcase(args, scene, avatar, rasterizer, bg, base,
+                                   draw_angle=draw_angle)
     return images, perf, showcase
 
 
@@ -410,7 +447,7 @@ def showcase_poses(n: int = 30) -> list[tuple[float, float]]:
     return out
 
 def render_showcase(args, scene, avatar, rasterizer, bg,
-                    frame_idx: int) -> list[np.ndarray]:
+                    frame_idx: int, *, draw_angle: bool = True) -> list[np.ndarray]:
     """用同一个基础帧，按绝对头姿绕头部渲染大角度展示序列。"""
     import torch
     from PIL import Image, ImageDraw
@@ -444,9 +481,10 @@ def render_showcase(args, scene, avatar, rasterizer, bg,
         out = render_gaussians(gs, rasterizer, cam, bg)
         arr = (out.color.clamp(0, 1).permute(0, 2, 3, 1) * 255).byte()
         img = Image.fromarray(arr[0].cpu().numpy())
-        draw = ImageDraw.Draw(img)
-        draw.text((12, 12), f"yaw {yaw:+.0f}  pitch {pitch:+.0f}",
-                  fill=(255, 255, 255))
+        if draw_angle:
+            draw = ImageDraw.Draw(img)
+            draw.text((12, 12), f"yaw {yaw:+.0f}  pitch {pitch:+.0f}",
+                      fill=(255, 255, 255))
         frames.append(np.asarray(img))
     return frames
 
@@ -516,6 +554,38 @@ def load_gt(args, frames: list[int], offset: int = 0):
     return out or None
 
 
+def _evaluate_images(images: dict[int, np.ndarray], gt, args):
+    """单个模型：汇总质量 + 逐帧指标（视频标签用）。"""
+    if gt is None:
+        return None, None
+    quality = summarize_quality(images, gt)
+    per_frame: dict[int, dict] = {}
+    lpips_acc: list[float] = []
+    for i in sorted(gt):
+        ref_rgb, ref_mask = gt[i]
+        img = images.get(i)
+        if img is None or img.shape != ref_rgb.shape:
+            continue
+        m = frame_metrics(img, ref_rgb, ref_mask)
+        if m.get("lpips") is not None:
+            lpips_acc.append(float(m["lpips"]))
+        per_frame[i] = {"frame": int(i), **m}
+    if per_frame:
+        quality["per_frame"] = [per_frame[i] for i in sorted(per_frame)]
+    if lpips_acc:
+        arr = np.asarray(lpips_acc, dtype=np.float64)
+        quality["lpips"] = {
+            "median": round(float(np.median(arr)), 4),
+            "min": round(float(arr.min()), 4),
+            "max": round(float(arr.max()), 4),
+            "mean": round(float(arr.mean()), 4),
+            "n": int(arr.size)}
+    elif not args.no_lpips:
+        print("      [warn] LPIPS 不可用（缺 lpips 或权重），已跳过",
+              flush=True)
+    return quality, per_frame
+
+
 # ----------------------------------------------------------------- 主流程 --
 
 
@@ -582,16 +652,49 @@ def main() -> int:
     if stale:
         print(f"  清理旧产物：{stale} 张", flush=True)
 
-    images, perf, showcase = render_core(args, scene, indices, out_root, share_dir)
+    # 逐个模型渲染。一次只把一套模型放上 GPU，渲染完释放显存；
+    # 图像留在内存里，后面统一做指标、拼视频。
+    models: list[dict] = []
+    images_root = out_root / "images" if share_dir is not None else None
+    for k, name in enumerate(args.work_names):
+        print(f"\n  [model {k + 1}/{len(args.work_names)}] {name}", flush=True)
+        model_share = None
+        if images_root is not None:
+            model_share = (images_root / name) if args._multi else images_root
+            model_share.mkdir(parents=True, exist_ok=True)
+        draw_angle = not args._multi
+        model_images, model_perf, model_showcase = render_core(
+            args, scene, indices, out_root, model_share,
+            ply=args.plies[k], draw_angle=draw_angle)
+        models.append({
+            "work_name": name,
+            "model_path": str(args.plies[k]),
+            "model_config": (str(args.model_configs[k])
+                             if args.model_configs[k] else None),
+            "images": model_images,
+            "perf": model_perf,
+            "showcase": model_showcase,
+        })
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
+    primary = models[0]
+    perf = primary["perf"]
     env = {"python": sys.version.split()[0], "torch": torch.__version__,
            "cuda": torch.version.cuda}
     if torch.cuda.is_available():
         env["gpu"] = torch.cuda.get_device_name(0)
+    model_params = [{
+        "work_name": m["work_name"],
+        "model_path": m["model_path"],
+        "model_config": m["model_config"],
+    } for m in models]
     params = {
         "command": shlex.join(sys.argv),
-        "model_path": str(args.ply),
-        "model_config": str(args.model_config) if args.model_config else None,
+        "model_path": primary["model_path"],
+        "model_config": primary["model_config"],
+        "models": model_params,
         "model_structure": {
             "tex_size": args.tex_size,
             "num_basis_in": args.num_basis_in,
@@ -615,6 +718,7 @@ def main() -> int:
             "batch_size": args.batch_size,
             "video_fps": args.video_fps,
             "lpips": not args.no_lpips,
+            "multi_model": bool(args._multi),
             "showcase": bool(args.showcase),
             "showcase_frame": getattr(args, "_showcase_frame_used", None),
             "showcase_frames": args.showcase_frames,
@@ -628,81 +732,119 @@ def main() -> int:
         num_frames=n, dataset_frames=total,
         width=scene.width, height=scene.height,
         perf=perf, params=params,
-        extra={"model_path": str(args.ply),
+        extra={"model_path": primary["model_path"],
+               "model_count": len(models),
+               "models": [m["work_name"] for m in models],
                "frame_mode": args.frame_mode,
                "frame_range": ([indices[0], indices[-1]]
                                if indices else []),
                "test_ratio": args.test_ratio,
-               "showcase_frames": len(showcase) if showcase else 0})
+               "showcase_frames": (len(primary["showcase"])
+                                   if primary["showcase"] else 0)})
     report: dict = result.to_dict()
 
     print(f"  读取原图：{n} 张（解码 512² PNG，约 {n * 14 / 1000:.0f} s）…",
           flush=True)
     gt = load_gt(args, indices)
-    video_path = None
     if gt is None:
         print("      [warn] 找不到数据集原图，改做无真值统计", flush=True)
-        report["no_reference"] = summarize_no_reference(images)
     else:
         print(f"  原图就绪：{len(gt)} 张", flush=True)
-        report["quality"] = summarize_quality(images, gt)
-        per_frame, lpips_acc = [], []
-        for i in sorted(gt):
-            ref_rgb, ref_mask = gt[i]
-            img = images.get(i)
-            if img is None or img.shape != ref_rgb.shape:
-                continue
-            m = frame_metrics(img, ref_rgb, ref_mask)
-            if m.get("lpips") is not None:
-                lpips_acc.append(float(m["lpips"]))
-            per_frame.append({"frame": int(i), **m})
-        if per_frame:
-            report["quality"]["per_frame"] = per_frame
-        if lpips_acc:
-            arr = np.asarray(lpips_acc, dtype=np.float64)
-            report["quality"]["lpips"] = {
-                "median": round(float(np.median(arr)), 4),
-                "min": round(float(arr.min()), 4),
-                "max": round(float(arr.max()), 4),
-                "mean": round(float(arr.mean()), 4),
-                "n": int(arr.size)}
-        elif not args.no_lpips:
-            print("      [warn] LPIPS 不可用（缺 lpips 或权重），已跳过",
-                  flush=True)
 
-    # 对比视频：原图 | 渲染，每帧叠加 PSNR / SSIM / LPIPS；帧率固定 30
-    frames_out = []
-    for item in per_frame:
-        i = item["frame"]
-        ref_rgb, _ = gt[i]
-        img = images.get(i)
-        if img is None:
-            continue
-        left = f"target {i:05d}"
-        parts = [f"PSNR {item['psnr']:.2f}"]
-        if item["ssim"] is not None:
-            parts.append(f"SSIM {item['ssim']:.4f}")
-        if item["lpips"] is not None:
-            parts.append(f"LPIPS {item['lpips']:.4f}")
-        right = f"render {i:05d} | " + " | ".join(parts)
-        frames_out.append(compose_pair(ref_rgb, img, left, right))
-    if frames_out:
-        video_path = write_video(out_root / "compare", frames_out,
-                                 args.video_fps)
-        print(f"\n  对比视频：{video_path}（{len(frames_out)} 帧，"
-              f"{args.video_fps:.0f} FPS；渲染均值 {perf['fps']:.0f} FPS）")
+    for m in models:
+        quality, per_frame = _evaluate_images(m["images"], gt, args)
+        m["quality"] = quality
+        m["per_frame"] = per_frame
+        if gt is None:
+            m["no_reference"] = summarize_no_reference(m["images"])
+    report["models"] = [{
+        "work_name": m["work_name"],
+        "model_path": m["model_path"],
+        "quality": m.get("quality"),
+        "no_reference": m.get("no_reference"),
+        "perf": m["perf"],
+    } for m in models]
+    if models[0].get("quality") is not None:
+        report["quality"] = models[0]["quality"]
+    else:
+        report["no_reference"] = models[0].get("no_reference")
+
+    video_path = None
+    if gt is not None:
+        # 对比视频：原图 | 模型1 | 模型2 | …；单模型保持原来的两格布局。
+        frames_out = []
+        for i in sorted(gt):
+            ref_rgb, _ = gt[i]
+            if args._multi:
+                panels = [(f"target {i:05d}", ref_rgb)]
+                for m in models:
+                    item = (m.get("per_frame") or {}).get(i)
+                    if item is None:
+                        continue
+                    parts = []
+                    if item.get("psnr") is not None:
+                        parts.append(f"PSNR {item['psnr']:.2f}")
+                    if item.get("ssim") is not None:
+                        parts.append(f"SSIM {item['ssim']:.4f}")
+                    if item.get("lpips") is not None:
+                        parts.append(f"LPIPS {item['lpips']:.4f}")
+                    panels.append((f"{m['work_name']} | " + " | ".join(parts),
+                                   m["images"][i]))
+                if len(panels) > 1:
+                    frames_out.append(compose_panels(panels))
+            else:
+                item = (models[0].get("per_frame") or {}).get(i)
+                img = models[0]["images"].get(i)
+                if item is None or img is None:
+                    continue
+                parts = [f"PSNR {item['psnr']:.2f}"]
+                if item["ssim"] is not None:
+                    parts.append(f"SSIM {item['ssim']:.4f}")
+                if item["lpips"] is not None:
+                    parts.append(f"LPIPS {item['lpips']:.4f}")
+                frames_out.append(compose_pair(
+                    ref_rgb, img, f"target {i:05d}",
+                    f"render {i:05d} | " + " | ".join(parts)))
+        if frames_out:
+            video_path = write_video(out_root / "compare", frames_out,
+                                     args.video_fps)
+            print(f"\n  对比视频：{video_path}（{len(frames_out)} 帧，"
+                  f"{args.video_fps:.0f} FPS；主模型均值 {perf['fps']:.0f} FPS）")
+
     showcase_path = None
-    if showcase:
-        showcase_path = write_video(out_root / "showcase", showcase,
-                                    args.showcase_fps)
-        print(f"  展示视频：{showcase_path}（{len(showcase)} 帧，"
-              f"{args.showcase_fps:g} FPS；yaw 0→40→-40→0，pitch 20→-20→0，"
-              "每段 smoothstep 缓动）")
+    showcase_frames = [m["showcase"] for m in models if m["showcase"]]
+    if showcase_frames:
+        if args._multi:
+            angles = showcase_poses(args.showcase_frames)
+            frames = []
+            for j in range(min(len(s) for s in showcase_frames)):
+                panels = []
+                yaw, pitch = angles[j]
+                for m in models:
+                    s = m["showcase"]
+                    if s and j < len(s):
+                        panels.append((
+                            f"{m['work_name']} | yaw {yaw:+.0f} pitch {pitch:+.0f}",
+                            s[j]))
+                frames.append(compose_panels(panels))
+            showcase_path = write_video(out_root / "showcase", frames,
+                                        args.showcase_fps)
+        else:
+            showcase_path = write_video(out_root / "showcase",
+                                        models[0]["showcase"],
+                                        args.showcase_fps)
+        n_show = len(showcase_frames[0])
+        print(f"  展示视频：{showcase_path}（{n_show} 帧，"
+              f"{args.showcase_fps:g} FPS；"
+              + ("多模型并列" if args._multi
+                 else "yaw 0→40→-40→0，pitch 20→-20→0，每段 smoothstep 缓动")
+              + "）")
 
     report_path = out_root / "report.json"
     report_path.write_text(json.dumps(report, indent=2, ensure_ascii=False),
                            encoding="utf-8")
     _print_summary(report)
+    _print_multi_summary(report)
     print(f"\n  产物：{out_root}")
     print(f"    report.json  指标")
     if video_path is not None:
@@ -710,7 +852,9 @@ def main() -> int:
     if showcase_path is not None:
         print(f"    {showcase_path.name}  大角度展示视频")
     if share_dir is not None:
-        print(f"    images/      渲染图（{n} 张）")
+        count = n * len(models)
+        extra = "，按版本分子目录" if args._multi else ""
+        print(f"    images/      渲染图（{count} 张{extra}）")
     return 0
 
 
@@ -775,6 +919,26 @@ def _print_summary(report: dict) -> None:
     print()
 
 
+def _print_multi_summary(report: dict) -> None:
+    models = report.get("models") or []
+    if len(models) < 2:
+        return
+    print("[多模型对比]  mask 内中位指标")
+    print(f"  {'版本':28s} {'PSNR':>7s} {'SSIM':>8s} {'LPIPS':>8s} {'锐度比':>7s}")
+    for m in models:
+        q = m.get("quality") or {}
+        psnr = q.get("psnr_masked") or q.get("psnr_full") or {}
+        ssim = q.get("ssim") or {}
+        lpips = q.get("lpips") or {}
+        sharp = q.get("sharpness") or {}
+        print(f"  {m['work_name']:28s} "
+              f"{psnr.get('median', float('nan')):7.2f} "
+              f"{ssim.get('median', float('nan')):8.4f} "
+              f"{lpips.get('median', float('nan')):8.4f} "
+              f"{sharp.get('ratio', float('nan')):7.3f}")
+    print()
+
+
 def _label_strip(width: int, text: str, height: int = 20):
     """面板上方的深色标签条（ASCII，避免字体依赖）。"""
     from PIL import Image, ImageDraw
@@ -782,6 +946,25 @@ def _label_strip(width: int, text: str, height: int = 20):
     strip = Image.new("RGB", (width, height), (24, 26, 32))
     ImageDraw.Draw(strip).text((6, 4), text, fill=(230, 232, 238))
     return strip
+
+
+def compose_panels(panels: list[tuple[str, np.ndarray]],
+                   strip_h: int = 22, gap: int = 4) -> np.ndarray:
+    """任意多图横排：`[(标签, HxWx3 uint8)]`，每格上方带标签。"""
+    from PIL import Image, ImageDraw
+
+    if not panels:
+        raise ValueError("compose_panels 需要至少一个 panel")
+    tiles = [Image.fromarray(np.ascontiguousarray(img)) for _, img in panels]
+    w, h = tiles[0].size
+    canvas = Image.new("RGB", (w * len(tiles) + gap * (len(tiles) - 1),
+                               h + strip_h), (10, 11, 14))
+    draw = ImageDraw.Draw(canvas)
+    for i, (tile, (label, _)) in enumerate(zip(tiles, panels)):
+        x = i * (w + gap)
+        draw.text((x + 4, 4), label, fill=(232, 234, 240))
+        canvas.paste(tile, (x, strip_h))
+    return np.asarray(canvas)
 
 
 def compose_pair(left: np.ndarray, right: np.ndarray,
