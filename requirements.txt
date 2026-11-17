@@ -46,3 +46,8 @@ imageio-ffmpeg==0.6.0
 # 环境与编译步骤以 setup_env.sh 为准。
 lpips==0.1.4
 pygame==2.6.1
+
+# ---------- 数据集：视频抠图 ----------
+# scripts/prepare_video.py 用 U2Net 估人像 alpha；首次运行会下载
+# u2net.onnx（约 176 MB）到 ~/.u2net/，不占用 HF 缓存。
+rembg==2.0.69

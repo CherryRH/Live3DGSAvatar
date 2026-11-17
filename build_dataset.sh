@@ -5,15 +5,18 @@
 #   datasets/<对象>/images/ + render_inputs.npz
 #
 # 用法：
-#   ./build_dataset.sh <images 目录> --name crh_3              # 新建数据集
-#   ./build_dataset.sh <images 目录> --name crh_3 --limit 300 # 只取前 300 帧
-#   ./build_dataset.sh --video <视频文件> --name crh_4        # 预留（暂未实现）
+#   ./build_dataset.sh <images 目录> --name <对象>              # 新建数据集
+#   ./build_dataset.sh <images 目录> --name <对象> --limit 300 # 只取前 300 帧
+#   ./build_dataset.sh --video videos/biden.mp4 --name biden    # 从视频直接构建
+#   ./build_dataset.sh --video <视频> --name <对象> --fps 30 --limit 300
+#       [--head-factor 2.8] [--top-margin 0.12]   # 调节头/肩构图
+#   ... --keep-stage 保留 output/build/<name> 供检查
 #
 # 已经跟踪过的目录（含 images/ 与 render_inputs.npz）会跳过 RDF，直接整理：
 #   ./build_dataset.sh <已跟踪的目录> --name <数据集名>
 #
 # 图像默认**移动**进数据集（省空间）；想保留原图加 --keep-images：
-#   ./build_dataset.sh <图像目录> --name crh_4 --keep-images
+#   ./build_dataset.sh <图像目录> --name biden --keep-images
 #
 # 环境变量：
 #   RDF_ENV     跑 RDF 的 conda 环境（默认 realdenseface）
@@ -39,8 +42,12 @@ VIDEO=""
 NAME=""
 LIMIT=0
 STRIDE=1
+FPS=30
 FORCE=""
 KEEP_IMAGES=""
+KEEP_STAGE=0
+HEAD_FACTOR=""
+TOP_MARGIN=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -48,6 +55,10 @@ while [[ $# -gt 0 ]]; do
     --name)    NAME="${2:-}"; shift 2 ;;
     --limit)   LIMIT="${2:-0}"; shift 2 ;;
     --stride)  STRIDE="${2:-1}"; shift 2 ;;
+    --fps)     FPS="${2:-30}"; shift 2 ;;
+    --head-factor) HEAD_FACTOR="${2:-}"; shift 2 ;;
+    --top-margin)  TOP_MARGIN="${2:-}"; shift 2 ;;
+    --keep-stage) KEEP_STAGE=1; shift ;;
     --keep-images) KEEP_IMAGES="--keep-images"; shift ;;
     --force)   FORCE="--force"; shift ;;
     -h|--help) usage ;;
@@ -58,26 +69,35 @@ done
 
 # ---------------------------------------------------------------- 视频入口 --
 if [[ -n "$VIDEO" ]]; then
-  cat >&2 <<'EOF'
-[error] 视频入口尚未实现。
+  [[ -n "$NAME" ]] || die "视频入口需要 --name（数据集名）"
+  STAGE="$REPO_ROOT/output/build/$NAME"
+  info "视频预处理：$VIDEO → $STAGE"
+  PRE_ARGS=(--video "$VIDEO" --out "$STAGE" --fps "$FPS"
+            --limit "$LIMIT" --stride "$STRIDE")
+  [[ -n "$HEAD_FACTOR" ]] && PRE_ARGS+=(--head-factor "$HEAD_FACTOR")
+  [[ -n "$TOP_MARGIN" ]] && PRE_ARGS+=(--top-margin "$TOP_MARGIN")
+  [[ -n "$FORCE" ]] && PRE_ARGS+=(--force)
+  conda run -n "$MAIN_ENV" --no-capture-output \
+    python scripts/prepare_video.py "${PRE_ARGS[@]}"
 
-规划：先用 ffmpeg 抽帧到临时目录，再走与本脚本相同的图像流程。
-      目前请先自行抽帧，然后把输出目录传进来：
-        ffmpeg -i <视频> -vf fps=30 <目录>/%05d.png
-EOF
-  exit 2
-fi
+  info "RDF 跟踪裁好的 RGB 帧（环境：$RDF_ENV）"
+  conda run -n "$RDF_ENV" --no-capture-output \
+    python scripts/rdf_dump.py --images "$STAGE/input" --out "$STAGE"
 
-[[ -n "$SOURCE" ]] || { usage; }
-[[ -d "$SOURCE" ]] || die "目录不存在：$SOURCE"
-[[ -n "$NAME" ]] || die "需要 --name（数据集名，写到 datasets/<name>/）"
+  info "整理为标准数据集（环境：$MAIN_ENV）"
+  BUILD_ARGS=(--from "$STAGE" --images "$STAGE/images" --name "$NAME")
+  [[ -n "$KEEP_IMAGES" ]] && BUILD_ARGS+=("$KEEP_IMAGES")
+  [[ -n "$FORCE" ]] && BUILD_ARGS+=(--force)
+  conda run -n "$MAIN_ENV" --no-capture-output \
+    python scripts/build_dataset.py "${BUILD_ARGS[@]}"
 
-SOURCE="$(cd "$SOURCE" && pwd)"
-IMAGES_DIR=""
-if [[ -d "$SOURCE/images" ]]; then
-  IMAGES_DIR="$SOURCE/images"
-else
-  IMAGES_DIR="$SOURCE"      # 直接给了图像目录
+  # 保留原始裁图，方便与 images/ 对照；不留在 datasets 里避免混淆训练输入
+  mkdir -p "$REPO_ROOT/datasets/$NAME/input"
+  cp -a "$STAGE/input/." "$REPO_ROOT/datasets/$NAME/input/"
+  cp -a "$STAGE/crop_stats.json" "$REPO_ROOT/datasets/$NAME/crop_stats.json"
+  if (( KEEP_STAGE == 0 )); then rm -rf "$STAGE"; fi
+  info "完成：datasets/$NAME（images/ + input/ + render_inputs.npz）"
+  exit 0
 fi
 
 # ------------------------------------------------------------- RDF 跟踪 --

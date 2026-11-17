@@ -39,6 +39,7 @@ conda activate live3dgs
 
 ```bash
 bash build_dataset.sh <图像目录> --name <对象>
+bash build_dataset.sh --video videos/<对象> --name <对象>   # 从视频直接构建
 bash train.sh --subject <对象> --work-name base
 bash post_train.sh --subject <对象> --work-name base
 bash eval.sh --subject <对象> --work-name base

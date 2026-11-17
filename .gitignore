@@ -24,6 +24,7 @@ data/*
 !data/.gitkeep
 output/*
 !output/.gitkeep
+videos/*
 
 # ---- 模型（单个 .ply 约 60MB，不入库；照 README 从 RGBAvatar 复制）----
 models/*
