@@ -65,6 +65,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--workers", type=int, default=min(4, os.cpu_count() or 1),
                    help="并行抠图进程数；U2Net 是 CPU 推理，默认 4")
     p.add_argument("--force", action="store_true")
+    p.add_argument("--skip-images", action="store_true",
+                   help="只生成裁好的 input/；images/ 交给后续 matting 模型")
     p.add_argument("--keep-raw", action="store_true")
     return p.parse_args(argv)
 
@@ -320,7 +322,10 @@ def main(argv: list[str] | None = None) -> int:
         shutil.rmtree(raw)
     print(f"\n产物：{out}")
     print(f"  input/   {len(take)} 张 RGB（RDF 跟踪用）")
-    print(f"  images/  {len(take)} 张 RGBA（训练用）")
+    if args.skip_images:
+        print("  images/  已跳过（后续 matting 生成）")
+    else:
+        print(f"  images/  {len(take)} 张 RGBA（训练用）")
     print(f"  crop_stats.json")
     return 0
 

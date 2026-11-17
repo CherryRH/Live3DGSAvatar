@@ -73,7 +73,7 @@ if [[ -n "$VIDEO" ]]; then
   STAGE="$REPO_ROOT/output/build/$NAME"
   info "视频预处理：$VIDEO → $STAGE"
   PRE_ARGS=(--video "$VIDEO" --out "$STAGE" --fps "$FPS"
-            --limit "$LIMIT" --stride "$STRIDE")
+            --limit "$LIMIT" --stride "$STRIDE" --skip-images)
   [[ -n "$HEAD_FACTOR" ]] && PRE_ARGS+=(--head-factor "$HEAD_FACTOR")
   [[ -n "$TOP_MARGIN" ]] && PRE_ARGS+=(--top-margin "$TOP_MARGIN")
   [[ -n "$FORCE" ]] && PRE_ARGS+=(--force)
