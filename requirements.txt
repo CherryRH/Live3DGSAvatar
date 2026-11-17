@@ -52,7 +52,12 @@ pygame==2.6.1
 # u2net.onnx（约 176 MB）到 ~/.u2net/，不占用 HF 缓存。
 rembg==2.0.69
 
-# ---------- 数据集：MODNet 人像抠图 ----------
-# 视频构建默认用 MODNet（Apache-2.0）替代 U2Net 做最终 alpha；
-# 模型不随仓库提交，按 docs/DATA.md 下载到 models/matting/modnet.onnx。
+# ---------- 数据集：BiRefNet 人像抠图 ----------
+# 视频构建默认用 BiRefNet-portrait（PyTorch）做最终 alpha；
+# 模型/自定义代码不随仓库提交，按 docs/DATA.md 下载到
+# models/matting/birefnet_portrait/。
+transformers==4.46.3
+timm==1.0.31
+kornia==0.8.2
+einops==0.8.2
 onnxruntime==1.23.2

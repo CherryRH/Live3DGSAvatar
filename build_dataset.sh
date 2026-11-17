@@ -80,13 +80,13 @@ if [[ -n "$VIDEO" ]]; then
   conda run -n "$MAIN_ENV" --no-capture-output \
     python scripts/prepare_video.py "${PRE_ARGS[@]}"
 
-  info "MODNet 抠图（人像发丝/首饰边缘）"
+  info "BiRefNet 抠图（人像发丝/首饰边缘，GPU）"
   conda run -n "$MAIN_ENV" --no-capture-output \
-    python scripts/matte_modnet.py --input "$STAGE/input" \
-      --out "$STAGE/images_modnet" --model "$REPO_ROOT/models/matting/modnet.onnx" \
-      --force
+    python scripts/matte_birefnet.py --input "$STAGE/input" \
+      --out "$STAGE/images_birefnet" \
+      --model "$REPO_ROOT/models/matting/birefnet_portrait" --force
   rm -rf "$STAGE/images"
-  mv "$STAGE/images_modnet" "$STAGE/images"
+  mv "$STAGE/images_birefnet" "$STAGE/images"
 
   info "RDF 跟踪裁好的 RGB 帧（环境：$RDF_ENV）"
   conda run -n "$RDF_ENV" --no-capture-output \
