@@ -9,7 +9,7 @@
 #   ./build_dataset.sh <images 目录> --name <对象> --limit 300 # 只取前 300 帧
 #   ./build_dataset.sh --video videos/biden.mp4 --name biden    # 从视频直接构建
 #   ./build_dataset.sh --video <视频> --name <对象> --fps 30 --limit 300
-#       [--head-factor 2.8] [--top-margin 0.12]   # 调节头/肩构图
+#       [--head-factor 2.75] [--top-margin 0.08]  # 头颈构图，默认留头顶/脖子边缘
 #   ... --keep-stage 保留 output/build/<name> 供检查
 #
 # 已经跟踪过的目录（含 images/ 与 render_inputs.npz）会跳过 RDF，直接整理：
@@ -46,8 +46,8 @@ FPS=30
 FORCE=""
 KEEP_IMAGES=""
 KEEP_STAGE=0
-HEAD_FACTOR=""
-TOP_MARGIN=""
+HEAD_FACTOR="2.75"
+TOP_MARGIN="0.08"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -80,11 +80,12 @@ if [[ -n "$VIDEO" ]]; then
   conda run -n "$MAIN_ENV" --no-capture-output \
     python scripts/prepare_video.py "${PRE_ARGS[@]}"
 
-  info "BiRefNet 抠图（人像发丝/首饰边缘，GPU）"
+  info "BiRefNet 抠图 + 去衣服（GPU）"
   conda run -n "$MAIN_ENV" --no-capture-output \
     python scripts/matte_birefnet.py --input "$STAGE/input" \
       --out "$STAGE/images_birefnet" \
-      --model "$REPO_ROOT/models/matting/birefnet_portrait" --force
+      --model "$REPO_ROOT/models/matting/birefnet_portrait" \
+      --clothes-model "$REPO_ROOT/models/matting/clothes_seg" --force
   rm -rf "$STAGE/images"
   mv "$STAGE/images_birefnet" "$STAGE/images"
 

@@ -219,8 +219,8 @@ def main() -> int:
         if identity is None:
             identity = optimizer.identity.detach().cpu().float().numpy().copy()
 
-        if (i + 1) % 25 == 0 or i + 1 == len(images):
-            print(f"  {i + 1}/{len(images)}  {path.name}", flush=True)
+        if (i + 1) % 500 == 0 or i + 1 == len(images):
+            print(f"  {i + 1}/{len(images)}", flush=True)
 
     if not xs:
         print("[error] 没有成功处理任何帧", file=sys.stderr)

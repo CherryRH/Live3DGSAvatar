@@ -45,12 +45,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--limit", type=int, default=0, help="最多处理多少帧；0 全部")
     p.add_argument("--stride", type=int, default=1, help="抽帧后每 N 帧取一帧")
     p.add_argument("--size", type=int, default=512, help="输出方形边长")
-    p.add_argument("--head-factor", type=float, default=2.8,
-                   help="方形裁剪边长 / 头宽；2.8 保留头、脖子和肩部，"
+    p.add_argument("--head-factor", type=float, default=2.75,
+                   help="方形裁剪边长 / 头宽；默认 2.75 只保留头颈，"
                         "超出原图宽度时用背景色补成方形")
-    p.add_argument("--top-margin", type=float, default=0.12,
+    p.add_argument("--top-margin", type=float, default=0.08,
                    help="头顶到裁剪上边的距离占裁剪边长比例")
-    p.add_argument("--stat-stride", type=int, default=5,
+    p.add_argument("--stat-stride", type=int, default=10,
                    help="每隔多少帧估一次人像 bbox（其余线性插值）")
     p.add_argument("--matte-model", default="u2net")
     p.add_argument("--matte-erode", type=int, default=1,
@@ -62,8 +62,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--matte-upper", type=float, default=0.72,
                    help="只在该高度比例以上清理高亮边缘，避免削白衣")
     p.add_argument("--matte-feather", type=float, default=0.6)
-    p.add_argument("--workers", type=int, default=min(4, os.cpu_count() or 1),
-                   help="并行抠图进程数；U2Net 是 CPU 推理，默认 4")
+    p.add_argument("--workers", type=int, default=min(8, os.cpu_count() or 1),
+                   help="并行裁图/抠图进程数")
     p.add_argument("--force", action="store_true")
     p.add_argument("--skip-images", action="store_true",
                    help="只生成裁好的 input/；images/ 交给后续 matting 模型")
@@ -201,8 +201,11 @@ def clean_alpha(rgba: np.ndarray, *, erode: int, feather: float,
 _WORKER_SESSION = None
 
 
-def _init_worker(model: str) -> None:
+def _init_worker(model: str, skip_images: bool = False) -> None:
     global _WORKER_SESSION
+    if skip_images:
+        _WORKER_SESSION = None
+        return
     from rembg import new_session
 
     _WORKER_SESSION = new_session(model)
@@ -211,7 +214,7 @@ def _init_worker(model: str) -> None:
 def _crop_matte_task(task: tuple) -> dict:
     """子进程任务：裁一帧并抠图。"""
     (raw_path, inp_path, img_path, size, side, left, top,
-     erode, feather, model, band, bright, upper,
+     erode, feather, model, band, bright, upper, skip_images,
      source_idx, head_top, head_width) = task
     im = Image.open(raw_path).convert("RGB")
     w, h = im.size
@@ -223,10 +226,11 @@ def _crop_matte_task(task: tuple) -> dict:
     crop_im.paste(im.crop((sx0, sy0, sx1, sy1)), (sx0 - left, sy0 - top))
     crop_im = crop_im.resize((size, size), Image.LANCZOS)
     crop_im.save(inp_path)
-    rgba = clean_alpha(np.asarray(crop_im), erode=erode, feather=feather,
-                       model=model, session=_WORKER_SESSION,
-                       band=band, bright=bright, upper=upper)
-    Image.fromarray(rgba).save(img_path)
+    if not skip_images:
+        rgba = clean_alpha(np.asarray(crop_im), erode=erode, feather=feather,
+                           model=model, session=_WORKER_SESSION,
+                           band=band, bright=bright, upper=upper)
+        Image.fromarray(rgba).save(img_path)
     return {"frame": source_idx, "name": Path(img_path).name,
             "box": [sx0, sy0, sx1, sy1],
             "pad_box": [left, top, left + side, top + side],
@@ -267,8 +271,9 @@ def main(argv: list[str] | None = None) -> int:
         a = np.asarray(Image.fromarray(a).resize(im.size, Image.BILINEAR))
         st = person_stats(a.astype(np.float32) / 255.0)
         stats.append(st)
-        print(f"  统计 {j + 1}/{len(range(0, len(take), args.stat_stride))}"
-              f"  帧 {i:05d}  head={st['head_width']:.0f}px", flush=True)
+        total_stats = len(range(0, len(take), args.stat_stride))
+        if (j + 1) % 50 == 0 or (j + 1) == total_stats:
+            print(f"  统计 {j + 1}/{total_stats}", flush=True)
     if not stats:
         raise SystemExit("[error] 没有可统计的帧")
     top_s, center_s, width_s = smooth_stats(
@@ -294,23 +299,25 @@ def main(argv: list[str] | None = None) -> int:
                       str(images / f"{j:05d}.png"), args.size, side, left, top,
                       args.matte_erode, args.matte_feather, args.matte_model,
                       args.matte_band, args.matte_bright, args.matte_upper,
+                      bool(args.skip_images),
                       i, float(top_s[j]), float(width_s[j])))
     records = []
     workers = max(1, int(args.workers))
-    print(f"并行抠图：{workers} 进程", flush=True)
+    print(f"并行{'裁图' if args.skip_images else '抠图'}：{workers} 进程",
+          flush=True)
     if workers == 1:
-        _init_worker(args.matte_model)
+        _init_worker(args.matte_model, bool(args.skip_images))
         for k, task in enumerate(tasks, 1):
             records.append(_crop_matte_task(task))
-            if k % 25 == 0 or k == len(tasks):
+            if k % 500 == 0 or k == len(tasks):
                 print(f"  裁图/抠图 {k}/{len(tasks)}", flush=True)
     else:
-        with ProcessPoolExecutor(max_workers=workers,
-                                 initializer=_init_worker,
-                                 initargs=(args.matte_model,)) as ex:
+        with ProcessPoolExecutor(
+                max_workers=workers, initializer=_init_worker,
+                initargs=(args.matte_model, bool(args.skip_images))) as ex:
             for k, rec in enumerate(ex.map(_crop_matte_task, tasks, chunksize=8), 1):
                 records.append(rec)
-                if k % 100 == 0 or k == len(tasks):
+                if k % 500 == 0 or k == len(tasks):
                     print(f"  裁图/抠图 {k}/{len(tasks)}", flush=True)
 
     (out / "crop_stats.json").write_text(
