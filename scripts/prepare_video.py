@@ -53,9 +53,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--stat-stride", type=int, default=5,
                    help="每隔多少帧估一次人像 bbox（其余线性插值）")
     p.add_argument("--matte-model", default="u2net")
-    p.add_argument("--matte-erode", type=int, default=8,
-                   help="抠图掩码内缩像素，去掉边缘白边")
-    p.add_argument("--matte-feather", type=float, default=0.7)
+    p.add_argument("--matte-erode", type=int, default=1,
+                   help="抠图掩码内缩像素；默认 1，优先保留耳朵/发际")
+    p.add_argument("--matte-band", type=int, default=8,
+                   help="只在轮廓外带清理背景高亮")
+    p.add_argument("--matte-bright", type=int, default=185,
+                   help="边缘带内 RGB 最小值高于此值视为背景高亮")
+    p.add_argument("--matte-upper", type=float, default=0.72,
+                   help="只在该高度比例以上清理高亮边缘，避免削白衣")
+    p.add_argument("--matte-feather", type=float, default=0.6)
     p.add_argument("--workers", type=int, default=min(4, os.cpu_count() or 1),
                    help="并行抠图进程数；U2Net 是 CPU 推理，默认 4")
     p.add_argument("--force", action="store_true")
@@ -151,7 +157,9 @@ def smooth_stats(stats: list[dict], step: int, n: int) -> tuple[np.ndarray, np.n
 
 
 def clean_alpha(rgba: np.ndarray, *, erode: int, feather: float,
-                model: str = "u2net", session=None) -> np.ndarray:
+                model: str = "u2net", session=None,
+                band: int = 8, bright: int = 185,
+                upper: float = 0.72) -> np.ndarray:
     """从 rembg 结果得到干净训练用 RGBA。"""
     from scipy.ndimage import (binary_erosion, binary_fill_holes, gaussian_filter,
                                label)
@@ -168,6 +176,12 @@ def clean_alpha(rgba: np.ndarray, *, erode: int, feather: float,
     # 去掉边缘白边：内缩后硬掩码；旧数据也几乎是硬 alpha
     if erode > 0:
         m = binary_erosion(m, iterations=erode)
+    # 只清轮廓外带：去掉头发/背景交界处的高亮背景像素，
+    # 不碰眼/嘴/耳朵内部的高光。
+    edge = m & ~binary_erosion(m, iterations=max(1, int(band)))
+    yy = np.arange(m.shape[0])[:, None]
+    edge &= yy < float(upper) * m.shape[0]
+    m[edge & (rgb.min(axis=-1) > int(bright))] = False
     # 背景色估计：只取 alpha≈0 的像素；没有就退回白色
     bg_px = rgb[a < 0.05]
     bg = (np.median(bg_px, axis=0) if bg_px.size >= 48
@@ -195,7 +209,8 @@ def _init_worker(model: str) -> None:
 def _crop_matte_task(task: tuple) -> dict:
     """子进程任务：裁一帧并抠图。"""
     (raw_path, inp_path, img_path, size, side, left, top,
-     erode, feather, model, source_idx, head_top, head_width) = task
+     erode, feather, model, band, bright, upper,
+     source_idx, head_top, head_width) = task
     im = Image.open(raw_path).convert("RGB")
     w, h = im.size
     left = max(-side + 1, min(left, w - 1))
@@ -207,7 +222,8 @@ def _crop_matte_task(task: tuple) -> dict:
     crop_im = crop_im.resize((size, size), Image.LANCZOS)
     crop_im.save(inp_path)
     rgba = clean_alpha(np.asarray(crop_im), erode=erode, feather=feather,
-                       model=model, session=_WORKER_SESSION)
+                       model=model, session=_WORKER_SESSION,
+                       band=band, bright=bright, upper=upper)
     Image.fromarray(rgba).save(img_path)
     return {"frame": source_idx, "name": Path(img_path).name,
             "box": [sx0, sy0, sx1, sy1],
@@ -275,6 +291,7 @@ def main(argv: list[str] | None = None) -> int:
         tasks.append((str(files[i]), str(inp / f"{j:05d}.png"),
                       str(images / f"{j:05d}.png"), args.size, side, left, top,
                       args.matte_erode, args.matte_feather, args.matte_model,
+                      args.matte_band, args.matte_bright, args.matte_upper,
                       i, float(top_s[j]), float(width_s[j])))
     records = []
     workers = max(1, int(args.workers))
