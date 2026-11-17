@@ -2,7 +2,7 @@
 """用 PyTorch 版 BiRefNet 从裁好的 RGB 帧生成人像 RGBA。
 
 BiRefNet-portrait 的权重和自定义模型代码放在
-`models/matting/birefnet_portrait/`，在 GPU 上单帧约 0.08 s。
+`data/matting/birefnet_portrait/`，在 GPU 上单帧约 0.08 s。
 """
 
 from __future__ import annotations
@@ -19,9 +19,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--input", type=Path, required=True)
     p.add_argument("--out", type=Path, required=True)
     p.add_argument("--model", type=Path,
-                   default=Path("models/matting/birefnet_portrait"))
+                   default=Path("data/matting/birefnet_portrait"))
     p.add_argument("--clothes-model", type=Path,
-                   default=Path("models/matting/clothes_seg"))
+                   default=Path("data/matting/clothes_seg"))
     p.add_argument("--keep-clothes", action="store_true",
                    help="保留衣服（默认去掉 T 恤/外套等衣物，保留脸/发/露出的皮肤）")
     p.add_argument("--size", type=int, default=1024)
@@ -40,7 +40,7 @@ def main(argv: list[str] | None = None) -> int:
             "        下载：\n"
             "        python -c \"from huggingface_hub import snapshot_download; "
             "snapshot_download('ZhengPeng7/BiRefNet-portrait', "
-            "local_dir='models/matting/birefnet_portrait')\"")
+            "local_dir='data/matting/birefnet_portrait')\"")
     if args.out.exists() and any(args.out.glob("*.png")) and not args.force:
         raise SystemExit(f"[error] 输出已有图：{args.out}（加 --force）")
     args.out.mkdir(parents=True, exist_ok=True)

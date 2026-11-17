@@ -84,8 +84,8 @@ if [[ -n "$VIDEO" ]]; then
   conda run -n "$MAIN_ENV" --no-capture-output \
     python scripts/matte_birefnet.py --input "$STAGE/input" \
       --out "$STAGE/images_birefnet" \
-      --model "$REPO_ROOT/models/matting/birefnet_portrait" \
-      --clothes-model "$REPO_ROOT/models/matting/clothes_seg" --force
+      --model "$REPO_ROOT/data/matting/birefnet_portrait" \
+      --clothes-model "$REPO_ROOT/data/matting/clothes_seg" --force
   rm -rf "$STAGE/images"
   mv "$STAGE/images_birefnet" "$STAGE/images"
 
