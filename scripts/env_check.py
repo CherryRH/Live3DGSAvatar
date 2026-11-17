@@ -191,7 +191,6 @@ def main() -> int:
         ("tensorboard", "tensorboard", False),
         ("lpips", "lpips", False),
         ("imageio", "imageio", False),
-        ("diffusers", "diffusers", False),
         ("fused_ssim", "fused-ssim", False),
     ]:
         try:

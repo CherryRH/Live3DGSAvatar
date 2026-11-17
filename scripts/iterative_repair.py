@@ -1,8 +1,8 @@
-"""迭代修复：数据驱动选角 + 累计伪标签 + 保守真实锚定 + 时间记录。
+"""迭代修复：数据驱动选角 + SyncFix 修复 + 保守真实锚定 + 时间记录。
 
 流程（每轮）：
 1. `find_defects` 在当前角度圈里选 top-N 最差缺陷视角；
-2. `pseudo_label` 为这些视角生成 epiC 伪标签（只接受通过门控的）；
+2. `syncfix_label` 对这些视角做全图多视图修复；
 3. 把新标签并入累计 defects 目录（旧标签继续监督）；
 4. `refine_from_images` 从当前模型短训，真实帧权重更高（保守）；
 5. 记录 before/after、耗时；只有严重崩坏才停，否则继续下一圈。
@@ -18,7 +18,7 @@
         report.json
         cum/            （累计伪标签 + finetune 产物）
         r1/defects/     （find_defects：views/refs/selected.json）
-        r1/pseudo/      （pseudo_label：accepted/debug/report.json）
+        r1/syncfix/     （SyncFix 标签）
         r2/ ...
 """
 
@@ -84,9 +84,8 @@ def _merge_selected(dst: Path, src: Path, *, keep: set[str],
                     refined_src: Path | None = None) -> None:
     """把 src 的 selected.json 合并到 dst，只保留累计 chosen。
 
-    `refined_src` 指定这一轮通过门控的标签目录。新流程用
-    `pseudo/accepted/`，不往 `defects/refined/` 复制一份；
-    （`src/refined`）仍然兼容。
+    `refined_src` 指定这一轮的 SyncFix 标签目录；不往 `defects/refined/`
+    复制一份，直接并入 `cum/refined`。
     """
     sd = json.loads((src / "selected.json").read_text(encoding="utf-8"))
     sd["views"]["chosen"] = [v for v in sd["views"]["chosen"] if v in keep]
@@ -96,11 +95,6 @@ def _merge_selected(dst: Path, src: Path, *, keep: set[str],
     if (src / "mass.npz").is_file():
         shutil.copy2(src / "mass.npz", dst / "mass.npz")
     labels = refined_src if refined_src is not None else src / "refined"
-    if not labels.is_dir():
-        # 新布局：<run>/rN/defects 的兄弟目录 pseudo/accepted
-        alt = src.parent / "pseudo" / "accepted"
-        if alt.is_dir():
-            labels = alt
     if labels.is_dir():
         out = dst / "refined"
         out.mkdir(parents=True, exist_ok=True)
@@ -180,60 +174,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--refined-per-batch", type=int, default=None)
     ap.add_argument("--real-per-batch", type=int, default=None)
     ap.add_argument("--lr-xyz", type=float, default=None)
-    ap.add_argument("--repair-mode",
-                    choices=("syncfix", "mask_diffusion", "none"),
-                    default=None,
-                    help="syncfix=全图+SyncFix（默认）；"
-                         "mask_diffusion=掩码+扩散；none=纯真实帧消融")
     ap.add_argument("--syncfix-repo", default=None)
     ap.add_argument("--syncfix-python", default=None)
     ap.add_argument("--syncfix-model", default=None)
     ap.add_argument("--syncfix-n-per-pass", type=int, default=None)
     ap.add_argument("--syncfix-ref-size", type=int, default=None)
-    ap.add_argument("--base-model", default=None)
-    ap.add_argument("--ip-adapter", choices=("none", "faceid", "faceid_plus"),
-                    default=None)
-    ap.add_argument("--ip-adapter-weight", default="ip-adapter-faceid_sd15.bin")
-    ap.add_argument("--ip-adapter-image-encoder",
-                    default="h94/IP-Adapter/sdxl_models/image_encoder")
-    ap.add_argument("--ip-adapter-scale", type=float, default=0.6)
-    ap.add_argument("--trusted-tol", type=float, default=None)
-    ap.add_argument("--mask-dilate", type=int, default=None,
-                    help="伪标签掩码向周围扩多少像素（默认 12；扩散上下文）")
-    ap.add_argument("--core-dilate", type=int, default=None,
-                    help="真正替换回渲染图的 core 外扩（默认 12 = 整掩码替换）")
-    ap.add_argument("--strength", type=float, default=None,
-                    help="重绘强度（SD1.5 人脸加强版默认 0.85）")
-    ap.add_argument("--identity-threshold", type=float, default=0.30,
-                    help="ArcFace 身份相似度下限（默认 0.30）")
-    ap.add_argument("--color-match", dest="color_match", action="store_true",
-                    default=None,
-                    help="把生成图颜色分布对齐到周围渲染（默认关：实测压锐度）")
-    ap.add_argument("--no-color-match", dest="color_match", action="store_false",
-                    default=None, help="关闭颜色对齐（覆盖配置）")
-    ap.add_argument("--color-mean-only", action="store_true",
-                    help="只对齐颜色均值，保留对比度")
-    ap.add_argument("--color-ring", type=int, default=None,
-                    help="取渲染图周围多少像素的分布做对齐")
-    ap.add_argument("--feather", type=int, default=None,
-                    help="core 边界羽化半径（0=硬替换）")
-    ap.add_argument("--prompt", default=None)
-    ap.add_argument("--negative", default=None)
-    ap.add_argument("--head-cut", dest="head_cut", action="store_true",
-                    default=None,
-                    help="unsupported 掩码只修到最低观测像素附近，"
-                         "避免补出脖子/胸口/衣服")
-    ap.add_argument("--no-head-cut", dest="head_cut", action="store_false",
-                    default=None, help="关闭 head_cut（覆盖配置）")
-    ap.add_argument("--head-cut-margin", type=int, default=None)
-    ap.add_argument("--min-fill", type=float, default=None,
-                    help="大掩码下填充率门限（默认 0.45）")
-    ap.add_argument("--sharpen", type=float, default=None,
-                    help="SD 往返后的 unsharp 增益")
-    ap.add_argument("--min-sharp", type=float, default=None,
-                    help="整幅前景锐度比下限")
-    ap.add_argument("--min-mask-sharp", type=float, default=None,
-                    help="掩码内锐度比下限（大掩码可适当放宽）")
     ap.add_argument("--sharp-tolerance", type=float, default=0.12)
     ap.add_argument("--ssim-tolerance", type=float, default=0.03)
     ap.add_argument("--lpips-tolerance", type=float, default=0.08)
@@ -263,8 +208,6 @@ def main(argv: list[str] | None = None) -> int:
                               if args.refined_per_batch is None
                               else args.refined_per_batch)
     args.lr_xyz = float(_post("lr_xyz", 1e-5)) if args.lr_xyz is None else args.lr_xyz
-    args.repair_mode = (str(_post("repair_mode", "syncfix"))
-                        if args.repair_mode is None else args.repair_mode)
     args.syncfix_repo = (str(_post("syncfix_repo", ""))
                          if args.syncfix_repo is None else args.syncfix_repo)
     args.syncfix_python = (str(_post("syncfix_python", "syncfix"))
@@ -277,52 +220,18 @@ def main(argv: list[str] | None = None) -> int:
     args.syncfix_ref_size = (int(_post("syncfix_ref_size", 4))
                              if args.syncfix_ref_size is None
                              else args.syncfix_ref_size)
-    args.base_model = str(_post("base_model", "emilianJR/epiCRealism")) \
-        if args.base_model is None else args.base_model
-    args.ip_adapter = str(_post("ip_adapter", "none")) \
-        if args.ip_adapter is None else args.ip_adapter
-    args.trusted_tol = float(_post("trusted_tol", 3.0)) \
-        if args.trusted_tol is None else args.trusted_tol
-    args.mask_dilate = int(_post("mask_dilate", 12)) \
-        if args.mask_dilate is None else args.mask_dilate
-    args.core_dilate = int(_post("core_dilate", 12)) \
-        if args.core_dilate is None else args.core_dilate
-    args.strength = float(_post("strength", 0.6)) \
-        if args.strength is None else args.strength
-    args.color_match = bool(_post("color_match", False)) \
-        if args.color_match is None else args.color_match
-    args.color_ring = int(_post("color_ring", 8)) \
-        if args.color_ring is None else args.color_ring
-    args.feather = int(_post("feather", 4)) \
-        if args.feather is None else args.feather
-    args.head_cut = bool(_post("head_cut", True)) \
-        if args.head_cut is None else args.head_cut
-    args.head_cut_margin = int(_post("head_cut_margin", 0)) \
-        if args.head_cut_margin is None else args.head_cut_margin
-    args.min_fill = float(_post("min_fill", 0.4)) \
-        if args.min_fill is None else args.min_fill
-    args.sharpen = float(_post("sharpen", 0.35)) \
-        if args.sharpen is None else args.sharpen
-    args.min_sharp = float(_post("min_sharp", 0.85)) \
-        if args.min_sharp is None else args.min_sharp
-    args.min_mask_sharp = float(_post("min_mask_sharp", 0.85)) \
-        if args.min_mask_sharp is None else args.min_mask_sharp
     args.quality_tol = float(_post("quality_tol", 0.01)) \
         if args.quality_tol is None else args.quality_tol
     args.psnr_weight = float(_post("psnr_weight", 0.002)) \
         if args.psnr_weight is None else args.psnr_weight
-    args.prompt = str(_post("prompt", "")) if args.prompt is None else args.prompt
-    args.negative = str(_post("negative", "")) if args.negative is None else args.negative
-
-    if args.repair_mode == "syncfix":
-        if not args.syncfix_repo or not Path(args.syncfix_repo).is_dir():
-            raise SystemExit(
-                f"[error] 找不到 SyncFix 仓库：{args.syncfix_repo or '<空>'}；"
-                "请用 --syncfix-repo 或 configs/local.yaml 配置")
-        if not args.syncfix_model or not Path(args.syncfix_model).is_dir():
-            raise SystemExit(
-                f"[error] 找不到 SyncFix 权重：{args.syncfix_model or '<空>'}；"
-                "请用 --syncfix-model 或 configs/local.yaml 配置")
+    if not args.syncfix_repo or not Path(args.syncfix_repo).is_dir():
+        raise SystemExit(
+            f"[error] 找不到 SyncFix 仓库：{args.syncfix_repo or '<空>'}；"
+            "请用 --syncfix-repo 或 configs/local.yaml 配置")
+    if not args.syncfix_model or not Path(args.syncfix_model).is_dir():
+        raise SystemExit(
+            f"[error] 找不到 SyncFix 权重：{args.syncfix_model or '<空>'}；"
+            "请用 --syncfix-model 或 configs/local.yaml 配置")
 
     dataset = args.dataset or args.subject
     rings = parse_rings(args.rings)
@@ -380,9 +289,8 @@ def main(argv: list[str] | None = None) -> int:
         shutil.rmtree(run_dir)
     models_dir = Path(str(cfg.get("paths.models_dir", "models")))
     if not args.dry_run and not args.in_place and not resume:
-        pattern = (f"{args.prefix}_none" if args.repair_mode == "none"
-                   else f"{args.prefix}_r*")
-        stale_models = sorted((models_dir / args.subject).glob(pattern))
+        stale_models = sorted((models_dir / args.subject).glob(
+            f"{args.prefix}_r*"))
         if stale_models:
             if not args.force:
                 raise SystemExit(
@@ -398,64 +306,6 @@ def main(argv: list[str] | None = None) -> int:
 
     in_place = bool(args.in_place)
     models_root = models_dir
-
-    if args.repair_mode == "none":
-        # 消融：只用真实帧微调，不做任何选角/伪标签/SyncFix。
-        # 训练总步数与修复路线对齐：steps × 圈数。
-        total_steps = args.steps * max(1, len(rings))
-        promote = args.base_work if in_place else f"{args.prefix}_none"
-        defects_dir = run_dir / "real_only"
-        t0 = time.perf_counter()
-        cmd = [PY, "scripts/refine_from_images.py",
-               "--subject", args.subject, "--work-name", args.base_work,
-               "--dataset", dataset, "--defects", str(defects_dir),
-               "--real-only", "--steps", str(total_steps),
-               "--eval-every", "50", "--eval-frames", "64",
-               "--real-per-batch", str(args.real_per_batch),
-               "--refined-per-batch", "0",
-               "--select-by", "last",
-               "--quality-tol", f"{args.quality_tol:g}",
-               "--psnr-weight", f"{args.psnr_weight:g}",
-               "--promote", "--promote-name", promote, "--force",
-               "--lr-xyz", f"{args.lr_xyz:g}",
-               "--ssim-weight", "0.2", "--lpips-weight", "0.1",
-               "--sharp-tolerance", f"{args.sharp_tolerance:g}",
-               "--ssim-tolerance", f"{args.ssim_tolerance:g}",
-               "--lpips-tolerance", f"{args.lpips_tolerance:g}"]
-        rc, dt = run(cmd, dry=args.dry_run)
-        ref_path = defects_dir / "finetune" / "report.json"
-        rep = (json.loads(ref_path.read_text(encoding="utf-8"))
-               if ref_path.is_file() else {})
-        after = rep.get("after")
-        out = {
-            "prefix": args.prefix, "base": args.base_work,
-            "repair_mode": "none", "rings": rings,
-            "total_seconds": round(time.perf_counter() - t0, 1),
-            "accepted": rc == 0 and after is not None,
-            "improved": None,
-            "best_model": promote,
-            "best_round": {
-                "round": "none", "selected": rep.get("selected"),
-                "best": after,
-                "score": rep.get("selected_score"),
-                "best_seconds": rep.get("best_seconds"),
-            } if after is not None else None,
-            "rounds": [{
-                "round": "none", "labels": 0, "selected": rep.get("selected"),
-                "best": after, "accepted": rc == 0 and after is not None,
-                "seconds": round(dt, 1),
-            }],
-            "params": {"repair_mode": "none", "steps": total_steps,
-                       "real_per_batch": args.real_per_batch,
-                       "refined_per_batch": 0},
-        }
-        (run_dir / "report.json").write_text(
-            json.dumps(out, ensure_ascii=False, indent=1), encoding="utf-8")
-        if rc == 0:
-            _drop_finetune_models(defects_dir / "finetune")
-        print(f"完成 {args.prefix}（none）：{total_steps} 步，"
-              f"{out['total_seconds']}s", flush=True)
-        return 0 if out["accepted"] else 1
 
     keep: set[str] = set()
     if args.seed_defects is not None:
@@ -476,8 +326,7 @@ def main(argv: list[str] | None = None) -> int:
         k = args.round_offset + i + 1
         rtag = f"r{k}"
         rdir = run_dir / rtag / "defects"
-        gendir = run_dir / rtag / (
-            "pseudo" if args.repair_mode == "mask_diffusion" else "syncfix")
+        gendir = run_dir / rtag / "syncfix"
         if rdir.exists() and not args.dry_run:
             shutil.rmtree(rdir)
         if gendir.exists() and not args.dry_run:
@@ -488,10 +337,8 @@ def main(argv: list[str] | None = None) -> int:
 
         # SyncFix 联合修复一次要 4 张：视图和参考图都按 n_per_pass 扩；
         # 每帧最多取 1 个视角，保证有同样数量的不同参考帧。
-        sel_n = (max(args.top_n, args.syncfix_n_per_pass)
-                 if args.repair_mode == "syncfix" else args.top_n)
-        sel_extra = (["--per-base-max", "1"]
-                     if args.repair_mode == "syncfix" else [])
+        sel_n = max(args.top_n, args.syncfix_n_per_pass)
+        sel_extra = ["--per-base-max", "1"]
         rc, dt_sel = run([PY, "scripts/find_defects.py",
                           "--subject", args.subject, "--work-name", base,
                           "--dataset", dataset,
@@ -505,52 +352,17 @@ def main(argv: list[str] | None = None) -> int:
             print("[stop] find_defects 失败", flush=True)
             break
 
-        if args.repair_mode == "mask_diffusion":
-            gen_cmd = [PY, "scripts/pseudo_label.py",
-                       "--subject", args.subject, "--work-name", base,
-                       "--dataset", dataset,
-                       "--defects", str(rdir), "--out", str(gendir),
-                       "--limit", "0", "--mask-mode", "unsupported",
-                       "--mask-dilate", str(args.mask_dilate),
-                       "--strength", f"{args.strength:g}",
-                       "--core-dilate", str(args.core_dilate),
-                       "--identity-threshold", f"{args.identity_threshold:g}",
-                       "--color-ring", str(args.color_ring),
-                       *(["--color-mean-only"] if args.color_mean_only else []),
-                       "--feather", str(args.feather),
-                       *(["--color-match"] if args.color_match
-                         else ["--no-color-match"]),
-                       "--prompt", args.prompt,
-                       "--negative", args.negative,
-                       *(["--head-cut", "--head-cut-margin",
-                          str(args.head_cut_margin)]
-                         if args.head_cut else []),
-                       "--steps", "40", "--consistency", "2",
-                       "--photometric-frames", "80",
-                       "--photometric-min-px", "16",
-                       "--sharpen", f"{args.sharpen:g}",
-                       "--min-sharp", f"{args.min_sharp:g}",
-                       "--min-mask-sharp", f"{args.min_mask_sharp:g}",
-                       "--min-fill", f"{args.min_fill:g}",
-                       "--trusted-tol", f"{args.trusted_tol:g}",
-                       "--base-model", args.base_model,
-                       "--ip-adapter", args.ip_adapter,
-                       "--ip-adapter-weight", args.ip_adapter_weight,
-                       "--ip-adapter-image-encoder",
-                       args.ip_adapter_image_encoder,
-                       "--ip-adapter-scale", f"{args.ip_adapter_scale:g}"]
-        else:
-            gen_cmd = [PY, "scripts/syncfix_label.py",
-                       "--defects", str(rdir), "--out", str(gendir),
-                       "--repo", args.syncfix_repo,
-                       "--python", args.syncfix_python,
-                       "--model", args.syncfix_model,
-                       "--n-per-pass", str(args.syncfix_n_per_pass),
-                       "--ref-size", str(args.syncfix_ref_size),
-                       "--height", "512", "--width", "512"]
+        gen_cmd = [PY, "scripts/syncfix_label.py",
+                   "--defects", str(rdir), "--out", str(gendir),
+                   "--repo", args.syncfix_repo,
+                   "--python", args.syncfix_python,
+                   "--model", args.syncfix_model,
+                   "--n-per-pass", str(args.syncfix_n_per_pass),
+                   "--ref-size", str(args.syncfix_ref_size),
+                   "--height", "512", "--width", "512"]
         rc, dt_gen = run(gen_cmd, dry=args.dry_run)
         if rc != 0:
-            print(f"[stop] 标签生成失败（{args.repair_mode}）", flush=True)
+            print("[stop] SyncFix 标签生成失败", flush=True)
             break
         if args.dry_run:
             print("  [dry-run] 跳过累计合并与微调", flush=True)
@@ -564,8 +376,7 @@ def main(argv: list[str] | None = None) -> int:
             print("[stop] 没有选中视角", flush=True)
             break
         keep |= new
-        refined_src = (gendir / "accepted"
-                       if args.repair_mode == "mask_diffusion" else gendir)
+        refined_src = gendir
         _merge_selected(cum, rdir, keep=keep, refined_src=refined_src)
         _drop_round_raw(rdir, gendir)
         labels = len(list((cum / "refined").glob("*.png")))
@@ -702,32 +513,17 @@ def main(argv: list[str] | None = None) -> int:
     out = {
         "prefix": args.prefix, "base": args.base_work,
         "top_n": args.top_n, "rings": rings,
-        # 记录生成这条结果的确切参数：换生成器/掩码后仍能追溯来源
+        # 记录生成这条结果的确切参数，便于追溯
         "params": {
-            "repair_mode": args.repair_mode,
             "syncfix_model": args.syncfix_model,
             "syncfix_n_per_pass": args.syncfix_n_per_pass,
             "syncfix_ref_size": args.syncfix_ref_size,
-            "base_model": args.base_model,
-            "ip_adapter": args.ip_adapter,
-            "mask_dilate": args.mask_dilate,
-            "core_dilate": args.core_dilate,
-            "strength": args.strength,
-            "min_fill": args.min_fill,
-            "trusted_tol": args.trusted_tol,
-            "sharpen": args.sharpen,
-            "min_sharp": args.min_sharp,
-            "min_mask_sharp": args.min_mask_sharp,
             "steps": args.steps,
             "lr_xyz": args.lr_xyz,
             "real_per_batch": args.real_per_batch,
             "refined_per_batch": args.refined_per_batch,
             "quality_tol": args.quality_tol,
             "psnr_weight": args.psnr_weight,
-            "color_match": args.color_match,
-            "feather": args.feather,
-            "head_cut": args.head_cut,
-            "head_cut_margin": args.head_cut_margin,
         },
         "rounds": rounds, "total_seconds": round(total, 1),
         "in_place": in_place,

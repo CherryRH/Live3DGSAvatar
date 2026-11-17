@@ -24,14 +24,9 @@
 对 FLAME 表面外扩 12 px 的半透明外溢（薄雾）做监督，减少侧面和边缘漂浮。
 验证使用正脸 PSNR 与大角度缺口的加权指标，平台期早停。
 
-**后训练**：先在真实数据中选缺陷视角，再生成修复标签：
-
-- `syncfix`（默认）：SyncFix 对多视图整图联合修复；
-- `mask_diffusion`：掩码 + SD1.5/epiC，只重绘缺失区域；
-- `none`：只用真实帧，作为消融基线。
-
-修复帧与真实帧混合微调，真实帧占主导；默认保留容差内的最后一轮，避免
-小角度留出集误判大角度效果。
+**后训练**：先在真实数据中选缺陷视角，再由 SyncFix 对多视图做整图联合修复；
+修复帧与真实帧混合微调，真实帧占主导。按角度圈逐轮外扩，默认保留容差内的
+最后一轮，避免小角度留出集误判大角度效果。
 
 ## 环境
 
@@ -60,7 +55,7 @@ bash run_gui.sh --subject <对象> --work-name base
 | `setup_env.sh` | 创建 conda 环境、编译本地 CUDA 扩展 | `live3dgs` 环境 |
 | `build_dataset.sh` | 跟踪、对齐并烘焙训练数据 | `datasets/<对象>/` |
 | `train.sh` | 基础训练 | `models/<对象>/<版本>/` |
-| `post_train.sh` | 后训练：`syncfix`（默认）/ `mask_diffusion` / `none` | `models/<对象>/<版本>_post_rN/` |
+| `post_train.sh` | 后训练：SyncFix 迭代修复 | `models/<对象>/<版本>_post_rN/` |
 | `eval.sh` | 留出集渲染评测（支持 `--work-names` 多版本） | `output/render_test/.../report.json`、`compare.mp4`、`showcase.mp4` |
 | `run_gui.sh` | 浏览器预览与实时驱动 | `http://localhost:8000` |
 | `run_tracking.sh` | 启动 RDF 实时追踪服务 | 追踪 sidecar |

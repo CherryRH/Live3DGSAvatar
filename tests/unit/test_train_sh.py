@@ -44,21 +44,17 @@ def test_train_sh_is_base_only() -> None:
 
 def test_post_plan_defaults() -> None:
     plan = _plan()
-    assert plan["post_repair_mode"] == "syncfix"
     assert plan["post_rings"] == "auto"
     assert plan["post_steps"] == "100"
     assert plan["post_prefix"] == "w_post"
 
 
-def test_post_in_place_and_repair_modes() -> None:
+def test_post_in_place_and_force() -> None:
     plan = _plan("--in-place")
     assert plan["post_prefix"] == "w"
-    plan = _plan("--repair-mode", "syncfix")
-    assert plan["post_repair_mode"] == "syncfix"
-    plan = _plan("--repair-mode", "mask_diffusion")
-    assert plan["post_repair_mode"] == "mask_diffusion"
-    plan = _plan("--repair-mode", "none")
-    assert plan["post_repair_mode"] == "none"
+    assert plan["post_in_place"] == "1"
+    plan = _plan("--force")
+    assert plan["post_force"] == "1"
 
 
 def test_post_config_matches_plan() -> None:
@@ -66,8 +62,6 @@ def test_post_config_matches_plan() -> None:
     if cfg is None:
         return
     plan = _plan()
-    assert plan["post_repair_mode"] == str(cfg["repair_mode"])
     assert plan["post_rings"] == str(cfg["rings"])
     assert int(plan["post_steps"]) == int(cfg["steps"])
     assert float(plan["post_quality_tol"]) == float(cfg["quality_tol"])
-    assert plan["post_base_model"] == str(cfg["base_model"])
