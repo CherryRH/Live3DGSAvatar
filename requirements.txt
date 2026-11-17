@@ -51,3 +51,8 @@ pygame==2.6.1
 # scripts/prepare_video.py 用 U2Net 估人像 alpha；首次运行会下载
 # u2net.onnx（约 176 MB）到 ~/.u2net/，不占用 HF 缓存。
 rembg==2.0.69
+
+# ---------- 数据集：MODNet 人像抠图 ----------
+# 视频构建默认用 MODNet（Apache-2.0）替代 U2Net 做最终 alpha；
+# 模型不随仓库提交，按 docs/DATA.md 下载到 models/matting/modnet.onnx。
+onnxruntime==1.23.2
