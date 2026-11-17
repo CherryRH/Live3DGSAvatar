@@ -80,6 +80,15 @@ if [[ -n "$VIDEO" ]]; then
   conda run -n "$MAIN_ENV" --no-capture-output \
     python scripts/prepare_video.py "${PRE_ARGS[@]}"
 
+  # 头发/发尾附近的背景色像素单独清理：保留轮廓，只去掉与边界连通的
+  # 背景高亮，避免大角度渲染泛白。
+  info "清理头发/发尾边缘背景色"
+  conda run -n "$MAIN_ENV" --no-capture-output \
+    python scripts/clean_hair_edges.py --input "$STAGE/input" \
+      --images "$STAGE/images" --out "$STAGE/images_hair" --force --dilate 12
+  rm -rf "$STAGE/images"
+  mv "$STAGE/images_hair" "$STAGE/images"
+
   info "RDF 跟踪裁好的 RGB 帧（环境：$RDF_ENV）"
   conda run -n "$RDF_ENV" --no-capture-output \
     python scripts/rdf_dump.py --images "$STAGE/input" --out "$STAGE"
