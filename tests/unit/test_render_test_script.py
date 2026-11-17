@@ -72,6 +72,30 @@ def test_multi_model_comparison_is_supported() -> None:
 # ------------------------------------------------------------------ GT 偏移 --
 
 
+def test_load_gt_composites_alpha_background(tmp_path) -> None:
+    """带软 alpha 的新数据集不能把采集白墙直接当成 GT 背景。"""
+    from PIL import Image
+
+    m = _load()
+    gt_dir = tmp_path / "images"
+    gt_dir.mkdir()
+    rgba = np.zeros((4, 4, 4), np.uint8)
+    rgba[..., :3] = 230
+    rgba[0, 0, 3] = 255
+    rgba[0, 0, :3] = 10
+    Image.fromarray(rgba).save(gt_dir / "00000.png")
+
+    class Args:
+        background = [0.0, 0.0, 0.0]
+
+    args = Args(); args.gt_dir = gt_dir
+    got = m.load_gt(args, [0])
+    rgb, mask = got[0]
+    assert tuple(rgb[0, 0]) == (10, 10, 10)
+    assert not mask[1, 1]
+    assert tuple(rgb[1, 1]) == (0, 0, 0)
+
+
 def test_load_gt_follows_frame_offset(tmp_path) -> None:
     """`--frame-offset N` 时 GT 必须取第 N 帧起，否则 PSNR 无意义。"""
     from PIL import Image
@@ -81,10 +105,11 @@ def test_load_gt_follows_frame_offset(tmp_path) -> None:
     gt_dir.mkdir()
     for i in range(4):
         arr = np.full((4, 4, 4), i, np.uint8)
+        arr[..., 3] = 255
         Image.fromarray(arr).save(gt_dir / f"{i:05d}.png")
 
     class Args:
-        pass
+        background = [0.0, 0.0, 0.0]
 
     args = Args()
     args.gt_dir = gt_dir

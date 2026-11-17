@@ -73,7 +73,10 @@ def main(argv: list[str] | None = None) -> int:
         alpha = out.detach().cpu().numpy()
         alpha = np.asarray(Image.fromarray((alpha * 255).astype(np.uint8))
                            .resize(rgb.size, Image.BILINEAR), np.float32) / 255.0
-        rgba = np.dstack([np.asarray(rgb), np.round(alpha * 255).astype(np.uint8)])
+        rgb_arr = np.asarray(rgb).copy()
+        # 数据集约定：alpha 外的 RGB 置黑，避免任何读取方看到采集白墙。
+        rgb_arr[alpha < 0.02] = 0
+        rgba = np.dstack([rgb_arr, np.round(alpha * 255).astype(np.uint8)])
         Image.fromarray(rgba).save(args.out / p.name)
         if k % 200 == 0 or k == len(files):
             print(f"  {k}/{len(files)}", flush=True)

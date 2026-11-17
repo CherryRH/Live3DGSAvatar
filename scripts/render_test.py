@@ -545,7 +545,15 @@ def load_gt(args, frames: list[int], offset: int = 0):
         if arr.ndim == 2:
             arr = np.stack([arr] * 3, axis=-1)
         if arr.shape[2] == 4:
-            out[i] = (arr[..., :3], arr[..., 3] > 250)   # alpha 即 mask
+            alpha = arr[..., 3]
+            mask = alpha > 250
+            # 新数据集用软 alpha 保留发丝；对比视频必须把 alpha 外
+            # 的背景合成到统一背景，否则会直接显示采集时的白墙。
+            rgb = arr[..., :3].copy()
+            bg = np.asarray(getattr(args, "background", [0, 0, 0]),
+                            dtype=np.float32) * 255.0
+            rgb[~mask] = bg.astype(rgb.dtype)
+            out[i] = (rgb, mask)
         else:
             # 白底图没有 alpha：把"接近纯白"的像素当背景。
             # 这不是完美的抠图，但足以把 PSNR 限制在前景区域。
