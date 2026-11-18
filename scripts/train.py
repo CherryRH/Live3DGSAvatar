@@ -156,7 +156,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--repair-per-batch", type=int, default=None,
                    help="每个 batch 的修复图数量；缺省为 batch/2")
     p.add_argument("--freeze-xyz", action="store_true",
-                   help="冻结 xyz/xyz_b，只学颜色/不透明度/尺度/旋转（硬表面初始化）")
+                   help="冻结硬表面 xyz/xyz_b；自由层参数不受影响")
+    p.add_argument("--free-layer", type=Path, default=None,
+                   help="加载自由层 npz（与 --init-ply 硬表面一起渲染/训练）")
     p.add_argument("--init-ply", type=Path, default=None,
                    help="从已有 PLY warm start（默认从 UV 绑定新建）")
     p.add_argument("--lr-scale", type=float, default=1.0,
@@ -525,12 +527,17 @@ def main(argv: list[str] | None = None) -> int:
         K=scene.K, R=scene.R, T=scene.T,
         width=scene.width, height=scene.height).to(str(device))
     print(f"  高斯数 : {avatar.num_gaussians}   基 K={avatar.num_basis}")
+    if args.free_layer is not None:
+        if not args.free_layer.is_file():
+            raise SystemExit(f"[error] --free-layer 不存在：{args.free_layer}")
+        avatar.load_free_layer(args.free_layer)
+        print(f"  自由层 : {args.free_layer}（{avatar.free_xyz.shape[0]} 个高斯）")
 
     # 硬表面从零初始化时，可把 SyncFix 修复图作为等比例额外观测。
     # 修复图没有相机/网格，用基准帧的 mesh + 目标 yaw 构造 camera。
     if args.repair_dir is not None:
-        if stage != "hard_surface":
-            raise SystemExit("--repair-dir 只用于 --stage hard_surface")
+        if stage not in ("hard_surface", "base"):
+            raise SystemExit("--repair-dir 只用于 --stage hard_surface/base")
         from PIL import Image
         from live3dgsavatar.core.camera import (orbit_w2c_matrix, rotation_x,
                                                 rotation_y)
@@ -610,7 +617,16 @@ def main(argv: list[str] | None = None) -> int:
             groups={k: v for k, v in plan.groups.items()
                     if k not in ("xyz", "xyz_b")},
             scene_extent=plan.scene_extent)
-        print("  位移   : 冻结 xyz / xyz_b（硬表面初始化）")
+        print("  位移   : 冻结硬表面 xyz / xyz_b")
+    if avatar.free_xyz is not None:
+        from live3dgsavatar.training.plans import GroupPlan
+        plan.groups["free_xyz"] = GroupPlan(lr=1e-4, final_lr=1e-5,
+                                             max_steps=5000)
+        plan.groups["free_f_dc"] = GroupPlan(lr=8e-3)
+        plan.groups["free_opacity"] = GroupPlan(lr=5e-2)
+        plan.groups["free_scaling"] = GroupPlan(lr=0.01)
+        plan.groups["free_rotation"] = GroupPlan(lr=2e-3)
+        print("  自由层 : 颜色/opacity/scaling/rotation/轻位移")
     if lr_scale != 1.0:
         plan = plan.scaled(lr_scale)
         print(f"  lr 缩放 : {lr_scale:g}")
@@ -768,7 +784,7 @@ def main(argv: list[str] | None = None) -> int:
         else:
             out = render_frame(avatar, rasterizer, mesh,
                                None if weight is None else weight.to(device),
-                               camera, bg, target_image=batch.image.to(device),
+                               cam, bg, target_image=batch.image.to(device),
                                build_graph=True)
 
         if nv_enabled and (int(iteration) + 1) % int(nv_every) == 0:
@@ -1031,6 +1047,8 @@ def main(argv: list[str] | None = None) -> int:
 
     final_ply = out_dir / "model.ply"
     save_ply(avatar, final_ply)
+    if avatar.free_xyz is not None:
+        avatar.save_free_layer(out_dir / "free_layer.npz")
 
     print(f"\n最终模型：{final_ply}（累计 {_elapsed():.1f}s）")
 
@@ -1077,6 +1095,9 @@ def main(argv: list[str] | None = None) -> int:
     except (FileExistsError, FileNotFoundError) as e:
         print(f"[error] {e}", file=sys.stderr)
         return 1
+    if avatar.free_xyz is not None:
+        import shutil as _shutil
+        _shutil.copyfile(out_dir / "free_layer.npz", target / "free_layer.npz")
     print(f"已装入：{target}")
     # 最终模型只保留在 models/；output/train 只留 checkpoint 与报告。
     for duplicate in (final_ply, best_ply):

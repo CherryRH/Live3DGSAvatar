@@ -339,6 +339,10 @@ def render_core(args, scene, frames: list[int], out_dir: Path,
                            mlp_hidden=tuple(args.mlp_hidden),
                            use_weight_proj=args.use_weight_proj)
         avatar = load_ply(ply, config=cfg, device="cuda")
+    free_path = Path(ply).parent / "free_layer.npz"
+    if free_path.is_file():
+        avatar.load_free_layer(free_path)
+        print(f"  自由层  : {free_path}（{avatar.free_xyz.shape[0]} 个高斯）")
     print(f"  结构  : tex {avatar.config.tex_size}  D {avatar.config.num_basis_in}  "
           f"K {avatar.config.num_basis_blend}  "
           f"hidden {avatar.config.mlp_hidden}  "

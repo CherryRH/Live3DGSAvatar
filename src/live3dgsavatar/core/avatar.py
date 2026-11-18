@@ -171,6 +171,15 @@ class GaussianAvatar(nn.Module):
         self.color_b = nn.Parameter(torch.zeros(k, n, 1, 3))
 
         self.weight_module = config.build_weight_module()
+        # 自由层（独立高斯集合，后训练/分层模型用）；默认不启用
+        self.free_face_id: torch.Tensor | None = None
+        self.free_face_bary: torch.Tensor | None = None
+        self.free_xyz = None
+        self.free_rotation = None
+        self.free_scaling = None
+        self.free_opacity = None
+        self.free_color = None
+        self._free_binder = None
 
     # ------------------------------------------------------------ 属性分组 --
     def parameter_groups(self) -> dict[str, nn.Parameter]:
@@ -188,6 +197,10 @@ class GaussianAvatar(nn.Module):
             # 它不属于上面的基，但优化器必须能单独配置它。
             **({"weight_module": self.weight_module} if
                self.config.use_weight_proj else {}),
+            **({"free_xyz": self.free_xyz, "free_rotation": self.free_rotation,
+                "free_scaling": self.free_scaling, "free_opacity": self.free_opacity,
+                "free_f_dc": self.free_color}
+               if self.free_xyz is not None else {}),
         }
 
     def to_binding(self) -> Binding:
@@ -245,7 +258,82 @@ class GaussianAvatar(nn.Module):
         # blend_weight=None → 只用基态（对应参照 blend_start_iter 之前的行为）
         tangent = field(blend_weight, batch_size=mesh.batch_size)
         tangent = tangent.to(mesh.verts.device)
-        return self.build_binder().bind(tangent, mesh)
+        world = self.build_binder().bind(tangent, mesh)
+        if self.free_xyz is not None:
+            b = mesh.batch_size
+            free = GaussianSet(
+                xyz=self.free_xyz.unsqueeze(0).expand(b, -1, -1),
+                rotation=self.free_rotation.unsqueeze(0).expand(b, -1, -1),
+                scaling=self.free_scaling.unsqueeze(0).expand(b, -1, -1),
+                opacity=self.free_opacity.unsqueeze(0).expand(b, -1, -1),
+                color=self.free_color.unsqueeze(0).expand(b, -1, -1, -1),
+                space="tangent",
+            )
+            fw = self.build_free_binder().bind(free, mesh)
+            world = GaussianSet(
+                xyz=torch.cat([world.xyz, fw.xyz], dim=1),
+                rotation=torch.cat([world.rotation, fw.rotation], dim=1),
+                scaling=torch.cat([world.scaling, fw.scaling], dim=1),
+                opacity=torch.cat([world.opacity, fw.opacity], dim=1),
+                color=torch.cat([world.color, fw.color], dim=1),
+                space="world",
+            )
+        return world
+
+    def build_free_binder(self) -> MeshBinder:
+        if self.free_face_id is None:
+            raise RuntimeError("自由层未初始化")
+        if self._free_binder is None:
+            self._free_binder = MeshBinder(Binding(
+                face_id=self.free_face_id,
+                face_bary=self.free_face_bary,
+                valid_mask=torch.ones(self.free_face_id.shape[0],
+                                      dtype=torch.bool,
+                                      device=self.free_face_id.device)))
+        return self._free_binder
+
+    def init_free_layer(self, indices: torch.Tensor, opacity: float = 0.02,
+                        scale_factor: float = 0.85) -> None:
+        """从硬表面选中的高斯复制出自由层（切空间残差）。"""
+        idx = indices.to(self.xyz.device).long()
+        self.free_face_id = self.binding_face_id[idx].detach().clone()
+        self.free_face_bary = self.binding_face_bary[idx].detach().clone()
+        self.free_xyz = nn.Parameter(self.xyz.data[idx].clone())
+        self.free_rotation = nn.Parameter(self.rotation.data[idx].clone())
+        self.free_scaling = nn.Parameter(
+            self.scaling.data[idx].clone() + math.log(scale_factor))
+        self.free_opacity = nn.Parameter(
+            torch.full((idx.numel(), 1), inverse_sigmoid(opacity),
+                       device=self.xyz.device))
+        self.free_color = nn.Parameter(self.color.data[idx].clone())
+        self._free_binder = None
+
+    def save_free_layer(self, path: str | Path) -> None:
+        import numpy as np
+        if self.free_xyz is None:
+            raise RuntimeError("没有自由层可保存")
+        np.savez_compressed(
+            path,
+            xyz=self.free_xyz.detach().cpu().numpy(),
+            rotation=self.free_rotation.detach().cpu().numpy(),
+            scaling=self.free_scaling.detach().cpu().numpy(),
+            opacity=self.free_opacity.detach().cpu().numpy(),
+            color=self.free_color.detach().cpu().numpy(),
+            face_id=self.free_face_id.detach().cpu().numpy(),
+            face_bary=self.free_face_bary.detach().cpu().numpy(),
+        )
+
+    def load_free_layer(self, path: str | Path) -> None:
+        import numpy as np
+        d = np.load(path)
+        self.free_face_id = torch.from_numpy(d["face_id"].astype("int64")).to(self.xyz.device)
+        self.free_face_bary = torch.from_numpy(d["face_bary"].astype("float32")).to(self.xyz.device)
+        self.free_xyz = nn.Parameter(torch.from_numpy(d["xyz"].astype("float32")).to(self.xyz.device))
+        self.free_rotation = nn.Parameter(torch.from_numpy(d["rotation"].astype("float32")).to(self.xyz.device))
+        self.free_scaling = nn.Parameter(torch.from_numpy(d["scaling"].astype("float32")).to(self.xyz.device))
+        self.free_opacity = nn.Parameter(torch.from_numpy(d["opacity"].astype("float32")).to(self.xyz.device))
+        self.free_color = nn.Parameter(torch.from_numpy(d["color"].astype("float32")).to(self.xyz.device))
+        self._free_binder = None
 
     # ------------------------------------------------------------ 纹理视图 --
     def extract_texture(self) -> torch.Tensor:
@@ -278,4 +366,8 @@ class GaussianAvatar(nn.Module):
         module = super().to(*args, **kwargs)
         self.binding_face_id = self.binding_face_id.to(
             module.binding_face_bary.device)
+        if self.free_face_id is not None:
+            self.free_face_id = self.free_face_id.to(module.binding_face_bary.device)
+            self.free_face_bary = self.free_face_bary.to(module.binding_face_bary.device)
+        self._free_binder = None
         return module
