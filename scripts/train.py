@@ -159,6 +159,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="冻结硬表面 xyz/xyz_b；自由层参数不受影响")
     p.add_argument("--free-layer", type=Path, default=None,
                    help="加载自由层 npz（与 --init-ply 硬表面一起渲染/训练）")
+    p.add_argument("--hard-xyz-lr", type=float, default=None,
+                   help="分层全量阶段硬表面 xyz 的小学习率；缺省沿用默认")
     p.add_argument("--init-ply", type=Path, default=None,
                    help="从已有 PLY warm start（默认从 UV 绑定新建）")
     p.add_argument("--lr-scale", type=float, default=1.0,
@@ -618,6 +620,13 @@ def main(argv: list[str] | None = None) -> int:
                     if k not in ("xyz", "xyz_b")},
             scene_extent=plan.scene_extent)
         print("  位移   : 冻结硬表面 xyz / xyz_b")
+    if args.hard_xyz_lr is not None:
+        from live3dgsavatar.training.plans import GroupPlan
+        plan.groups["xyz"] = GroupPlan(
+            lr=float(args.hard_xyz_lr),
+            final_lr=float(args.hard_xyz_lr) * 0.1,
+            max_steps=30000)
+        print(f"  硬位移 : xyz lr {args.hard_xyz_lr:g}（轻度）")
     if avatar.free_xyz is not None:
         from live3dgsavatar.training.plans import GroupPlan
         plan.groups["free_xyz"] = GroupPlan(lr=1e-4, final_lr=1e-5,
