@@ -52,6 +52,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--dataset", default=None)
     p.add_argument("--defects", type=Path, default=None)
     p.add_argument("--refined-dir", type=Path, default=None)
+    p.add_argument("--frontface", action="store_true",
+                   help="硬表面模型：渲染和微调只使用面向相机的前表面高斯")
     p.add_argument("--steps", type=int, default=600)
     p.add_argument("--refined-per-batch", type=int, default=4)
     p.add_argument("--real-per-batch", type=int, default=4)
@@ -287,6 +289,13 @@ def main(argv: list[str] | None = None) -> int:
     def render_frame(frame, cam, weights):
         mesh = Mesh(verts=frame["mesh"].unsqueeze(0), faces=scene.faces,
                     uvs=scene.uvs, uv_faces=scene.uv_faces)
+        if args.frontface:
+            from live3dgsavatar.core.render import render_gaussians
+            from live3dgsavatar.core.render.frontface import frontface_gaussians
+            with torch.no_grad():
+                gs = avatar.deform(mesh, weights)
+                gs = frontface_gaussians(gs, cam, mesh, avatar.binding_face_id)
+            return render_gaussians(gs, rasterizer, cam, bg)
         return core_render(avatar, rasterizer, mesh, weights, cam, bg)
 
     # ---- 建构精修视角的观测 ----
@@ -304,12 +313,17 @@ def main(argv: list[str] | None = None) -> int:
         out = render_frame(frame, cam, weight)
         degraded = (out.color[0].clamp(0, 1).permute(1, 2, 0).detach()
                     .cpu().numpy() * 255.0).astype(np.float32)
-        refined = np.asarray(Image.open(refined_dir / f"{label}.png")
-                             .convert("RGB"), dtype=np.float32)
+        raw_ref = Image.open(refined_dir / f"{label}.png")
+        if raw_ref.mode in ("RGBA", "LA") or "transparency" in raw_ref.info:
+            arr_ref = np.asarray(raw_ref.convert("RGBA"), np.float32)
+            refined = arr_ref[..., :3]
+            fg = arr_ref[..., 3] > 127
+        else:
+            refined = np.asarray(raw_ref.convert("RGB"), dtype=np.float32)
+            fg = refined.max(axis=-1) > 8
         if refined.shape != degraded.shape:
             skipped.append((label, "尺寸不一致"))
             continue
-        fg = refined.max(axis=-1) > 8
         iou = foreground_iou(out.alpha[0, 0].detach().cpu().numpy() > 0.5, fg)
         shift = color_shift(degraded, refined, fg)
         if iou < args.min_fg_iou:
