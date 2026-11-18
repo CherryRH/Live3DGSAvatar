@@ -155,6 +155,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="硬表面初始化：额外混入的 SyncFix 修复图目录")
     p.add_argument("--repair-per-batch", type=int, default=None,
                    help="每个 batch 的修复图数量；缺省为 batch/2")
+    p.add_argument("--freeze-xyz", action="store_true",
+                   help="冻结 xyz/xyz_b，只学颜色/不透明度/尺度/旋转（硬表面初始化）")
     p.add_argument("--init-ply", type=Path, default=None,
                    help="从已有 PLY warm start（默认从 UV 绑定新建）")
     p.add_argument("--lr-scale", type=float, default=1.0,
@@ -603,6 +605,12 @@ def main(argv: list[str] | None = None) -> int:
 
     plan = ParameterPlan.rgba_avatar_defaults(
         scene_extent=float(cfg.get("train.pipeline.scene_extent", 1.0)))
+    if args.freeze_xyz:
+        plan = ParameterPlan(
+            groups={k: v for k, v in plan.groups.items()
+                    if k not in ("xyz", "xyz_b")},
+            scene_extent=plan.scene_extent)
+        print("  位移   : 冻结 xyz / xyz_b（硬表面初始化）")
     if lr_scale != 1.0:
         plan = plan.scaled(lr_scale)
         print(f"  lr 缩放 : {lr_scale:g}")
