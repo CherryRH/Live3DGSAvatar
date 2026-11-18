@@ -14,6 +14,15 @@ train:
     # 训练入口：scripts/train.py。默认超参与 models/crh_1/test/config.yaml
     # 一致：batch 10、50000 步、blend_start 3000、末尾 350 帧作验证。
     enabled: true
+    # 训练阶段标签：base 保持旧流程；hard_surface 从 UV/FLAME 初始化，
+    # 第一段只把硬表面拟合好，不读取旧 base 模型。
+    stage: base
+    # hard_surface 阶段的真实视角表面约束；chest 在 FLAME 覆盖内，不单独排除。
+    hard_surface:
+      hole_weight: 0.02
+      spill_weight: 0.05
+      margin: 4
+      every: 10
     iterations: 50000
     batch_size: 10
     # 前 N 步不启用形变基（先用模板网格拟合静态外观）

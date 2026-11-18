@@ -124,6 +124,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--model-config", type=Path, default=None,
                    help="模型结构配置（默认：模型目录里的 config.yaml，"
                         "没有就用仓库模板 configs/model.yaml）")
+    p.add_argument("--stage", choices=("base", "hard_surface"), default=None,
+                   help="训练阶段标签：base 保持旧流程；hard_surface 从 UV/FLAME "
+                        "初始化，先拟合硬表面（不读取 base）")
+    p.add_argument("--surface-hole-weight", type=float, default=None,
+                   help="硬表面阶段：FLAME 支撑面上 alpha 未覆盖的权重（默认取配置）")
+    p.add_argument("--surface-spill-weight", type=float, default=None,
+                   help="硬表面阶段：FLAME 表面外半透明溢出的权重（默认取配置）")
+    p.add_argument("--surface-margin", type=int, default=None,
+                   help="硬表面阶段 surface_spill 的边界余量像素")
+    p.add_argument("--surface-every", type=int, default=None,
+                   help="硬表面阶段每多少步计算一次表面约束；默认取配置")
     p.add_argument("--init-ply", type=Path, default=None,
                    help="从已有 PLY warm start（默认从 UV 绑定新建）")
     p.add_argument("--lr-scale", type=float, default=1.0,
@@ -245,7 +256,35 @@ def main(argv: list[str] | None = None) -> int:
                          else _nv("robust_spill_weight", 0.0))
     if args.no_spill:
         nv_spill = 0.0
-    nv_enabled = nv_every > 0 and (nv_hole > 0 or nv_spill > 0)
+    stage = str(args.stage if args.stage is not None
+                else cfg.get("train.pipeline.stage", "base"))
+    if stage not in ("base", "hard_surface"):
+        raise SystemExit(f"[error] 未知训练阶段：{stage!r}")
+    surface_hole = float(
+        args.surface_hole_weight if args.surface_hole_weight is not None
+        else cfg.get("train.pipeline.hard_surface.hole_weight", 0.02))
+    surface_spill = float(
+        args.surface_spill_weight if args.surface_spill_weight is not None
+        else cfg.get("train.pipeline.hard_surface.spill_weight", 0.05))
+    surface_margin = int(
+        args.surface_margin if args.surface_margin is not None
+        else cfg.get("train.pipeline.hard_surface.margin", 4))
+    surface_every = int(
+        args.surface_every if args.surface_every is not None
+        else cfg.get("train.pipeline.hard_surface.every", 10))
+    if surface_every <= 0:
+        raise SystemExit("[error] --surface-every 必须为正")
+    if stage != "hard_surface":
+        surface_hole = surface_spill = 0.0
+    else:
+        # 硬表面阶段使用真实视角的表面约束；新视角项留到后续阶段。
+        nv_hole = nv_spill = 0.0
+    if stage == "hard_surface" and args.init_ply is not None:
+        raise SystemExit(
+            "[error] hard_surface 阶段必须从 UV/FLAME 初始化，不能 --init-ply；"
+            "旧 base 只用于对比，不作为起点")
+    nv_enabled = (stage != "hard_surface") and nv_every > 0 and (
+        nv_hole > 0 or nv_spill > 0)
     if nv_enabled and not nv_yaws:
         raise SystemExit("[error] 新视角监督需要至少一个 --nv-yaws")
     need_support = nv_enabled and nv_hole > 0
@@ -264,6 +303,7 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"训练 {subject}/{work}")
     print(f"  数据   : {data_dir}")
+    print(f"  阶段   : {stage}")
     print(f"  训练集 : {len(train_src)} 帧    验证集 : {len(val_src)} 帧"
           f"（末尾 {test_ratio:.0%}）")
     models_dir = Path(str(cfg.get("paths.models_dir")))
@@ -277,9 +317,13 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit(
             f"[error] 模型版本已存在：{target_dir}\n"
             "         覆盖会替换旧模型；确认请加 --force，或换个 --promote-name")
-    model_cfg = resolve_structure_config(
-        models_dir, subject, work, explicit=args.model_config,
-        repo_default=REPO_ROOT / "configs" / "model.yaml")
+    if stage == "hard_surface" and args.model_config is None:
+        # 新阶段从 UV/FLAME 初始化，不从旧 base 目录借结构配置，避免隐式耦合。
+        model_cfg = REPO_ROOT / "configs" / "model.yaml"
+    else:
+        model_cfg = resolve_structure_config(
+            models_dir, subject, work, explicit=args.model_config,
+            repo_default=REPO_ROOT / "configs" / "model.yaml")
     if init_path is not None and args.model_config is None:
         sibling = init_path.parent / "config.yaml"
         if sibling.is_file():
@@ -317,6 +361,10 @@ def main(argv: list[str] | None = None) -> int:
                   f"hole {nv_hole:g} + spill {nv_spill:g}"
                   f"（margin {nv_margin}px, alpha "
                   f"{nv_alpha_min:g}–{nv_alpha_max:g}）")
+        if stage == "hard_surface":
+            print(f"  [dry-run] 硬表面: hole {surface_hole:g} + spill "
+                  f"{surface_spill:g}（每 {surface_every} 步，"
+                  f"margin {surface_margin}px）")
         print(f"  [dry-run] 产物目录 {out_dir}")
         print("  [dry-run] 未执行训练（需要 GPU）")
         return 0
@@ -408,6 +456,8 @@ def main(argv: list[str] | None = None) -> int:
     objective.mask_weight = mask_weight
     objective.nv_hole = nv_hole
     objective.nv_spill = nv_spill
+    objective.surface_hole = surface_hole
+    objective.surface_spill = surface_spill
     objective.ssim = ssim_weight
     objective.lpips = lpips_weight
     objective.lpips_from = lpips_from
@@ -417,6 +467,10 @@ def main(argv: list[str] | None = None) -> int:
         loss_terms.append(f"nv_spill {nv_spill:g}")
     if nv_hole > 0:
         loss_terms.append(f"nv_hole {nv_hole:g}")
+    if surface_hole > 0:
+        loss_terms.append(f"surface_hole {surface_hole:g}")
+    if surface_spill > 0:
+        loss_terms.append(f"surface_spill {surface_spill:g}")
     if ssim_weight > 0:
         loss_terms.append(f"ssim {ssim_weight:g}")
     if lpips_weight > 0:
@@ -433,6 +487,9 @@ def main(argv: list[str] | None = None) -> int:
               f"（margin {nv_margin}px, alpha {nv_alpha_min:g}–{nv_alpha_max:g}）")
     else:
         print("  新视角 : 关闭")
+    if stage == "hard_surface":
+        print(f"  硬表面 : hole {surface_hole:g} + spill {surface_spill:g}"
+              f"（每 {surface_every} 步，margin {surface_margin}px）")
     def render_fn(mesh_verts, weight, batch, iteration):
         mesh = Mesh(verts=mesh_verts.to(device), faces=scene.faces.to(device),
                     uvs=scene.uvs.to(device), uv_faces=scene.uv_faces.to(device))
@@ -477,6 +534,24 @@ def main(argv: list[str] | None = None) -> int:
                     out_nv.alpha, surface_nv.unsqueeze(0).unsqueeze(0),
                     margin=nv_margin, alpha_min=nv_alpha_min,
                     alpha_max=nv_alpha_max)
+
+        if (stage == "hard_surface" and (surface_hole > 0 or surface_spill > 0)
+                and (int(iteration) + 1) % surface_every == 0):
+            from live3dgsavatar.training.losses import (alpha_hole_loss,
+                                                       surface_spill_loss)
+            surfaces = []
+            for i in range(int(mesh_verts.shape[0])):
+                with torch.no_grad():
+                    ids = face_id_map(
+                        mesh_verts[i:i + 1].to(device), scene.faces.to(device),
+                        camera, glctx, flip_y=False)
+                    surfaces.append((ids >= 0).unsqueeze(0).unsqueeze(0))
+            surface = torch.cat(surfaces, dim=0).to(device)
+            if surface_hole > 0:
+                out.surface_hole_loss = alpha_hole_loss(out.alpha, surface)
+            if surface_spill > 0:
+                out.surface_spill_loss = surface_spill_loss(
+                    out.alpha, surface, margin=surface_margin)
 
         return out
 
@@ -704,7 +779,7 @@ def main(argv: list[str] | None = None) -> int:
     ]
     report_path = out_dir / "report.json"
     report_path.write_text(json.dumps({
-        "subject": subject, "work_name": work,
+        "subject": subject, "work_name": work, "stage": stage,
         "iterations": report.iterations, "seconds": report.seconds,
         "best_psnr": report.best_metric, "best_iteration": report.best_iteration,
         "best_seconds": (round(timing["best"], 1)

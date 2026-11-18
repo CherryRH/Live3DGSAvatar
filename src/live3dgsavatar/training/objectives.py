@@ -71,6 +71,9 @@ class Objective:
     # 新视角几何监督（默认 0 = 关闭；由 train.py 按配置打开）
     nv_hole: float = 0.0
     nv_spill: float = 0.0
+    # 硬表面阶段：直接在真实视角的 FLAME 支撑面上约束 alpha 覆盖/外溢
+    surface_hole: float = 0.0
+    surface_spill: float = 0.0
     mask_weight: float = 0.0
     lpips_from: int = 20_000
     _lpips_model: object | None = field(default=None, repr=False)
@@ -125,7 +128,7 @@ class Objective:
             total = total + self.lpips * v
             parts["lpips"] = float(v.detach())
 
-        for key in ("nv_hole", "nv_spill"):
+        for key in ("nv_hole", "nv_spill", "surface_hole", "surface_spill"):
             if extras and key in extras:
                 weight = float(getattr(self, key, 0.0))
                 if weight > 0:
@@ -140,7 +143,7 @@ class Objective:
             parts["alpha"] = float(v.detach())
 
         for name, value in (extras or {}).items():
-            if name in ("nv_hole", "nv_spill"):
+            if name in ("nv_hole", "nv_spill", "surface_hole", "surface_spill"):
                 continue  # 已在上面按字段处理，避免重复计入
             weight = getattr(self, name, 0.0)
             if weight > 0:
