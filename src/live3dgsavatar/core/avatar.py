@@ -313,10 +313,10 @@ class GaussianAvatar(nn.Module):
         self.free_color = nn.Parameter(self.color.data[idx].clone())
         self._free_binder = None
 
-    def apply_free_constraints(self, max_offset: float = 0.002,
+    def apply_free_constraints(self, max_offset: float = 0.08,
                                near_scale: float = 0.0012,
-                               scale_growth: float = 0.5,
-                               max_scale: float = 0.004) -> None:
+                               scale_growth: float = 0.35,
+                               max_scale: float = 0.025) -> None:
         """限制自由层：位移有上限；离表面越近尺度上限越小。"""
         if self.free_xyz is None:
             return

@@ -1047,12 +1047,22 @@ def main(argv: list[str] | None = None) -> int:
     else:
         print("  取数   : 逐帧解 PNG —— 可跑 scripts/cache_images.py 加速")
 
+    free_cfg = cfg.get("train.pipeline.free_layer", {}) or {}
+    free_post = None
+    if avatar.free_xyz is not None:
+        from functools import partial
+        free_post = partial(
+            avatar.apply_free_constraints,
+            max_offset=float(free_cfg.get("max_offset", 0.08)),
+            near_scale=float(free_cfg.get("near_scale", 0.0012)),
+            scale_growth=float(free_cfg.get("scale_growth", 0.35)),
+            max_scale=float(free_cfg.get("max_scale", 0.025)),
+        )
     trainer = Trainer(source=train_source, plan=plan, objective=objective,
                       render_fn=render_fn, params=avatar.parameter_groups(),
                       iterations=iterations, batch_size=batch_size,
                       blend_start=blend_start, hooks=hooks, device=device,
-                      post_step=(avatar.apply_free_constraints
-                                 if avatar.free_xyz is not None else None))
+                      post_step=free_post)
     timing["t0"] = time.perf_counter()
     report = trainer.run()
 
