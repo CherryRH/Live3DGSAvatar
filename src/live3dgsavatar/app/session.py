@@ -296,6 +296,13 @@ class Session:
                         "当前版本只支持 v1 格式，请删除该目录或重新训练。")
             raise ValueError(f"{model_ply} 加载失败：{e}{hint}") from e
 
+        # 分层模型：自由层与硬表面 PLY 同目录；缺少时保持纯硬表面模型。
+        free_path = model_ply.parent / "free_layer.npz"
+        if free_path.is_file():
+            avatar.load_free_layer(free_path)
+            log.info("已加载自由层：%s（%d 个高斯）",
+                     free_path, avatar.free_xyz.shape[0])
+
         # 状态一致性：先算完再替换，避免中途失败留下半初始化状态
         # ⚠️ **赋值顺序决定并发安全**：`ready` 由 `avatar` / `scene` / `timeline`
         #    共同决定，三者必须"一次性"就绪。渲染循环会轮询 `ready`，
