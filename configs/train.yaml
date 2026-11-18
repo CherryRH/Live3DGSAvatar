@@ -34,6 +34,7 @@ train:
       bg_weight: 1.0
     # 自由层：近表面严格，远离表面逐步放宽；用于表面细节和大体积头发
     free_layer:
+      max_gaussians: 24000   # 硬上限；分裂工具不得越过
       max_offset: 0.08       # 允许离开 FLAME 表面最多 8 cm（头发体积）
       near_scale: 0.0012     # 贴表面时单高斯最大尺度 1.2 mm
       scale_growth: 0.35     # 每离表面 1 m 放宽的尺度上限（上限 clamp）

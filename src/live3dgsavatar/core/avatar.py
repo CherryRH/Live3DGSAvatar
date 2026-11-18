@@ -313,6 +313,56 @@ class GaussianAvatar(nn.Module):
         self.free_color = nn.Parameter(self.color.data[idx].clone())
         self._free_binder = None
 
+    def split_free_layer(self, indices: torch.Tensor, *,
+                         scale_factor: float = 0.7,
+                         opacity_factor: float = 0.5) -> int:
+        """只复制选中的自由高斯；绝不修改硬表面。
+
+        新副本尺度更小、透明度更低，避免一次性铺满；调用方负责容量上限。
+        """
+        if self.free_xyz is None:
+            raise RuntimeError("自由层未初始化")
+        idx = indices.to(self.free_xyz.device).long()
+        if idx.numel() == 0:
+            return 0
+        def cat(a, b):
+            return torch.cat([a, b], dim=0)
+        self.free_face_id = cat(self.free_face_id, self.free_face_id[idx])
+        self.free_face_bary = cat(self.free_face_bary, self.free_face_bary[idx])
+        self.free_xyz = nn.Parameter(cat(self.free_xyz.data, self.free_xyz.data[idx]))
+        self.free_rotation = nn.Parameter(cat(self.free_rotation.data,
+                                              self.free_rotation.data[idx]))
+        self.free_scaling = nn.Parameter(cat(
+            self.free_scaling.data,
+            self.free_scaling.data[idx] + math.log(float(scale_factor))))
+        new_op = self.free_opacity.data[idx] + math.log(float(opacity_factor))
+        self.free_opacity = nn.Parameter(cat(self.free_opacity.data, new_op))
+        self.free_color = nn.Parameter(cat(self.free_color.data, self.free_color.data[idx]))
+        self._free_binder = None
+        return int(idx.numel())
+
+    def prune_free_layer(self, *, min_opacity: float = 0.005,
+                         max_offset: float = 0.08) -> int:
+        """剪掉低透明度或离表面过远的自由高斯；硬表面不变。"""
+        if self.free_xyz is None:
+            return 0
+        with torch.no_grad():
+            keep = (torch.sigmoid(self.free_opacity).squeeze(-1) >= min_opacity)
+            keep &= self.free_xyz.norm(dim=-1) <= float(max_offset)
+        n_keep = int(keep.sum())
+        if n_keep == 0:
+            raise RuntimeError("剪枝后自由层为空；降低 min_opacity 或 max_offset")
+        removed = int(self.free_xyz.shape[0] - n_keep)
+        for name in ("free_face_id", "free_face_bary"):
+            setattr(self, name, getattr(self, name)[keep].clone())
+        self.free_xyz = nn.Parameter(self.free_xyz.data[keep].clone())
+        self.free_rotation = nn.Parameter(self.free_rotation.data[keep].clone())
+        self.free_scaling = nn.Parameter(self.free_scaling.data[keep].clone())
+        self.free_opacity = nn.Parameter(self.free_opacity.data[keep].clone())
+        self.free_color = nn.Parameter(self.free_color.data[keep].clone())
+        self._free_binder = None
+        return removed
+
     def apply_free_constraints(self, max_offset: float = 0.08,
                                near_scale: float = 0.0012,
                                scale_growth: float = 0.35,
