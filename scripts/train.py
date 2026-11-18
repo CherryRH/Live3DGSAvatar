@@ -111,6 +111,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="认为'有提升'的最小 dB 幅度")
     p.add_argument("--prefetch-workers", type=int, default=None,
                    help="后台预取线程数；0 表示不预取")
+    p.add_argument("--early-metric", choices=("psnr", "robust"), default=None,
+                   help="早停指标；psnr 使用 mask 内 PSNR，robust 使用大角度综合分")
     p.add_argument("--robust-eval", dest="robust_eval", action="store_true",
                    default=None,
                    help="验证时加入大角度视角，用 正脸PSNR − λ·缺口 早停")
