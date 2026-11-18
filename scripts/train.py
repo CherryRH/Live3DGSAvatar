@@ -152,7 +152,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--surface-bg-weight", type=float, default=None,
                    help="硬表面阶段：FLAME 表面内、原图无数据区域的 alpha 归零权重")
     p.add_argument("--repair-dir", type=Path, default=None,
-                   help="硬表面初始化：额外混入的 SyncFix 修复图目录（1:1 与真实帧）")
+                   help="硬表面初始化：额外混入的 SyncFix 修复图目录")
+    p.add_argument("--repair-per-batch", type=int, default=None,
+                   help="每个 batch 的修复图数量；缺省为 batch/2")
     p.add_argument("--init-ply", type=Path, default=None,
                    help="从已有 PLY warm start（默认从 UV 绑定新建）")
     p.add_argument("--lr-scale", type=float, default=1.0,
@@ -338,17 +340,21 @@ def main(argv: list[str] | None = None) -> int:
     class MixedHardSource:
         """真实帧 + 修复帧 1:1；修复帧使用各自的相机和 FLAME surface mask。"""
 
-        def __init__(self, real, repair_batches, surface_masks, K_data, w2c_data):
+        def __init__(self, real, repair_batches, surface_masks, K_data,
+                     w2c_data, repair_per_batch=None):
             self.real = real
             self.repair = repair_batches
             self.surface_masks = surface_masks
             self.K_data = K_data
             self.w2c_data = w2c_data
+            self.repair_per_batch = repair_per_batch
             self.batch_size = 10
 
         def random_batch(self, n: int):
             import torch as _torch
-            n_rep = max(1, int(n) // 2)
+            n_rep = (int(self.repair_per_batch) if self.repair_per_batch
+                     is not None else max(1, int(n) // 2))
+            n_rep = min(n_rep, int(n) - 1, len(self.repair))
             n_real = int(n) - n_rep
             rb = self.real.random_batch(n_real)
             rb.K = self.K_data.unsqueeze(0).repeat(n_real, 1, 1)
@@ -579,8 +585,11 @@ def main(argv: list[str] | None = None) -> int:
             surface_masks = {int(k): torch.from_numpy(d[k].copy()).bool()
                               for k in d.files}
         train_src = MixedHardSource(
-            train_src, repair_batches, surface_masks, K_data, w2c_data)
-        print(f"  初始化混合: {len(repair_batches)} 张修复图 + 真实帧 1:1")
+            train_src, repair_batches, surface_masks, K_data, w2c_data,
+            repair_per_batch=args.repair_per_batch)
+        ratio = (f"{int(args.repair_per_batch)}:{int(batch_size) - int(args.repair_per_batch)}"
+                 if args.repair_per_batch is not None else "1:1")
+        print(f"  初始化混合: {len(repair_batches)} 张修复图，batch 修复:真实={ratio}")
 
     # 数据相机（world→camera）：大角度验证要绕它旋转
     w2c_data = torch.eye(4, dtype=torch.float32)
