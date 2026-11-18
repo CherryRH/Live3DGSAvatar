@@ -121,9 +121,9 @@ class LatestSlot:
         return self._item is None
 
 
-#: 前端可拖的视角范围（度）。与缺陷定位默认搜索范围一致：±40°/±20°，
-#: 再留一点余量方便观察边界外的崩坏。
-VIEW_YAW_LIMIT = (-50.0, 50.0)
+#: 前端可拖的视角范围（度）。yaw 扩到 ±90°，便于检查侧面/大角度覆盖；
+#: pitch 保持 ±30°，避免把 pitch 拉得太极端。
+VIEW_YAW_LIMIT = (-90.0, 90.0)
 VIEW_PITCH_LIMIT = (-30.0, 30.0)
 
 

@@ -515,7 +515,8 @@ def test_merge_params_rejects_out_of_range_view() -> None:
 
     from live3dgsavatar.app.protocol import merge_params
 
+    assert merge_params({}, {"view": {"yaw": 90.0}})["yaw"] == 90.0
     with pytest.raises(ValueError, match="view.yaw"):
-        merge_params({}, {"view": {"yaw": 80.0}})
+        merge_params({}, {"view": {"yaw": 100.0}})
     with pytest.raises(ValueError, match="view.pitch"):
         merge_params({}, {"view": {"pitch": -45.0}})
