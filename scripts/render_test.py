@@ -15,11 +15,10 @@
     python scripts/render_test.py --dry-run          # 无需 GPU 的形状/约定自检
 
 单模型时：`report.json`（PSNR / SSIM / LPIPS / 锐度 / 性能）+ `compare.mp4`
-（原图 | 渲染并排，每帧叠加指标）+ `showcase.mp4`（大角度展示：
-yaw 0→40→-40→0，再 pitch 20→-20→0；默认 120 帧 / 30 FPS（约 4 s），
-每段 smoothstep 缓动；缺 imageio 时退化为 `.webp`）。
+（原图 | 渲染并排，每帧叠加指标）+ `showcase.png`（固定 8 视角 2x4 拼图：
+GT、-15/-30/-45、0、+15/+30/+45；只渲染 7 张）。
 多模型时：`--work-names` 给多个版本，`compare.mp4` 为“原图 + N 个渲染”横排，
-`showcase.mp4` 为 N 个模型同角度横排；报告为每个模型单独记录指标。
+`showcase.png` 为固定 2x4 拼图；报告为每个模型单独记录指标。
 """
 
 from __future__ import annotations
@@ -79,7 +78,7 @@ def clean_previous_outputs(out_root: Path, share_dir: Path | None) -> int:
             path.unlink()
             removed += 1
     for pattern in ("report.json", "compare.mp4", "compare.webp",
-                    "showcase.mp4", "showcase.webp"):
+                    "showcase.mp4", "showcase.webp", "showcase.png"):
         path = Path(out_root) / pattern
         if path.is_file():
             path.unlink()
@@ -135,8 +134,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         "再 pitch 20→-20，共 30 帧")
     p.add_argument("--no-showcase", dest="showcase", action="store_false",
                    help="不输出展示视频")
-    p.add_argument("--showcase-frames", type=int, default=120,
-                   help="展示视频总帧数（默认 120；采样更密、转动更慢）")
+    p.add_argument("--showcase-frames", type=int, default=8,
+                   help="兼容参数；展示已改为固定 8 张 2x4 拼图")
     p.add_argument("--showcase-fps", type=float, default=None,
                    help="展示视频帧率（默认与 --video-fps 一致）")
     p.add_argument("--showcase-frame", type=int, default=None,
@@ -447,8 +446,13 @@ def showcase_poses(n: int = 30) -> list[tuple[float, float]]:
     return out
 
 def render_showcase(args, scene, avatar, rasterizer, bg,
-                    frame_idx: int, *, draw_angle: bool = True) -> list[np.ndarray]:
-    """用同一个基础帧，按绝对头姿绕头部渲染大角度展示序列。"""
+                    frame_idx: int, *, draw_angle: bool = True) -> np.ndarray:
+    """固定 8 个视角的 2x4 展示拼图（GT + 7 个 yaw）。
+
+    第一排：GT、-15、-30、-45
+    第二排：0、+15、+30、+45
+    只渲染 7 张，不再生成 120 帧视频。
+    """
     import torch
     from PIL import Image, ImageDraw
 
@@ -466,27 +470,52 @@ def render_showcase(args, scene, avatar, rasterizer, bg,
     w2c_data[:3, :3] = scene.R
     w2c_data[:3, 3] = scene.T
     center = mesh.verts[0].mean(dim=0).detach().cpu()
-    # 基帧自身的头姿；showcase 的 yaw/pitch 是**绝对**头部角度，必须抵消它，
-    # 否则基帧头已经转过去时，0° 仍会显示那张侧脸。
     head_R = torch.from_numpy(
         rot6d_to_matrix(weight.detach().cpu().numpy()[:, 100:106])[0]).float()
     with torch.no_grad():
         gs = avatar.deform(mesh, weight)
-    frames = []
-    for yaw, pitch in showcase_poses(args.showcase_frames):
-        R_target = (rotation_x(pitch) @ rotation_y(yaw))[:3, :3]
+
+    yaws = (-15.0, -30.0, -45.0, 0.0, 15.0, 30.0, 45.0)
+    images = []
+    for yaw in yaws:
+        R_target = (rotation_x(0.0) @ rotation_y(yaw))[:3, :3]
         view = orbit_w2c_matrix(w2c_data, center, R_target @ head_R.T)
         cam = Camera(K=K, w2c=view.unsqueeze(0),
                      width=scene.width, height=scene.height).to("cuda")
         out = render_gaussians(gs, rasterizer, cam, bg)
         arr = (out.color.clamp(0, 1).permute(0, 2, 3, 1) * 255).byte()
-        img = Image.fromarray(arr[0].cpu().numpy())
-        if draw_angle:
-            draw = ImageDraw.Draw(img)
-            draw.text((12, 12), f"yaw {yaw:+.0f}  pitch {pitch:+.0f}",
-                      fill=(255, 255, 255))
-        frames.append(np.asarray(img))
-    return frames
+        images.append(np.asarray(Image.fromarray(arr[0].cpu().numpy())))
+
+    # GT 使用与评测相同的 alpha 合成背景，避免把采集白墙带进拼图。
+    gt = load_gt(args, [frame_idx])
+    if gt is not None and frame_idx in gt:
+        gt_rgb, _ = gt[frame_idx]
+        gt_img = gt_rgb.astype(np.uint8)
+    else:
+        gt_img = np.zeros((scene.height, scene.width, 3), np.uint8)
+    tiles = [(f"GT {frame_idx:05d}", gt_img)] + [
+        (f"yaw {yaw:+.0f}", img) for yaw, img in zip(yaws, images)]
+
+    # 4x2 拼图，第一排 GT/-15/-30/-45，第二排 0/+15/+30/+45。
+    order = [0, 1, 2, 3, 4, 5, 6, 7]
+    from PIL import Image as _Image, ImageDraw as _ImageDraw
+    tile_w, tile_h = scene.width, scene.height
+    gap = 4
+    label_h = 24
+    canvas = _Image.new("RGB", (tile_w * 4 + gap * 3,
+                                (tile_h + label_h) * 2 + gap),
+                        (10, 11, 14))
+    draw = _ImageDraw.Draw(canvas)
+    for n, idx in enumerate(order):
+        row, col = divmod(n, 4)
+        x = col * (tile_w + gap)
+        y = row * (tile_h + label_h + gap)
+        label, img = tiles[idx]
+        draw.text((x + 4, y + 4), label, fill=(232, 234, 240))
+        canvas.paste(_Image.fromarray(img), (x, y + label_h))
+    return np.asarray(canvas)
+
+
 
 def select_indices(total: int, frames: int | None, mode: str, *,
                    seed: int = 0, offset: int = 0,
@@ -747,8 +776,7 @@ def main() -> int:
                "frame_range": ([indices[0], indices[-1]]
                                if indices else []),
                "test_ratio": args.test_ratio,
-               "showcase_frames": (len(primary["showcase"])
-                                   if primary["showcase"] else 0)})
+               "showcase_frames": 8 if primary["showcase"] is not None else 0})
     report: dict = result.to_dict()
 
     print(f"  读取原图：{n} 张（解码 512² PNG，约 {n * 14 / 1000:.0f} s）…",
@@ -820,33 +848,21 @@ def main() -> int:
                   f"{args.video_fps:.0f} FPS；主模型均值 {perf['fps']:.0f} FPS）")
 
     showcase_path = None
-    showcase_frames = [m["showcase"] for m in models if m["showcase"]]
-    if showcase_frames:
+    showcase_grids = [(m["work_name"], m["showcase"]) for m in models
+                      if m.get("showcase") is not None]
+    if showcase_grids:
+        from PIL import Image
+        paths = []
         if args._multi:
-            angles = showcase_poses(args.showcase_frames)
-            frames = []
-            for j in range(min(len(s) for s in showcase_frames)):
-                panels = []
-                yaw, pitch = angles[j]
-                for m in models:
-                    s = m["showcase"]
-                    if s and j < len(s):
-                        panels.append((
-                            f"{m['work_name']} | yaw {yaw:+.0f} pitch {pitch:+.0f}",
-                            s[j]))
-                frames.append(compose_panels(panels))
-            showcase_path = write_video(out_root / "showcase", frames,
-                                        args.showcase_fps)
+            for name, grid in showcase_grids:
+                path = out_root / f"showcase_{name}.png"
+                Image.fromarray(grid).save(path)
+                paths.append(path)
+            showcase_path = paths[0]
         else:
-            showcase_path = write_video(out_root / "showcase",
-                                        models[0]["showcase"],
-                                        args.showcase_fps)
-        n_show = len(showcase_frames[0])
-        print(f"  展示视频：{showcase_path}（{n_show} 帧，"
-              f"{args.showcase_fps:g} FPS；"
-              + ("多模型并列" if args._multi
-                 else "yaw 0→40→-40→0，pitch 20→-20→0，每段 smoothstep 缓动")
-              + "）")
+            showcase_path = out_root / "showcase.png"
+            Image.fromarray(showcase_grids[0][1]).save(showcase_path)
+        print(f"  展示拼图：{showcase_path}（2x4；GT/-15/-30/-45 + 0/+15/+30/+45）")
 
     report_path = out_root / "report.json"
     report_path.write_text(json.dumps(report, indent=2, ensure_ascii=False),
@@ -858,7 +874,7 @@ def main() -> int:
     if video_path is not None:
         print(f"    {video_path.name}  对比视频（原图 | 渲染，带逐帧指标）")
     if showcase_path is not None:
-        print(f"    {showcase_path.name}  大角度展示视频")
+        print(f"    {showcase_path.name}  大角度展示拼图")
     if share_dir is not None:
         count = n * len(models)
         extra = "，按版本分子目录" if args._multi else ""
