@@ -302,6 +302,10 @@ class Session:
             avatar.load_free_layer(free_path)
             log.info("已加载自由层：%s（%d 个高斯）",
                      free_path, avatar.free_xyz.shape[0])
+        # 分层/硬表面模型训练时使用 frontier 门控；GUI 必须保持一致。
+        self._frontface = (free_path.is_file()
+                           or model_ply.parent.name.startswith(("layered_hard",
+                                                                "hard_surface")))
 
         # 状态一致性：先算完再替换，避免中途失败留下半初始化状态
         # ⚠️ **赋值顺序决定并发安全**：`ready` 由 `avatar` / `scene` / `timeline`
@@ -616,7 +620,8 @@ class Session:
         self._rasterizer.scaling_modifier = self.params.scaling_modifier
         cam = self._view_camera(mesh)
         out = render_frame(self.avatar, self._rasterizer, m, blend_weight,
-                           cam, bg, timings=timings, sync=True)
+                           cam, bg, timings=timings, sync=True,
+                           frontface=bool(getattr(self, "_frontface", False)))
 
         rgb = (out.color[0].clamp(0, 1).permute(1, 2, 0) * 255).byte().cpu()
 

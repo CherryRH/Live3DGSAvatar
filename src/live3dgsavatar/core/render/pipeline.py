@@ -58,6 +58,7 @@ def render_frame(
     build_graph: bool = False,
     timings: dict[str, float] | None = None,
     sync: bool = False,
+    frontface: bool = False,
 ) -> RenderOutput:
     """单次前向：网格 + 驱动参数 → 高斯 → 图像。
 
@@ -83,6 +84,11 @@ def render_frame(
             _synchronize()
         t0 = time.perf_counter()
         gaussians: GaussianSet = avatar.deform(mesh, blend_weight)
+        if frontface:
+            from .frontface import frontface_with_free
+            gaussians = frontface_with_free(
+                gaussians, camera, mesh, avatar.binding_face_id,
+                avatar.num_gaussians)
         if sync:
             _synchronize()
         if timings is not None:
