@@ -77,6 +77,8 @@ class Objective:
     surface_point: float = 0.0
     surface_normal: float = 0.0
     surface_scale: float = 0.0
+    surface_size: float = 0.0
+    surface_iso: float = 0.0
     mask_weight: float = 0.0
     lpips_from: int = 20_000
     _lpips_model: object | None = field(default=None, repr=False)
@@ -132,7 +134,8 @@ class Objective:
             parts["lpips"] = float(v.detach())
 
         for key in ("nv_hole", "nv_spill", "surface_hole", "surface_spill",
-                    "surface_point", "surface_normal", "surface_scale"):
+                    "surface_point", "surface_normal", "surface_scale",
+                    "surface_size", "surface_iso"):
             if extras and key in extras:
                 weight = float(getattr(self, key, 0.0))
                 if weight > 0:
@@ -148,7 +151,8 @@ class Objective:
 
         for name, value in (extras or {}).items():
             if name in ("nv_hole", "nv_spill", "surface_hole", "surface_spill",
-                        "surface_point", "surface_normal", "surface_scale"):
+                        "surface_point", "surface_normal", "surface_scale",
+                    "surface_size", "surface_iso"):
                 continue  # 已在上面按字段处理，避免重复计入
             weight = getattr(self, name, 0.0)
             if weight > 0:

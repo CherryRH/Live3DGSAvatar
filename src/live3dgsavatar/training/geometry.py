@@ -44,6 +44,8 @@ def hard_surface_terms(
     mesh: Mesh,
     face_id: torch.Tensor,
     face_bary: torch.Tensor,
+    *,
+    max_scale: float = 0.0012,
 ) -> dict[str, torch.Tensor]:
     """返回硬表面几何项；每项均为可反传标量。
 
@@ -71,12 +73,26 @@ def hard_surface_terms(
     onehot = F.one_hot(axis_idx, 3).to(scale.dtype)          # [B,N,3]
     axis = (rot * onehot[..., None, :]).sum(-1)              # [B,N,3]
     normal_axis = (scale * onehot).sum(-1)                   # [B,N]
-    tangent = torch.where(onehot.bool(), torch.full_like(scale, float("inf")),
-                          scale).min(dim=-1).values          # [B,N]
+    tangent_values = torch.where(
+        onehot.bool(), torch.full_like(scale, -1.0), scale)
+    tangent = torch.where(
+        onehot.bool(), torch.full_like(scale, float("inf")), scale)
+    tangent_min = tangent.min(dim=-1).values                  # [B,N]
+    tangent_max = tangent_values.max(dim=-1).values           # [B,N]
     cos = (axis * fn).sum(-1).abs().clamp(max=1.0)
     normal = (1.0 - cos).mean()
     # 3) 法向尺度应短于切向：目标 normal/tangent <= ratio
-    ratio = normal_axis / tangent.clamp_min(1e-12)
+    ratio = normal_axis / tangent_min.clamp_min(1e-12)
     scale_short = torch.relu(ratio - 0.5).pow(2).mean()
+    # 4) 小圆片：切向不要超过上限，且两轴尽量相等
+    size = torch.relu(tangent_max - float(max_scale)).pow(2).mean()
+    tangent_for_log = torch.where(
+        onehot.bool(), torch.ones_like(scale), scale)
+    tangent_logs = torch.log(tangent_for_log.clamp_min(1e-12))
+    # 用 tanh 归一化，避免大比值时 clamp 把梯度截成 0。
+    log_ratio = (tangent_logs.max(dim=-1).values
+                 - tangent_logs.min(dim=-1).values)
+    iso = torch.tanh(0.5 * log_ratio).pow(2).mean()
     return {"surface_point": point, "surface_normal": normal,
-            "surface_scale": scale_short}
+            "surface_scale": scale_short, "surface_size": size,
+            "surface_iso": iso}

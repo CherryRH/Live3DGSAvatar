@@ -61,6 +61,8 @@ class Batch:
     blend_weight: torch.Tensor
     image: torch.Tensor
     mask: torch.Tensor
+    #: 这批样本在数据集里的全局帧号（硬表面 surface mask 缓存用）
+    indices: torch.Tensor | None = None
     weight: torch.Tensor | None = None
     #: 逐像素监督权重 `[B,1,H,W]`（缺陷加权微调用）
     weight_map: torch.Tensor | None = None
@@ -247,6 +249,7 @@ class ManifestSource:
             blend_weight=torch.stack([s.blend_weight for s in items]),
             image=torch.stack([s.image for s in items]),
             mask=torch.stack([s.mask for s in items]),
+            indices=torch.tensor(indices, dtype=torch.long),
         )
 
     # ------------------------------------------------------------ 迭代 --

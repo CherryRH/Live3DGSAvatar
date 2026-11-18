@@ -141,6 +141,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="硬表面阶段：最短轴与面法线对齐权重")
     p.add_argument("--surface-scale-weight", type=float, default=None,
                    help="硬表面阶段：法向尺度压短权重")
+    p.add_argument("--surface-size-weight", type=float, default=None,
+                   help="硬表面阶段：切向尺度上限权重")
+    p.add_argument("--surface-iso-weight", type=float, default=None,
+                   help="硬表面阶段：切向两轴等长（小圆片）权重")
+    p.add_argument("--surface-max-scale", type=float, default=None,
+                   help="硬表面阶段：切向尺度上限（米）")
     p.add_argument("--init-ply", type=Path, default=None,
                    help="从已有 PLY warm start（默认从 UV 绑定新建）")
     p.add_argument("--lr-scale", type=float, default=1.0,
@@ -287,11 +293,21 @@ def main(argv: list[str] | None = None) -> int:
     surface_scale = float(
         args.surface_scale_weight if args.surface_scale_weight is not None
         else cfg.get("train.pipeline.hard_surface.scale_weight", 0.05))
+    surface_size = float(
+        args.surface_size_weight if args.surface_size_weight is not None
+        else cfg.get("train.pipeline.hard_surface.size_weight", 1.0))
+    surface_iso = float(
+        args.surface_iso_weight if args.surface_iso_weight is not None
+        else cfg.get("train.pipeline.hard_surface.iso_weight", 0.1))
+    surface_max_scale = float(
+        args.surface_max_scale if args.surface_max_scale is not None
+        else cfg.get("train.pipeline.hard_surface.max_scale", 0.0012))
     if surface_every <= 0:
         raise SystemExit("[error] --surface-every 必须为正")
     if stage != "hard_surface":
         surface_hole = surface_spill = 0.0
         surface_point = surface_normal = surface_scale = 0.0
+        surface_size = surface_iso = 0.0
     else:
         # 硬表面阶段使用真实视角的表面约束；新视角项留到后续阶段。
         nv_hole = nv_spill = 0.0
@@ -470,7 +486,8 @@ def main(argv: list[str] | None = None) -> int:
     lpips_from = int(args.lpips_from if args.lpips_from is not None
                      else cfg.get("train.pipeline.lpips_from", 20_000))
     objective = Objective.rgba_avatar_defaults()
-    objective.mask_weight = mask_weight
+    # 硬表面阶段只监督 FLAME mask 内部，背景/头发/衣服不进入 L1。
+    objective.mask_weight = 0.0 if stage == "hard_surface" else mask_weight
     objective.nv_hole = nv_hole
     objective.nv_spill = nv_spill
     objective.surface_hole = surface_hole
@@ -478,11 +495,14 @@ def main(argv: list[str] | None = None) -> int:
     objective.surface_point = surface_point
     objective.surface_normal = surface_normal
     objective.surface_scale = surface_scale
+    objective.surface_size = surface_size
+    objective.surface_iso = surface_iso
     objective.ssim = ssim_weight
     objective.lpips = lpips_weight
     objective.lpips_from = lpips_from
     supported_face = None
-    loss_terms = [f"L1（背景权重 {mask_weight:.2f}）"]
+    effective_mask_weight = 0.0 if stage == "hard_surface" else mask_weight
+    loss_terms = [f"L1（背景权重 {effective_mask_weight:.2f}）"]
     if nv_spill > 0:
         loss_terms.append(f"nv_spill {nv_spill:g}")
     if nv_hole > 0:
@@ -497,6 +517,10 @@ def main(argv: list[str] | None = None) -> int:
         loss_terms.append(f"surface_normal {surface_normal:g}")
     if surface_scale > 0:
         loss_terms.append(f"surface_scale {surface_scale:g}")
+    if surface_size > 0:
+        loss_terms.append(f"surface_size {surface_size:g}")
+    if surface_iso > 0:
+        loss_terms.append(f"surface_iso {surface_iso:g}")
     if ssim_weight > 0:
         loss_terms.append(f"ssim {ssim_weight:g}")
     if lpips_weight > 0:
@@ -517,7 +541,46 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  硬表面 : hole {surface_hole:g} + spill {surface_spill:g}"
               f"（每 {surface_every} 步，margin {surface_margin}px），"
               f"point {surface_point:g} + normal {surface_normal:g} + "
-              f"scale {surface_scale:g}")
+              f"scale {surface_scale:g} + size {surface_size:g} + "
+              f"iso {surface_iso:g}（cap {surface_max_scale:g}m）")
+    # 硬表面 mask 用半分辨率面 id 图再上采样；512² 每步算代价太高。
+    k_half = scene.K.clone()
+    k_half[:2] *= 0.5
+    cam_half = Camera(K=k_half, w2c=camera.w2c[:1],
+                      width=scene.width // 2, height=scene.height // 2).to(device)
+    surface_cache: dict[int, torch.Tensor] = {}
+    surface_cache_path = data_dir / "surface_masks.npz"
+    if stage == "hard_surface" and surface_cache_path.is_file():
+        with np.load(surface_cache_path) as d:
+            surface_cache = {
+                int(k): torch.from_numpy(d[k].copy()).bool()[None, None]
+                for k in d.files}
+        print(f"  表面mask: 缓存 {len(surface_cache)} 帧（{surface_cache_path.name}）")
+    elif stage == "hard_surface":
+        print("  表面mask: 未找到缓存，训练中按需光栅化（可能较慢）", flush=True)
+
+    def _surface_mask(batch, i: int) -> torch.Tensor:
+        """按全局帧号缓存半分辨率 FLAME mask，避免每步重复光栅化。
+
+        返回 CPU bool `[1,1,H,W]`；缓存缺失时才做一次面 id 光栅化。
+        """
+        key = (int(batch.indices[i]) if getattr(batch, "indices", None)
+               is not None else -1)
+        cached = surface_cache.get(key)
+        if cached is not None:
+            return cached
+        with torch.no_grad():
+            ids = face_id_map(
+                batch.mesh[i:i + 1].to(device), scene.faces.to(device),
+                cam_half, glctx, flip_y=False)
+            s = (ids >= 0).float()[None, None]
+            s = torch.nn.functional.interpolate(
+                s, size=(scene.height, scene.width), mode="nearest")
+            s = (s > 0.5).cpu()
+        if key >= 0:
+            surface_cache[key] = s
+        return s
+
     def render_fn(mesh_verts, weight, batch, iteration):
         mesh = Mesh(verts=mesh_verts.to(device), faces=scene.faces.to(device),
                     uvs=scene.uvs.to(device), uv_faces=scene.uv_faces.to(device))
@@ -528,13 +591,25 @@ def main(argv: list[str] | None = None) -> int:
                 gs, rasterizer, camera, bg,
                 target_image=batch.image.to(device), build_graph=True)
             terms = hard_surface_terms(
-                gs, mesh, avatar.binding_face_id, avatar.binding_face_bary)
+                gs, mesh, avatar.binding_face_id, avatar.binding_face_bary,
+                max_scale=surface_max_scale)
             if surface_point > 0:
                 out.surface_point_loss = terms["surface_point"]
             if surface_normal > 0:
                 out.surface_normal_loss = terms["surface_normal"]
             if surface_scale > 0:
                 out.surface_scale_loss = terms["surface_scale"]
+            if surface_size > 0:
+                out.surface_size_loss = terms["surface_size"]
+            if surface_iso > 0:
+                out.surface_iso_loss = terms["surface_iso"]
+
+            # FLAME 支撑面作为硬表面 loss mask；只拟合表面内部，不把
+            # 头发/背景/衣服一并纳入 L1。半分辨率面 id 上采样足够稳定。
+            surface = torch.cat(
+                [_surface_mask(batch, i).to(device)
+                 for i in range(int(mesh_verts.shape[0]))], dim=0)
+            out.loss_mask = surface & batch.mask.to(device).bool()
         else:
             out = render_frame(avatar, rasterizer, mesh,
                                None if weight is None else weight.to(device),
@@ -581,14 +656,6 @@ def main(argv: list[str] | None = None) -> int:
                 and (int(iteration) + 1) % surface_every == 0):
             from live3dgsavatar.training.losses import (alpha_hole_loss,
                                                        surface_spill_loss)
-            surfaces = []
-            for i in range(int(mesh_verts.shape[0])):
-                with torch.no_grad():
-                    ids = face_id_map(
-                        mesh_verts[i:i + 1].to(device), scene.faces.to(device),
-                        camera, glctx, flip_y=False)
-                    surfaces.append((ids >= 0).unsqueeze(0).unsqueeze(0))
-            surface = torch.cat(surfaces, dim=0).to(device)
             if surface_hole > 0:
                 out.surface_hole_loss = alpha_hole_loss(out.alpha, surface)
             if surface_spill > 0:

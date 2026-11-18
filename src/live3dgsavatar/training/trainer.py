@@ -175,12 +175,13 @@ class Trainer:
             else None
 
         out = self.render_fn(batch.mesh, weight, batch, iteration)
+        loss_mask = getattr(out, "loss_mask", batch.mask)
         loss, parts = self.objective(
-            pred=out.color, target=batch.image, mask=batch.mask,
+            pred=out.color, target=batch.image, mask=loss_mask,
             sample_weight=getattr(batch, "weight", None),
             weight_map=getattr(batch, "weight_map", None),
             alpha=getattr(out, "alpha", None),
-            target_alpha=batch.mask.to(out.color.dtype),
+            target_alpha=loss_mask.to(out.color.dtype),
             iteration=iteration,
             extras=self._extras(out),
         )
@@ -220,7 +221,9 @@ class Trainer:
                            ("surface_spill", "surface_spill_loss"),
                            ("surface_point", "surface_point_loss"),
                            ("surface_normal", "surface_normal_loss"),
-                           ("surface_scale", "surface_scale_loss")):
+                           ("surface_scale", "surface_scale_loss"),
+                           ("surface_size", "surface_size_loss"),
+                           ("surface_iso", "surface_iso_loss")):
             value = getattr(out, attr, None)
             if callable(value):
                 extras[name] = value()
