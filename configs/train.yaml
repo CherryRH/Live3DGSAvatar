@@ -30,6 +30,7 @@ train:
       size_weight: 1.0
       iso_weight: 0.05
       max_scale: 0.0012
+      outside_weight: 1.0
     iterations: 50000
     batch_size: 10
     # 前 N 步不启用形变基（先用模板网格拟合静态外观）
