@@ -313,6 +313,24 @@ class GaussianAvatar(nn.Module):
         self.free_color = nn.Parameter(self.color.data[idx].clone())
         self._free_binder = None
 
+    def apply_free_constraints(self, max_offset: float = 0.002,
+                               near_scale: float = 0.0012,
+                               scale_growth: float = 0.5,
+                               max_scale: float = 0.004) -> None:
+        """限制自由层：位移有上限；离表面越近尺度上限越小。"""
+        if self.free_xyz is None:
+            return
+        with torch.no_grad():
+            off = self.free_xyz.norm(dim=-1, keepdim=True).clamp_min(1e-8)
+            f = (float(max_offset) / off).clamp(max=1.0)
+            self.free_xyz.mul_(f)
+            off = self.free_xyz.norm(dim=-1, keepdim=True)
+            cap = (float(near_scale) + float(scale_growth) * off).clamp(
+                max=float(max_scale))
+            cur = torch.exp(self.free_scaling).amax(dim=-1, keepdim=True)
+            self.free_scaling.sub_(
+                torch.log((cur / cap).clamp_min(1.0)))
+
     def save_free_layer(self, path: str | Path) -> None:
         import numpy as np
         if self.free_xyz is None:

@@ -108,7 +108,8 @@ class Trainer:
                  render_fn: Callable, params: dict, iterations: int,
                  batch_size: int = 1, blend_start: int = 0,
                  hooks: tuple[Hook, ...] = (), device: str | torch.device = "cuda",
-                 optimizer_factory: Callable | None = None) -> None:
+                 optimizer_factory: Callable | None = None,
+                 post_step: Callable[[], None] | None = None) -> None:
         if iterations <= 0:
             raise ValueError(f"iterations 必须为正，实际 {iterations}")
         if batch_size <= 0:
@@ -123,6 +124,7 @@ class Trainer:
         self.blend_start = int(blend_start)
         self.hooks = tuple(hooks)
         self.device = device
+        self.post_step = post_step
 
         groups = plan.opt_groups(params)
         if optimizer_factory is None:
@@ -189,6 +191,8 @@ class Trainer:
         self.optimizer.zero_grad(set_to_none=True)
         loss.backward()
         self.optimizer.step()
+        if self.post_step is not None:
+            self.post_step()
 
         self.report.last_parts = parts
         return parts
