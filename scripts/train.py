@@ -1047,7 +1047,9 @@ def main(argv: list[str] | None = None) -> int:
     trainer = Trainer(source=train_source, plan=plan, objective=objective,
                       render_fn=render_fn, params=avatar.parameter_groups(),
                       iterations=iterations, batch_size=batch_size,
-                      blend_start=blend_start, hooks=hooks, device=device)
+                      blend_start=blend_start, hooks=hooks, device=device,
+                      post_step=(avatar.apply_free_constraints
+                                 if avatar.free_xyz is not None else None))
     timing["t0"] = time.perf_counter()
     report = trainer.run()
 
