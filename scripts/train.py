@@ -161,6 +161,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="加载自由层 npz（与 --init-ply 硬表面一起渲染/训练）")
     p.add_argument("--hard-xyz-lr", type=float, default=None,
                    help="分层全量阶段硬表面 xyz 的小学习率；缺省沿用默认")
+    p.add_argument("--resume-hard", action="store_true",
+                   help="hard_surface 阶段允许 --init-ply 热启动（带几何约束的 refine）")
     p.add_argument("--init-ply", type=Path, default=None,
                    help="从已有 PLY warm start（默认从 UV 绑定新建）")
     p.add_argument("--lr-scale", type=float, default=1.0,
@@ -331,10 +333,11 @@ def main(argv: list[str] | None = None) -> int:
     else:
         # 硬表面阶段使用真实视角的表面约束；新视角项留到后续阶段。
         nv_hole = nv_spill = 0.0
-    if stage == "hard_surface" and args.init_ply is not None:
+    if (stage == "hard_surface" and args.init_ply is not None
+            and not args.resume_hard):
         raise SystemExit(
-            "[error] hard_surface 阶段必须从 UV/FLAME 初始化，不能 --init-ply；"
-            "旧 base 只用于对比，不作为起点")
+            "[error] hard_surface 阶段默认从 UV/FLAME 初始化；"
+            "若要做带几何约束的 refine，请加 --resume-hard")
     nv_enabled = (stage != "hard_surface") and nv_every > 0 and (
         nv_hole > 0 or nv_spill > 0)
     if nv_enabled and not nv_yaws:
