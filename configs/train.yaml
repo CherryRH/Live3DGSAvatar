@@ -11,8 +11,8 @@ train:
   # 关闭时，任何训练入口都应直接报错退出，而不是静默跳过 ——
   # 静默跳过会让人以为"训练过了"。
   pipeline:
-    # 训练入口：scripts/train.py。默认超参与 models/crh_1/test/config.yaml
-    # 一致：batch 10、50000 步、blend_start 3000、末尾 350 帧作验证。
+    # 训练入口：scripts/train.py。默认 batch 10、50000 步、blend_start 3000；
+    # 验证集统一取**末尾 30%**（test_ratio），不再使用固定的 350 帧。
     enabled: true
     # 训练阶段标签：base 保持旧流程；hard_surface 从 UV/FLAME 初始化，
     # 第一段只把硬表面拟合好，不读取旧 base 模型。
