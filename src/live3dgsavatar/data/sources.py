@@ -69,6 +69,8 @@ class Batch:
     #: 逐样本相机（缺省表示用数据集相机广播）：内参与 world→camera
     K: torch.Tensor | None = None
     w2c: torch.Tensor | None = None
+    #: 逐帧 FLAME surface mask（硬表面混合修复帧训练用）
+    surface: torch.Tensor | None = None
 
     def __len__(self) -> int:
         return self.image.shape[0]

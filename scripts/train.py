@@ -151,6 +151,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="硬表面阶段：FLAME 表面外 alpha 归零权重")
     p.add_argument("--surface-bg-weight", type=float, default=None,
                    help="硬表面阶段：FLAME 表面内、原图无数据区域的 alpha 归零权重")
+    p.add_argument("--repair-dir", type=Path, default=None,
+                   help="硬表面初始化：额外混入的 SyncFix 修复图目录（1:1 与真实帧）")
     p.add_argument("--init-ply", type=Path, default=None,
                    help="从已有 PLY warm start（默认从 UV 绑定新建）")
     p.add_argument("--lr-scale", type=float, default=1.0,
@@ -331,7 +333,50 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("[error] 新视角监督需要至少一个 --nv-yaws")
     need_support = nv_enabled and nv_hole > 0
 
-    from live3dgsavatar.data.sources import ManifestSource
+    from live3dgsavatar.data.sources import Batch, ManifestSource
+
+    class MixedHardSource:
+        """真实帧 + 修复帧 1:1；修复帧使用各自的相机和 FLAME surface mask。"""
+
+        def __init__(self, real, repair_batches, surface_masks, K_data, w2c_data):
+            self.real = real
+            self.repair = repair_batches
+            self.surface_masks = surface_masks
+            self.K_data = K_data
+            self.w2c_data = w2c_data
+            self.batch_size = 10
+
+        def random_batch(self, n: int):
+            import torch as _torch
+            n_rep = max(1, int(n) // 2)
+            n_real = int(n) - n_rep
+            rb = self.real.random_batch(n_real)
+            rb.K = self.K_data.unsqueeze(0).repeat(n_real, 1, 1)
+            rb.w2c = self.w2c_data.unsqueeze(0).repeat(n_real, 1, 1)
+            rb.surface = _torch.stack(
+                [self.surface_masks[int(i)] for i in rb.indices]).unsqueeze(1)
+            picks = [_torch.randint(0, len(self.repair), (1,)).item()
+                     for _ in range(n_rep)]
+            reps = [self.repair[i] for i in picks]
+            def cat(name):
+                vals = [getattr(rb, name)] + [getattr(r, name) for r in reps]
+                return _torch.cat(vals, 0)
+            return Batch(
+                mesh=cat("mesh"), blend_weight=cat("blend_weight"),
+                image=cat("image"), mask=cat("mask"),
+                indices=cat("indices"), K=cat("K"), w2c=cat("w2c"),
+                surface=cat("surface"))
+
+        def __len__(self):
+            return len(self.real)
+
+        def close(self):
+            close = getattr(self.real, "close", None)
+            if callable(close):
+                close()
+
+        def random_indices(self, n):
+            return self.real.random_indices(n)
 
     max_frames = cfg.get("train.pipeline.max_frames", None)
     if max_frames is not None and int(max_frames) <= 0:
@@ -473,6 +518,70 @@ def main(argv: list[str] | None = None) -> int:
         width=scene.width, height=scene.height).to(str(device))
     print(f"  高斯数 : {avatar.num_gaussians}   基 K={avatar.num_basis}")
 
+    # 硬表面从零初始化时，可把 SyncFix 修复图作为等比例额外观测。
+    # 修复图没有相机/网格，用基准帧的 mesh + 目标 yaw 构造 camera。
+    if args.repair_dir is not None:
+        if stage != "hard_surface":
+            raise SystemExit("--repair-dir 只用于 --stage hard_surface")
+        from PIL import Image
+        from live3dgsavatar.core.camera import (orbit_w2c_matrix, rotation_x,
+                                                rotation_y)
+        from live3dgsavatar.core.render.faceid import face_id_map
+        from live3dgsavatar.core.types import Camera
+        from live3dgsavatar.data.pose import rot6d_to_matrix, head_yaw
+        from live3dgsavatar.evaluation.views import parse_view_label
+
+        import numpy as _np
+        with _np.load(data_dir / "render_inputs.npz", allow_pickle=True) as d:
+            meshes_np = d["mesh"]; weights_np = d["blend_weight"]
+        labels = sorted(Path(args.repair_dir).glob("*.png"))
+        if not labels:
+            raise SystemExit(f"repair-dir 没有 PNG：{args.repair_dir}")
+        # 修复图使用基准帧（第一个标签的 frame 表达式）
+        base_idx = int(parse_view_label(labels[0].stem)["expr"][5:])
+        base_mesh = torch.from_numpy(meshes_np[base_idx].copy()).float()
+        base_weight = torch.from_numpy(weights_np[base_idx].copy()).float()
+        head_R = torch.from_numpy(rot6d_to_matrix(
+            base_weight.numpy()[None, 100:106])[0]).float()
+        center = base_mesh.mean(dim=0)
+        w2c_data = torch.eye(4, dtype=torch.float32)
+        w2c_data[:3, :3] = scene.R.detach().cpu()
+        w2c_data[:3, 3] = scene.T.detach().cpu()
+        K_data = scene.K.detach().cpu()
+        repair_batches = []
+        for pth in labels:
+            info = parse_view_label(pth.stem)
+            yaw = float(info["yaw"])
+            R_target = (rotation_x(0.0) @ rotation_y(yaw))[:3, :3]
+            view = orbit_w2c_matrix(w2c_data, center, R_target @ head_R.T)
+            cam = Camera(K=K_data, w2c=view.unsqueeze(0),
+                         width=scene.width, height=scene.height).to("cuda")
+            with torch.no_grad():
+                ids = face_id_map(base_mesh.unsqueeze(0).cuda(),
+                                  scene.faces.cuda(), cam, glctx, flip_y=False)
+                surf = (ids >= 0).unsqueeze(0).unsqueeze(0).cpu()
+            raw = Image.open(pth)
+            if raw.mode in ("RGBA", "LA") or "transparency" in raw.info:
+                arr = _np.asarray(raw.convert("RGBA"), _np.float32)
+                rgb = arr[..., :3]; fg = arr[..., 3] > 127
+            else:
+                arr = _np.asarray(raw.convert("RGB"), _np.float32)
+                rgb = arr; fg = arr.max(axis=-1) > 8
+            image = torch.from_numpy(rgb.transpose(2, 0, 1) / 255.0).float()
+            mask = torch.from_numpy(fg[None, None]).bool()
+            repair_batches.append(Batch(
+                mesh=base_mesh.unsqueeze(0), blend_weight=base_weight.unsqueeze(0),
+                image=image.unsqueeze(0), mask=mask,
+                indices=torch.tensor([base_idx], dtype=torch.long),
+                K=K_data.unsqueeze(0), w2c=view.unsqueeze(0),
+                surface=surf))
+        with _np.load(data_dir / "surface_masks.npz") as d:
+            surface_masks = {int(k): torch.from_numpy(d[k].copy()).bool()
+                              for k in d.files}
+        train_src = MixedHardSource(
+            train_src, repair_batches, surface_masks, K_data, w2c_data)
+        print(f"  初始化混合: {len(repair_batches)} 张修复图 + 真实帧 1:1")
+
     # 数据相机（world→camera）：大角度验证要绕它旋转
     w2c_data = torch.eye(4, dtype=torch.float32)
     w2c_data[:3, :3] = scene.R.detach().cpu()
@@ -582,6 +691,9 @@ def main(argv: list[str] | None = None) -> int:
 
         返回 CPU bool `[1,1,H,W]`；缓存缺失时才做一次面 id 光栅化。
         """
+        explicit = getattr(batch, "surface", None)
+        if explicit is not None:
+            return explicit[i:i + 1].to(device)
         key = (int(batch.indices[i]) if getattr(batch, "indices", None)
                is not None else -1)
         cached = surface_cache.get(key)
@@ -602,14 +714,19 @@ def main(argv: list[str] | None = None) -> int:
     def render_fn(mesh_verts, weight, batch, iteration):
         mesh = Mesh(verts=mesh_verts.to(device), faces=scene.faces.to(device),
                     uvs=scene.uvs.to(device), uv_faces=scene.uv_faces.to(device))
+        if getattr(batch, "K", None) is not None:
+            cam = Camera(K=batch.K.to(device), w2c=batch.w2c.to(device),
+                         width=scene.width, height=scene.height).to(device)
+        else:
+            cam = camera
         bg = torch.zeros(batch.image.shape[0], 3, 1, 1, device=device)
         if stage == "hard_surface":
             gs = avatar.deform(mesh, None if weight is None else weight.to(device))
             # 硬上限：切向大尺度高斯直接压到 cap，避免 mask 外出现大块彩斑。
             gs.scaling = gs.scaling.clamp(max=surface_max_scale)
-            gs = frontface_gaussians(gs, camera, mesh, avatar.binding_face_id)
+            gs = frontface_gaussians(gs, cam, mesh, avatar.binding_face_id)
             out = render_gaussians(
-                gs, rasterizer, camera, bg,
+                gs, rasterizer, cam, bg,
                 target_image=batch.image.to(device), build_graph=True)
             terms = hard_surface_terms(
                 gs, mesh, avatar.binding_face_id, avatar.binding_face_bary,
@@ -880,7 +997,7 @@ def main(argv: list[str] | None = None) -> int:
         train_source = PrefetchSource(train_source, batch_size, workers=workers,
                                       depth=max(2, workers * 2))
         print(f"  取数   : 预取 {workers} 线程（批 {batch_size}）")
-    if train_src.has_image_cache:
+    if getattr(train_src, "has_image_cache", False):
         print("  取数   : 使用 images.npy 缓存（跳过 PNG 解码）")
     else:
         print("  取数   : 逐帧解 PNG —— 可跑 scripts/cache_images.py 加速")
