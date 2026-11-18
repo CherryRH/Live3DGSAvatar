@@ -134,7 +134,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--surface-margin", type=int, default=None,
                    help="硬表面阶段 surface_spill 的边界余量像素")
     p.add_argument("--surface-every", type=int, default=None,
-                   help="硬表面阶段每多少步计算一次表面约束；默认取配置")
+                   help="硬表面阶段每多少步计算一次表面 alpha 约束；默认取配置")
+    p.add_argument("--surface-point-weight", type=float, default=None,
+                   help="硬表面阶段：高斯中心到 FLAME 表面的距离权重")
+    p.add_argument("--surface-normal-weight", type=float, default=None,
+                   help="硬表面阶段：最短轴与面法线对齐权重")
+    p.add_argument("--surface-scale-weight", type=float, default=None,
+                   help="硬表面阶段：法向尺度压短权重")
     p.add_argument("--init-ply", type=Path, default=None,
                    help="从已有 PLY warm start（默认从 UV 绑定新建）")
     p.add_argument("--lr-scale", type=float, default=1.0,
@@ -272,10 +278,20 @@ def main(argv: list[str] | None = None) -> int:
     surface_every = int(
         args.surface_every if args.surface_every is not None
         else cfg.get("train.pipeline.hard_surface.every", 10))
+    surface_point = float(
+        args.surface_point_weight if args.surface_point_weight is not None
+        else cfg.get("train.pipeline.hard_surface.point_weight", 2000.0))
+    surface_normal = float(
+        args.surface_normal_weight if args.surface_normal_weight is not None
+        else cfg.get("train.pipeline.hard_surface.normal_weight", 0.10))
+    surface_scale = float(
+        args.surface_scale_weight if args.surface_scale_weight is not None
+        else cfg.get("train.pipeline.hard_surface.scale_weight", 0.05))
     if surface_every <= 0:
         raise SystemExit("[error] --surface-every 必须为正")
     if stage != "hard_surface":
         surface_hole = surface_spill = 0.0
+        surface_point = surface_normal = surface_scale = 0.0
     else:
         # 硬表面阶段使用真实视角的表面约束；新视角项留到后续阶段。
         nv_hole = nv_spill = 0.0
@@ -402,6 +418,7 @@ def main(argv: list[str] | None = None) -> int:
                                            summarise_holes)
     from live3dgsavatar.core.types import Camera, Mesh
     from live3dgsavatar.data.scene import load_scene
+    from live3dgsavatar.training.geometry import hard_surface_terms
     from live3dgsavatar.training.objectives import Objective
     from live3dgsavatar.training.plans import ParameterPlan
     from live3dgsavatar.training.schedule import EarlyStopping
@@ -458,6 +475,9 @@ def main(argv: list[str] | None = None) -> int:
     objective.nv_spill = nv_spill
     objective.surface_hole = surface_hole
     objective.surface_spill = surface_spill
+    objective.surface_point = surface_point
+    objective.surface_normal = surface_normal
+    objective.surface_scale = surface_scale
     objective.ssim = ssim_weight
     objective.lpips = lpips_weight
     objective.lpips_from = lpips_from
@@ -471,6 +491,12 @@ def main(argv: list[str] | None = None) -> int:
         loss_terms.append(f"surface_hole {surface_hole:g}")
     if surface_spill > 0:
         loss_terms.append(f"surface_spill {surface_spill:g}")
+    if surface_point > 0:
+        loss_terms.append(f"surface_point {surface_point:g}")
+    if surface_normal > 0:
+        loss_terms.append(f"surface_normal {surface_normal:g}")
+    if surface_scale > 0:
+        loss_terms.append(f"surface_scale {surface_scale:g}")
     if ssim_weight > 0:
         loss_terms.append(f"ssim {ssim_weight:g}")
     if lpips_weight > 0:
@@ -489,15 +515,31 @@ def main(argv: list[str] | None = None) -> int:
         print("  新视角 : 关闭")
     if stage == "hard_surface":
         print(f"  硬表面 : hole {surface_hole:g} + spill {surface_spill:g}"
-              f"（每 {surface_every} 步，margin {surface_margin}px）")
+              f"（每 {surface_every} 步，margin {surface_margin}px），"
+              f"point {surface_point:g} + normal {surface_normal:g} + "
+              f"scale {surface_scale:g}")
     def render_fn(mesh_verts, weight, batch, iteration):
         mesh = Mesh(verts=mesh_verts.to(device), faces=scene.faces.to(device),
                     uvs=scene.uvs.to(device), uv_faces=scene.uv_faces.to(device))
         bg = torch.zeros(batch.image.shape[0], 3, 1, 1, device=device)
-        out = render_frame(avatar, rasterizer, mesh,
-                           None if weight is None else weight.to(device),
-                           camera, bg, target_image=batch.image.to(device),
-                           build_graph=True)
+        if stage == "hard_surface":
+            gs = avatar.deform(mesh, None if weight is None else weight.to(device))
+            out = render_gaussians(
+                gs, rasterizer, camera, bg,
+                target_image=batch.image.to(device), build_graph=True)
+            terms = hard_surface_terms(
+                gs, mesh, avatar.binding_face_id, avatar.binding_face_bary)
+            if surface_point > 0:
+                out.surface_point_loss = terms["surface_point"]
+            if surface_normal > 0:
+                out.surface_normal_loss = terms["surface_normal"]
+            if surface_scale > 0:
+                out.surface_scale_loss = terms["surface_scale"]
+        else:
+            out = render_frame(avatar, rasterizer, mesh,
+                               None if weight is None else weight.to(device),
+                               camera, bg, target_image=batch.image.to(device),
+                               build_graph=True)
 
         if nv_enabled and (int(iteration) + 1) % int(nv_every) == 0:
             from live3dgsavatar.training.losses import (alpha_hole_loss,

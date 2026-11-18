@@ -840,3 +840,26 @@ def test_train_cli_exposes_warm_start_and_novel_view() -> None:
     assert c.ssim_weight == 0.02
     assert c.lpips_weight == 0.01
     assert c.lpips_from == 20000
+
+def test_hard_surface_terms_align_short_axis() -> None:
+    """贴面/法线/法向尺度三项在理想高斯上应接近 0。"""
+    from live3dgsavatar.core.types import GaussianSet, Mesh
+    from live3dgsavatar.training.geometry import hard_surface_terms
+
+    mesh = Mesh(
+        verts=torch.tensor([[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0],
+                             [0.0, 1.0, 0.0]]]),
+        faces=torch.tensor([[0, 1, 2]]), uvs=torch.zeros(3, 2),
+        uv_faces=torch.tensor([[0, 1, 2]]))
+    g = GaussianSet(
+        xyz=torch.tensor([[[1 / 3, 1 / 3, 0.0]]]),
+        rotation=torch.tensor([[[1.0, 0, 0, 0]]]),
+        scaling=torch.tensor([[[0.1, 0.1, 0.01]]]),
+        opacity=torch.ones(1, 1, 1), color=torch.zeros(1, 1, 1, 3),
+        space="world")
+    bary = torch.tensor([[1 / 3, 1 / 3, 1 / 3]])
+    terms = hard_surface_terms(g, mesh, torch.tensor([0]), bary)
+    assert float(terms["surface_point"]) < 1e-8
+    assert float(terms["surface_normal"]) < 1e-6
+    assert float(terms["surface_scale"]) == 0.0
+

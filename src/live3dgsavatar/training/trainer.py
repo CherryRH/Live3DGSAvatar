@@ -217,7 +217,10 @@ class Trainer:
                            ("nv_hole", "nv_hole_loss"),
                            ("nv_spill", "nv_spill_loss"),
                            ("surface_hole", "surface_hole_loss"),
-                           ("surface_spill", "surface_spill_loss")):
+                           ("surface_spill", "surface_spill_loss"),
+                           ("surface_point", "surface_point_loss"),
+                           ("surface_normal", "surface_normal_loss"),
+                           ("surface_scale", "surface_scale_loss")):
             value = getattr(out, attr, None)
             if callable(value):
                 extras[name] = value()
