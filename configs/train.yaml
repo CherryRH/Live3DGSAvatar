@@ -29,7 +29,7 @@ train:
       scale_weight: 0.05
       size_weight: 1.0
       iso_weight: 0.0
-      max_scale: 0.0018
+      max_scale: 0.0020  # 切向尺度上限 2.0 mm（统一默认）
       outside_weight: 1.0
       bg_weight: 1.0
     iterations: 50000

@@ -317,7 +317,7 @@ def main(argv: list[str] | None = None) -> int:
         else cfg.get("train.pipeline.hard_surface.iso_weight", 0.1))
     surface_max_scale = float(
         args.surface_max_scale if args.surface_max_scale is not None
-        else cfg.get("train.pipeline.hard_surface.max_scale", 0.0012))
+        else cfg.get("train.pipeline.hard_surface.max_scale", 0.0020))
     surface_outside = float(
         args.surface_outside_weight if args.surface_outside_weight is not None
         else cfg.get("train.pipeline.hard_surface.outside_weight", 1.0))

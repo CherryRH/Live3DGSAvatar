@@ -45,7 +45,7 @@ def hard_surface_terms(
     face_id: torch.Tensor,
     face_bary: torch.Tensor,
     *,
-    max_scale: float = 0.0012,
+    max_scale: float = 0.0020,
 ) -> dict[str, torch.Tensor]:
     """返回硬表面几何项；每项均为可反传标量。
 
