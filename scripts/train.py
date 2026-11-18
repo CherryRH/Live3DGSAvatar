@@ -990,7 +990,8 @@ def main(argv: list[str] | None = None) -> int:
     val_hook = ValidationHook(
         source=val_src, evaluate=evaluate, every=eval_every,
         early_stop=EarlyStopping(patience=patience, min_delta=min_delta),
-        metric="robust" if robust_cfg is not None else "psnr",
+        metric=(args.early_metric or
+                ("robust" if robust_cfg is not None else "psnr")),
         on_improve=save_best, start_after=early_stop_after)
     hooks = [
         LogHook(every=100),
