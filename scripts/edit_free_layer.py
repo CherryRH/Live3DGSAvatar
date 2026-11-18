@@ -14,6 +14,7 @@ def main():
     p.add_argument('--free',type=Path,required=True)
     p.add_argument('--out',type=Path,required=True)
     p.add_argument('--split',type=int,default=0,help='分裂前 N 个自由高斯')
+    p.add_argument('--split-scale',type=float,default=0.5)
     p.add_argument('--max-gaussians',type=int,default=24000)
     p.add_argument('--prune-min-opacity',type=float,default=0.005)
     p.add_argument('--max-offset',type=float,default=0.08)
@@ -26,7 +27,7 @@ def main():
     if a.split>0:
         k=min(int(a.split), max(0, int(a.max_gaussians)-n0))
         if k>0:
-            av.split_free_layer(torch.arange(k)); print('split',k)
+            av.split_free_layer(torch.arange(k), scale_factor=a.split_scale); print('split',k)
     if a.prune_min_opacity>0:
         removed=av.prune_free_layer(min_opacity=a.prune_min_opacity,max_offset=a.max_offset)
         print('prune',removed)

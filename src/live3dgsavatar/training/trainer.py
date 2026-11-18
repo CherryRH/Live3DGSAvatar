@@ -136,6 +136,8 @@ class Trainer:
 
         self.report = TrainReport()
         self._stop = False
+        self.last_batch = None
+        self.last_out = None
 
     # ------------------------------------------------------------ 控制 --
 
@@ -187,6 +189,8 @@ class Trainer:
             else None
 
         out = self.render_fn(batch.mesh, weight, batch, iteration)
+        self.last_batch = batch
+        self.last_out = out
         loss_mask = getattr(out, "loss_mask", batch.mask)
         loss, parts = self.objective(
             pred=out.color, target=batch.image, mask=loss_mask,

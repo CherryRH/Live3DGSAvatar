@@ -1084,10 +1084,45 @@ def main(argv: list[str] | None = None) -> int:
             n = int(avatar.free_xyz.shape[0])
             if n >= max_free:
                 return
-            idx = avatar.free_growth_indices(
-                min(grow_count, max_free - n),
-                min_opacity=prune_op,
-                max_offset=float(free_cfg.get("max_offset", 0.08)))
+            # 残差驱动：用最近一个 batch 的颜色残差累加到 FLAME 面，
+            # 再映射到自由高斯；失败时退回尺度排序。
+            idx = None
+            try:
+                lb, lo = trainer.last_batch, trainer.last_out
+                if lb is not None and lo is not None:
+                    nf = int(scene.faces.shape[0])
+                    face_err = torch.zeros(nf, device=device)
+                    for i in range(int(lb.mesh.shape[0])):
+                        if getattr(lb, "K", None) is not None:
+                            cam_i = Camera(K=lb.K[i:i+1].to(device),
+                                           w2c=lb.w2c[i:i+1].to(device),
+                                           width=scene.width,
+                                           height=scene.height).to(device)
+                        else:
+                            cam_i = camera
+                        v = lb.mesh[i:i+1].to(device)
+                        ids = face_id_map(v, scene.faces.to(device), cam_i,
+                                          glctx, flip_y=False)
+                        if ids.ndim == 3:
+                            ids = ids[0]
+                        err = (lo.color[i:i+1] - lb.image[i:i+1].to(device)).abs().mean(1).reshape(-1)
+                        ids = ids.reshape(-1)
+                        m = lb.mask[i:i+1, 0].to(device).reshape(-1).bool()
+                        valid = (ids >= 0) & m
+                        if bool(valid.any()):
+                            face_err.index_add_(0, ids[valid].long(), err[valid])
+                    if float(face_err.max()) > 0:
+                        idx = avatar.free_residual_indices(
+                            face_err, min(grow_count, max_free - n),
+                            min_opacity=prune_op,
+                            max_offset=float(free_cfg.get("max_offset", 0.08)))
+            except Exception as e:
+                print(f"  [free] 残差生长回退尺度选择：{e}", flush=True)
+            if idx is None or idx.numel() == 0:
+                idx = avatar.free_growth_indices(
+                    min(grow_count, max_free - n),
+                    min_opacity=prune_op,
+                    max_offset=float(free_cfg.get("max_offset", 0.08)))
             added = avatar.split_free_layer(idx)
             if added:
                 constraints()

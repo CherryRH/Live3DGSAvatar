@@ -314,7 +314,7 @@ class GaussianAvatar(nn.Module):
         self._free_binder = None
 
     def split_free_layer(self, indices: torch.Tensor, *,
-                         scale_factor: float = 0.7,
+                         scale_factor: float = 0.5,
                          opacity_factor: float = 0.5) -> int:
         """只复制选中的自由高斯；绝不修改硬表面。
 
@@ -340,6 +340,23 @@ class GaussianAvatar(nn.Module):
         self.free_color = nn.Parameter(cat(self.free_color.data, self.free_color.data[idx]))
         self._free_binder = None
         return int(idx.numel())
+
+    def free_residual_indices(self, face_score: torch.Tensor, count: int, *,
+                              min_opacity: float = 0.005,
+                              max_offset: float = 0.08) -> torch.Tensor:
+        """按自由高斯绑定面的当前残差选择分裂候选。"""
+        if self.free_xyz is None or face_score.numel() == 0:
+            return torch.empty(0, dtype=torch.long, device=self.xyz.device)
+        score = face_score.to(self.free_face_id.device)[self.free_face_id]
+        with torch.no_grad():
+            op = torch.sigmoid(self.free_opacity).squeeze(-1)
+            off = self.free_xyz.norm(dim=-1)
+            ok = (op >= min_opacity) & (off <= max_offset)
+            score = torch.where(ok, score, torch.zeros_like(score))
+            k = min(int(count), int(ok.sum()))
+            if k <= 0:
+                return torch.empty(0, dtype=torch.long, device=self.xyz.device)
+        return torch.topk(score, k).indices
 
     def free_growth_indices(self, count: int, *,
                             min_opacity: float = 0.005,

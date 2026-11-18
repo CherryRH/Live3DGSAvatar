@@ -51,3 +51,23 @@ def frontface_gaussians(gaussians: GaussianSet, camera: Camera,
     view = camera.position.to(normal.device, normal.dtype)[:, None, :] - gaussians.xyz
     front = (normal * view).sum(-1) > 0                 # [B,N]
     return replace(gaussians, opacity=gaussians.opacity * front[..., None])
+
+
+def frontface_with_free(gaussians: GaussianSet, camera: Camera,
+                        mesh, face_id, n_hard: int) -> GaussianSet:
+    """分层模型：只对硬表面前 N 个高斯门控，自由层保持原样。"""
+    n = int(gaussians.num_gaussians)
+    n_hard = min(int(n_hard), n)
+    if n_hard == n:
+        return frontface_gaussians(gaussians, camera, mesh, face_id)
+    hard = GaussianSet(
+        xyz=gaussians.xyz[:, :n_hard],
+        rotation=gaussians.rotation[:, :n_hard],
+        scaling=gaussians.scaling[:, :n_hard],
+        opacity=gaussians.opacity[:, :n_hard],
+        color=gaussians.color[:, :n_hard],
+        space=gaussians.space)
+    hard = frontface_gaussians(hard, camera, mesh, face_id)
+    return replace(gaussians,
+                   opacity=torch.cat([hard.opacity,
+                                      gaussians.opacity[:, n_hard:]], dim=1))
