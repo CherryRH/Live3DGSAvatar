@@ -260,12 +260,17 @@ class GaussianAvatar(nn.Module):
         tangent = tangent.to(mesh.verts.device)
         world = self.build_binder().bind(tangent, mesh)
         if self.free_xyz is not None:
+            import torch.nn.functional as _F
             b = mesh.batch_size
             free = GaussianSet(
                 xyz=self.free_xyz.unsqueeze(0).expand(b, -1, -1),
-                rotation=self.free_rotation.unsqueeze(0).expand(b, -1, -1),
-                scaling=self.free_scaling.unsqueeze(0).expand(b, -1, -1),
-                opacity=self.free_opacity.unsqueeze(0).expand(b, -1, -1),
+                rotation=_F.normalize(
+                    self.free_rotation.unsqueeze(0).expand(b, -1, -1), dim=-1),
+                # 自由层参数与硬表面一样存 log/logit；必须在这里激活
+                scaling=torch.exp(
+                    self.free_scaling.unsqueeze(0).expand(b, -1, -1)),
+                opacity=torch.sigmoid(
+                    self.free_opacity.unsqueeze(0).expand(b, -1, -1)),
                 color=self.free_color.unsqueeze(0).expand(b, -1, -1, -1),
                 space="tangent",
             )
