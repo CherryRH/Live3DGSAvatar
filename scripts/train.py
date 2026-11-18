@@ -149,6 +149,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="硬表面阶段：切向尺度上限（米）")
     p.add_argument("--surface-outside-weight", type=float, default=None,
                    help="硬表面阶段：FLAME 表面外 alpha 归零权重")
+    p.add_argument("--surface-bg-weight", type=float, default=None,
+                   help="硬表面阶段：FLAME 表面内、原图无数据区域的 alpha 归零权重")
     p.add_argument("--init-ply", type=Path, default=None,
                    help="从已有 PLY warm start（默认从 UV 绑定新建）")
     p.add_argument("--lr-scale", type=float, default=1.0,
@@ -307,12 +309,15 @@ def main(argv: list[str] | None = None) -> int:
     surface_outside = float(
         args.surface_outside_weight if args.surface_outside_weight is not None
         else cfg.get("train.pipeline.hard_surface.outside_weight", 1.0))
+    surface_bg = float(
+        args.surface_bg_weight if args.surface_bg_weight is not None
+        else cfg.get("train.pipeline.hard_surface.bg_weight", 1.0))
     if surface_every <= 0:
         raise SystemExit("[error] --surface-every 必须为正")
     if stage != "hard_surface":
         surface_hole = surface_spill = 0.0
         surface_point = surface_normal = surface_scale = 0.0
-        surface_size = surface_iso = surface_outside = 0.0
+        surface_size = surface_iso = surface_outside = surface_bg = 0.0
     else:
         # 硬表面阶段使用真实视角的表面约束；新视角项留到后续阶段。
         nv_hole = nv_spill = 0.0
@@ -439,6 +444,7 @@ def main(argv: list[str] | None = None) -> int:
                                            summarise_holes)
     from live3dgsavatar.core.types import Camera, Mesh
     from live3dgsavatar.data.scene import load_scene
+    from live3dgsavatar.core.render.frontface import frontface_gaussians
     from live3dgsavatar.training.geometry import hard_surface_terms
     from live3dgsavatar.training.objectives import Objective
     from live3dgsavatar.training.plans import ParameterPlan
@@ -503,6 +509,7 @@ def main(argv: list[str] | None = None) -> int:
     objective.surface_size = surface_size
     objective.surface_iso = surface_iso
     objective.surface_outside = surface_outside
+    objective.surface_bg = surface_bg
     objective.ssim = ssim_weight
     objective.lpips = lpips_weight
     objective.lpips_from = lpips_from
@@ -529,6 +536,8 @@ def main(argv: list[str] | None = None) -> int:
         loss_terms.append(f"surface_iso {surface_iso:g}")
     if surface_outside > 0:
         loss_terms.append(f"surface_outside {surface_outside:g}")
+    if surface_bg > 0:
+        loss_terms.append(f"surface_bg {surface_bg:g}")
     if ssim_weight > 0:
         loss_terms.append(f"ssim {ssim_weight:g}")
     if lpips_weight > 0:
@@ -550,8 +559,8 @@ def main(argv: list[str] | None = None) -> int:
               f"（每 {surface_every} 步，margin {surface_margin}px），"
               f"point {surface_point:g} + normal {surface_normal:g} + "
               f"scale {surface_scale:g} + size {surface_size:g} + "
-              f"iso {surface_iso:g} + outside {surface_outside:g}"
-              f"（cap {surface_max_scale:g}m）")
+              f"iso {surface_iso:g} + outside {surface_outside:g} + "
+              f"bg {surface_bg:g}（cap {surface_max_scale:g}m）")
     # 硬表面 mask 用半分辨率面 id 图再上采样；512² 每步算代价太高。
     k_half = scene.K.clone()
     k_half[:2] *= 0.5
@@ -598,6 +607,7 @@ def main(argv: list[str] | None = None) -> int:
             gs = avatar.deform(mesh, None if weight is None else weight.to(device))
             # 硬上限：切向大尺度高斯直接压到 cap，避免 mask 外出现大块彩斑。
             gs.scaling = gs.scaling.clamp(max=surface_max_scale)
+            gs = frontface_gaussians(gs, camera, mesh, avatar.binding_face_id)
             out = render_gaussians(
                 gs, rasterizer, camera, bg,
                 target_image=batch.image.to(device), build_graph=True)
@@ -630,6 +640,7 @@ def main(argv: list[str] | None = None) -> int:
         if nv_enabled and (int(iteration) + 1) % int(nv_every) == 0:
             from live3dgsavatar.training.losses import (alpha_hole_loss,
                                                        outside_alpha_loss,
+                                                       surface_bg_alpha_loss,
                                                        surface_spill_loss)
             i = random.randrange(int(mesh_verts.shape[0]))
             yaw = float(random.choice(nv_yaws))
@@ -668,6 +679,7 @@ def main(argv: list[str] | None = None) -> int:
                 and (int(iteration) + 1) % surface_every == 0):
             from live3dgsavatar.training.losses import (alpha_hole_loss,
                                                        outside_alpha_loss,
+                                                       surface_bg_alpha_loss,
                                                        surface_spill_loss)
             if surface_hole > 0:
                 out.surface_hole_loss = alpha_hole_loss(out.alpha, surface)
@@ -676,6 +688,9 @@ def main(argv: list[str] | None = None) -> int:
                     out.alpha, surface, margin=surface_margin)
             if surface_outside > 0:
                 out.surface_outside_loss = outside_alpha_loss(out.alpha, surface)
+            if surface_bg > 0:
+                out.surface_bg_loss = surface_bg_alpha_loss(
+                    out.alpha, surface, batch.mask.to(device).bool())
 
         return out
 

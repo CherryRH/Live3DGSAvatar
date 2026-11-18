@@ -251,3 +251,18 @@ def outside_alpha_loss(alpha: torch.Tensor, surface: torch.Tensor) -> torch.Tens
     outside = (~surface.bool()).to(alpha.dtype)
     return (alpha * outside).sum() / outside.sum().clamp_min(1.0)
 
+def surface_bg_alpha_loss(alpha: torch.Tensor, surface: torch.Tensor,
+                          target_mask: torch.Tensor) -> torch.Tensor:
+    """FLAME 表面内、但原图没有前景的区域，alpha 应为 0。
+
+    典型场景：FLAME 的胸口比原图实际露出的胸口大，不能把无数据区域
+    用表面高斯硬填成白色。
+    """
+    if alpha.shape != surface.shape:
+        raise ValueError("alpha/surface 形状不一致")
+    if target_mask.shape != surface.shape:
+        # batch mask 可能来自 [B,1,H,W]；调用方保证一致
+        raise ValueError("target_mask/surface 形状不一致")
+    remove = surface.bool() & (~target_mask.bool())
+    return (alpha * remove.to(alpha.dtype)).sum() / remove.sum().clamp_min(1.0)
+

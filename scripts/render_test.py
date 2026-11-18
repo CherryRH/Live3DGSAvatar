@@ -140,6 +140,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="展示视频帧率（默认与 --video-fps 一致）")
     p.add_argument("--showcase-frame", type=int, default=None,
                    help="展示用的基础帧下标（默认取本次评测中头姿最正的一帧）")
+    p.add_argument("--frontface", action="store_true",
+                   help="只渲染朝向相机的高斯（硬表面/背面剔除）")
     p.add_argument("--no-lpips", action="store_true",
                    help="跳过 LPIPS（首次使用需下载 AlexNet 权重）")
     p.add_argument("--profile", action="store_true",
@@ -359,9 +361,18 @@ def render_core(args, scene, frames: list[int], out_dir: Path,
                         width=scene.width, height=scene.height).to("cuda")
         weight = scene.weights_tensor(idx, device="cuda")
         timings: dict[str, float] = {}
-        out = render_frame(avatar, rasterizer, mesh, weight, camera, bg,
-                           timings=timings if args.profile else None,
-                           sync=bool(args.profile))
+        if args.frontface:
+            from live3dgsavatar.core.render.frontface import frontface_gaussians
+            from live3dgsavatar.core.render import render_gaussians
+            with torch.no_grad():
+                gs = avatar.deform(mesh, weight)
+                gs = frontface_gaussians(gs, camera, mesh,
+                                         avatar.binding_face_id)
+                out = render_gaussians(gs, rasterizer, camera, bg)
+        else:
+            out = render_frame(avatar, rasterizer, mesh, weight, camera, bg,
+                               timings=timings if args.profile else None,
+                               sync=bool(args.profile))
         if args.profile:
             stages["deform"].append(timings["deform"] / len(idx))
             stages["rasterize"].append(timings["rasterize"] / len(idx))
@@ -482,7 +493,12 @@ def render_showcase(args, scene, avatar, rasterizer, bg,
         view = orbit_w2c_matrix(w2c_data, center, R_target @ head_R.T)
         cam = Camera(K=K, w2c=view.unsqueeze(0),
                      width=scene.width, height=scene.height).to("cuda")
-        out = render_gaussians(gs, rasterizer, cam, bg)
+        draw_gs = gs
+        if getattr(args, "frontface", False):
+            from live3dgsavatar.core.render.frontface import frontface_gaussians
+            draw_gs = frontface_gaussians(gs, cam, mesh,
+                                          avatar.binding_face_id)
+        out = render_gaussians(draw_gs, rasterizer, cam, bg)
         arr = (out.color.clamp(0, 1).permute(0, 2, 3, 1) * 255).byte()
         images.append(np.asarray(Image.fromarray(arr[0].cpu().numpy())))
 
@@ -756,6 +772,7 @@ def main() -> int:
             "video_fps": args.video_fps,
             "lpips": not args.no_lpips,
             "multi_model": bool(args._multi),
+            "frontface": bool(args.frontface),
             "showcase": bool(args.showcase),
             "showcase_frame": getattr(args, "_showcase_frame_used", None),
             "showcase_frames": args.showcase_frames,

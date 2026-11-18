@@ -224,7 +224,8 @@ class Trainer:
                            ("surface_scale", "surface_scale_loss"),
                            ("surface_size", "surface_size_loss"),
                            ("surface_iso", "surface_iso_loss"),
-                           ("surface_outside", "surface_outside_loss")):
+                           ("surface_outside", "surface_outside_loss"),
+                           ("surface_bg", "surface_bg_loss")):
             value = getattr(out, attr, None)
             if callable(value):
                 extras[name] = value()
