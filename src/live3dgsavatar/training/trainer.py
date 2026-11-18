@@ -119,6 +119,8 @@ class Trainer:
         self.plan = plan
         self.objective = objective
         self.render_fn = render_fn
+        self.params = params
+        self.optimizer_factory = optimizer_factory
         self.iterations = int(iterations)
         self.batch_size = int(batch_size)
         self.blend_start = int(blend_start)
@@ -136,6 +138,14 @@ class Trainer:
         self._stop = False
 
     # ------------------------------------------------------------ 控制 --
+
+    def rebuild_optimizer(self) -> None:
+        """自由层分裂后重建优化器状态（参数列表已变化）。"""
+        groups = self.plan.opt_groups(self.params)
+        if self.optimizer_factory is None:
+            self.optimizer = torch.optim.Adam(groups, lr=0.0, eps=1e-15)
+        else:
+            self.optimizer = self.optimizer_factory(groups)
 
     def request_stop(self) -> None:
         """请求在下一步之后停止（钩子用它做时间预算/早停）。"""

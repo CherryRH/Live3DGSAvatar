@@ -341,6 +341,23 @@ class GaussianAvatar(nn.Module):
         self._free_binder = None
         return int(idx.numel())
 
+    def free_growth_indices(self, count: int, *,
+                            min_opacity: float = 0.005,
+                            max_offset: float = 0.08) -> torch.Tensor:
+        """按“大尺度 + 足够可见”选择要分裂的自由高斯。"""
+        if self.free_xyz is None:
+            return torch.empty(0, dtype=torch.long, device=self.xyz.device)
+        with torch.no_grad():
+            op = torch.sigmoid(self.free_opacity).squeeze(-1)
+            scale = torch.exp(self.free_scaling).amax(dim=-1)
+            off = self.free_xyz.norm(dim=-1)
+            ok = (op >= min_opacity) & (off <= max_offset)
+            score = torch.where(ok, scale, torch.zeros_like(scale))
+            k = min(int(count), int(ok.sum()))
+            if k <= 0:
+                return torch.empty(0, dtype=torch.long, device=self.xyz.device)
+        return torch.topk(score, k).indices
+
     def prune_free_layer(self, *, min_opacity: float = 0.005,
                          max_offset: float = 0.08) -> int:
         """剪掉低透明度或离表面过远的自由高斯；硬表面不变。"""

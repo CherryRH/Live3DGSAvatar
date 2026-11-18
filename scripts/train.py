@@ -159,6 +159,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="冻结硬表面 xyz/xyz_b；自由层参数不受影响")
     p.add_argument("--free-layer", type=Path, default=None,
                    help="加载自由层 npz（与 --init-ply 硬表面一起渲染/训练）")
+    p.add_argument("--free-grow-every", type=int, default=None,
+                   help="自由层动态生长周期；0=关闭")
+    p.add_argument("--free-grow-count", type=int, default=None,
+                   help="每次自由层最多新增数量")
+    p.add_argument("--free-max-gaussians", type=int, default=None,
+                   help="自由层数量硬上限")
+    p.add_argument("--free-prune-opacity", type=float, default=None,
+                   help="自由层剪枝的 opacity 下限")
     p.add_argument("--hard-xyz-lr", type=float, default=None,
                    help="分层全量阶段硬表面 xyz 的小学习率；缺省沿用默认")
     p.add_argument("--resume-hard", action="store_true",
@@ -1051,13 +1059,42 @@ def main(argv: list[str] | None = None) -> int:
     free_post = None
     if avatar.free_xyz is not None:
         from functools import partial
-        free_post = partial(
+        constraints = partial(
             avatar.apply_free_constraints,
             max_offset=float(free_cfg.get("max_offset", 0.08)),
             near_scale=float(free_cfg.get("near_scale", 0.0012)),
             scale_growth=float(free_cfg.get("scale_growth", 0.35)),
             max_scale=float(free_cfg.get("max_scale", 0.025)),
         )
+        grow_every = int(args.free_grow_every if args.free_grow_every is not None
+                         else free_cfg.get("grow_every", 0))
+        grow_count = int(args.free_grow_count if args.free_grow_count is not None
+                         else free_cfg.get("grow_count", 500))
+        max_free = int(args.free_max_gaussians if args.free_max_gaussians is not None
+                       else free_cfg.get("max_gaussians", 24000))
+        prune_op = float(args.free_prune_opacity if args.free_prune_opacity is not None
+                         else free_cfg.get("prune_min_opacity", 0.005))
+        growth = {"step": 0}
+
+        def free_post():
+            constraints()
+            growth["step"] += 1
+            if (grow_every <= 0 or growth["step"] % grow_every != 0):
+                return
+            n = int(avatar.free_xyz.shape[0])
+            if n >= max_free:
+                return
+            idx = avatar.free_growth_indices(
+                min(grow_count, max_free - n),
+                min_opacity=prune_op,
+                max_offset=float(free_cfg.get("max_offset", 0.08)))
+            added = avatar.split_free_layer(idx)
+            if added:
+                constraints()
+                avatar.prune_free_layer(min_opacity=prune_op,
+                                        max_offset=float(free_cfg.get("max_offset", 0.08)))
+                trainer.rebuild_optimizer()
+                print(f"  [free] 生长 +{added} → {int(avatar.free_xyz.shape[0])} 个", flush=True)
     trainer = Trainer(source=train_source, plan=plan, objective=objective,
                       render_fn=render_fn, params=avatar.parameter_groups(),
                       iterations=iterations, batch_size=batch_size,
