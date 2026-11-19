@@ -72,8 +72,10 @@ INIT_PATIENCE="${DENS_INIT_PATIENCE:-${CFG_DENSIFY_INIT_PATIENCE:-2}}"
 TEX="${DENS_TEX_SIZE:-${CFG_DENSIFY_TEX_SIZE:-512}}"
 STEPS="${DENS_STEPS:-${CFG_DENSIFY_STEPS:-5000}}"
 BATCH="${DENS_BATCH:-${CFG_DENSIFY_BATCH:-4}}"
-REPAIR="${DENS_REPAIR:-${CFG_DENSIFY_REPAIR:-1}}"
+REPAIR="${DENS_REPAIR:-${CFG_DENSIFY_REPAIR:-2}}"
 BLEND="${DENS_BLEND_START:-${CFG_DENSIFY_BLEND_START:-0}}"
+SSIM="${DENS_SSIM_WEIGHT:-${CFG_DENSIFY_SSIM_WEIGHT:-0.03}}"
+XYZ_LR="${DENS_XYZ_LR:-${CFG_DENSIFY_XYZ_LR:-0.0002}}"
 EVERY="${DENS_EVERY:-${CFG_DENSIFY_EVERY:-300}}"
 COUNT="${DENS_COUNT:-${CFG_DENSIFY_COUNT:-600}}"
 MAX_GAUSS="${DENS_MAX:-${CFG_DENSIFY_MAX_GAUSSIANS:-160000}}"
@@ -106,8 +108,8 @@ echo "  stage1 hard    : 上限 $INIT_STEPS 步（每 $INIT_EVAL 步验证 $INIT
      "边际 < $INIT_MIN_DELTA dB × $INIT_PATIENCE 次即停）" \
      " batch $INIT_BATCH  repair $INIT_REPAIR" \
      " 形变基 $( (( INIT_BLEND < INIT_STEPS )) && echo "第 $INIT_BLEND 步开启" || echo 关闭 )"
-echo "  stage2 densify : $STEPS 步  batch $BATCH  repair $REPAIR" \
-     " blend_start $BLEND  every $EVERY count $COUNT max $MAX_GAUSS tex $TEX"
+echo "  stage2 densify : 上限 $STEPS 步  batch $BATCH  repair $REPAIR" \
+     " ssim $SSIM  xyz_lr $XYZ_LR  every $EVERY count $COUNT max $MAX_GAUSS tex $TEX"
 echo "  产物           : $MODELS/{$HARD_WORK,$NAME}"
 (( FORCE )) && echo "  --force        : 覆盖同名模型/产物目录"
 (( PLAN )) && echo "  --plan         : 只打印命令，不执行"
@@ -161,11 +163,11 @@ run "${PY_RUN[@]}" scripts/train.py \
   --repair-dir "datasets/$SUBJECT/repair/repairs" \
   --repair-per-batch "$REPAIR" \
   --batch-size "$BATCH" --iterations "$STEPS" \
-  --blend-start "$BLEND" --hard-xyz-lr 5e-5 --patience "$PATIENCE" \
+  --blend-start "$BLEND" --hard-xyz-lr "$XYZ_LR" --patience "$PATIENCE" \
+  --ssim-weight "$SSIM" \
   --densify --densify-every "$EVERY" --densify-count "$COUNT" \
   --densify-max "$MAX_GAUSS" --densify-prune-opacity "$PRUNE_OP" \
-  --densify-split-jitter "$JITTER" \
-  --ssim-weight 0 "${FORCE_FLAG[@]}"
+  --densify-split-jitter "$JITTER" "${FORCE_FLAG[@]}"
 
 info "全部完成：$MODELS/$NAME"
 echo "         评测：bash eval.sh --subject $SUBJECT --work-name $NAME --no-lpips"
