@@ -32,9 +32,9 @@ if (( TRAIN_HARD == 1 )); then
 fi
 [[ -f "$HARD" ]] || { echo "[error] 缺少 hard model：$HARD" >&2; exit 2; }
 base="models/$SUBJECT/$NAME"
-mkdir -p "tmp/$SUBJECT"
-unified="tmp/$SUBJECT/${NAME}_unified.ply"
-cfg="tmp/$SUBJECT/${NAME}_unified.yaml"
+mkdir -p tmp
+unified="tmp/${SUBJECT}_${NAME}_unified.ply"
+cfg="tmp/${SUBJECT}_${NAME}_unified.yaml"
 python3 - "$HARD" "$unified" "$cfg" "$TEX" <<'PY'
 import sys,re
 from pathlib import Path
