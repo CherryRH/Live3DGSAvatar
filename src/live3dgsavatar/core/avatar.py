@@ -315,8 +315,17 @@ class GaussianAvatar(nn.Module):
 
     def split_unified(self, indices: torch.Tensor, *,
                       scale_factor: float = 0.5,
-                      opacity_factor: float = 0.5) -> int:
-        """统一集合分裂：硬表面/自由层不再区分，含 blendshape 基。"""
+                      opacity_factor: float = 0.5,
+                      jitter: float = 0.8) -> int:
+        """统一集合分裂：硬表面/自由层不再区分，含 blendshape 基。
+
+        Args:
+            indices: 要分裂的高斯（按残差挑出来的"欠重建"位置）。
+            scale_factor / opacity_factor: 副本的尺度/不透明度倍率。
+            jitter: 副本沿自身尺度随机位移的倍数（单位：1σ）。**必须 > 0**：
+                原地复制会得到两个完全重合的高斯，既不增加覆盖，又让
+                后续 split 反复选中同一批位置。
+        """
         idx = indices.to(self.xyz.device).long()
         if idx.numel() == 0:
             return 0
@@ -326,11 +335,20 @@ class GaussianAvatar(nn.Module):
                 f"分裂后 {total} 超过 tex_size={self.config.tex_size} 容量")
         def cat(a, b):
             return torch.cat([a, b], dim=0)
+        # 副本位置 = 父位置 + 随机方向 × 父尺度 × jitter（切空间内，
+        # 与 `xyz` 同一坐标系，绑定变换会把它一起带到世界空间）。
+        base_xyz = self.xyz.data[idx]
+        if float(jitter) > 0:
+            sigma = torch.exp(self.scaling.data[idx]) * float(jitter)
+            offset = torch.randn_like(base_xyz) * sigma
+            new_xyz = base_xyz + offset
+        else:
+            new_xyz = base_xyz
         self.binding_face_id = cat(self.binding_face_id, self.binding_face_id[idx])
         self.binding_face_bary = cat(self.binding_face_bary, self.binding_face_bary[idx])
         self.valid_binding_mask = cat(self.valid_binding_mask,
                                       self.valid_binding_mask[idx])
-        self.xyz = nn.Parameter(cat(self.xyz.data, self.xyz.data[idx]))
+        self.xyz = nn.Parameter(cat(self.xyz.data, new_xyz))
         self.opacity = nn.Parameter(cat(
             self.opacity.data,
             self.opacity.data[idx] + math.log(float(opacity_factor))))

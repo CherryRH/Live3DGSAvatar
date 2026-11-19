@@ -31,6 +31,44 @@ def _normalize_bg(bg_color: torch.Tensor, batch_size: int) -> torch.Tensor:
     return bg.contiguous()
 
 
+def _normalize_target_image(
+        target_image: Optional[torch.Tensor], camera: Camera,
+        batch_size: int) -> Optional[torch.Tensor]:
+    """把训练态的 `target_image` 规整成内核要求的 **RGBA 4 通道**。
+
+    `diff_gaussian_rasterization` 的改造版在 kernel 里固定按 RGBA 读取::
+
+        target_image[3 * H * W + pix_id] > 0.5   // 第 4 通道 = 写回掩码
+
+    C++ 绑定同样按 `batch_index * 4 * H * W` 偏移。只传 3 通道 RGB 时，
+    内核会越过张量末尾读满一整张平面 —— 是否越界取决于显存分配位置，
+    表现为随机的 `CUDA error: an illegal memory access`（曾让多轮训练/验证
+    在起始步或存档时崩掉，且难以复现）。这里统一补齐第 4 通道，把问题
+    收敛在唯一允许调用 CUDA 扩展的地方。
+    """
+    if target_image is None:
+        return None
+    if target_image.ndim != 4 or target_image.shape[1] not in (3, 4):
+        raise ValueError(
+            "target_image 形状应为 [B,C,H,W]，C 为 3（RGB）或 4（RGBA），"
+            f"实际 {tuple(target_image.shape)}")
+    if int(target_image.shape[0]) != int(batch_size):
+        raise ValueError(
+            f"target_image batch {target_image.shape[0]} 与高斯 batch "
+            f"{batch_size} 不匹配")
+    h, w = int(camera.height), int(camera.width)
+    if (int(target_image.shape[2]), int(target_image.shape[3])) != (h, w):
+        raise ValueError(
+            f"target_image 分辨率 {tuple(target_image.shape[2:])} 与相机 "
+            f"{(h, w)} 不匹配")
+    if target_image.shape[1] == 4:
+        return target_image
+    # 缺省第 4 通道取 1：整幅图都允许写回 est_color/est_weight。
+    # 需要"只在掩码内写回"的调用方应自己传 4 通道。
+    alpha = torch.ones_like(target_image[:, :1])
+    return torch.cat([target_image, alpha], dim=1)
+
+
 def _screenspace_points(xyz: torch.Tensor) -> torch.Tensor:
     """`means2D`：仅用于接住屏幕空间梯度；推理态关闭梯度。
 
@@ -75,6 +113,7 @@ class SimpleRasterizer:
                 f"相机 batch {camera.batch_size} 与高斯 batch {b} 不匹配")
 
         bg = _normalize_bg(bg_color, b)
+        target_image = _normalize_target_image(target_image, camera, b)
         means2d = _screenspace_points(gaussians.xyz)
 
         colors, alphas, est_colors, est_weights, radii = [], [], [], [], []

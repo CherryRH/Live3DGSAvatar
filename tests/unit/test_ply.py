@@ -189,3 +189,50 @@ def test_read_embedded_config_returns_none_without_comment(tmp_path) -> None:
         assert read_embedded_config(real) is None
     else:
         pytest.skip("仓库里没有参照实现写出的模型")
+
+
+# ------------------------------------------------------- 统一集合分裂/剪枝 --
+
+
+def test_split_unified_offsets_copies_so_they_are_not_coincident() -> None:
+    """分裂副本必须**偏离**父高斯：原地复制等于没加密。
+
+    旧实现原样复制 xyz，副本与父高斯完全重合；配合"优化器指向旧参数"
+    的 bug，加密阶段看起来在加高斯，实际一个都没训练（见 ISSUES）。
+    """
+    torch.manual_seed(0)
+    av = _tiny_avatar(n=16, k=2, tex_size=8)
+    before = int(av.num_gaussians)
+    idx = torch.arange(8)
+
+    added = av.split_unified(idx, jitter=0.8)
+
+    assert added == 8
+    assert int(av.num_gaussians) == before + 8
+    parent = av.xyz.data[:before][idx]
+    copy = av.xyz.data[before:]
+    assert not torch.allclose(parent, copy), "副本位置不应与父高斯完全一致"
+    # 偏移量应受父尺度约束：不超过父尺度（tensor 为 log 尺度）的若干倍
+    sigma = torch.exp(av.scaling.data[:before][idx])
+    offset = (copy - parent).abs()
+    assert float((offset > 4.0 * sigma).float().mean()) == 0.0
+
+
+def test_split_unified_keeps_basis_rows_consistent() -> None:
+    av = _tiny_avatar(n=8, k=2, tex_size=8)
+    idx = torch.tensor([1, 4])
+    av.split_unified(idx, jitter=0.5)
+    n = int(av.num_gaussians)
+    assert av.xyz_b.shape == (av.num_basis, n, 3)
+    assert av.rotation_b.shape == (av.num_basis, n, 4)
+    assert av.color_b.shape == (av.num_basis, n, 1, 3)
+    assert torch.equal(av.xyz_b[:, 8:], av.xyz_b[:, idx])
+
+
+def test_prune_unified_drops_masked_rows() -> None:
+    av = _tiny_avatar(n=8, k=2, tex_size=8)
+    keep = torch.ones(8, dtype=torch.bool)
+    keep[[2, 5]] = False
+    removed = av.prune_unified(keep)
+    assert removed == 2
+    assert int(av.num_gaussians) == 6

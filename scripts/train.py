@@ -175,6 +175,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--densify-count", type=int, default=None)
     p.add_argument("--densify-max", type=int, default=None)
     p.add_argument("--densify-prune-opacity", type=float, default=None)
+    p.add_argument("--densify-split-jitter", type=float, default=None,
+                   help="分裂副本沿自身尺度的随机位移倍数（1σ；0=原地复制）")
     p.add_argument("--hard-xyz-lr", type=float, default=None,
                    help="分层全量阶段硬表面 xyz 的小学习率；缺省沿用默认")
     p.add_argument("--resume-hard", action="store_true",
@@ -1157,6 +1159,9 @@ def main(argv: list[str] | None = None) -> int:
         d_op = float(args.densify_prune_opacity
                      if args.densify_prune_opacity is not None
                      else dcfg.get("prune_opacity", 0.01))
+        d_jitter = float(args.densify_split_jitter
+                         if args.densify_split_jitter is not None
+                         else dcfg.get("split_jitter", 0.8))
         d_state = {"step": 0}
 
         def densify_post():
@@ -1202,7 +1207,7 @@ def main(argv: list[str] | None = None) -> int:
             if idx is None or idx.numel() == 0:
                 return
             n_before = int(avatar.num_gaussians)
-            added = avatar.split_unified(idx)
+            added = avatar.split_unified(idx, jitter=d_jitter)
             if added:
                 with torch.no_grad():
                     # 初始硬表面/已有高斯全部保留；只剪本次新增的低 opacity 副本。
@@ -1216,7 +1221,7 @@ def main(argv: list[str] | None = None) -> int:
         densify_hook = densify_post
 
     trainer = Trainer(source=train_source, plan=plan, objective=objective,
-                      render_fn=render_fn, params=avatar.parameter_groups(),
+                      render_fn=render_fn, params=avatar.parameter_groups,
                       iterations=iterations, batch_size=batch_size,
                       blend_start=blend_start, hooks=hooks, device=device,
                       post_step=(densify_hook if densify_hook is not None

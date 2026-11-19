@@ -94,7 +94,10 @@ class Trainer:
         objective: 损失
         render_fn: `(mesh, blend_weight, batch, iteration) -> RenderOutput`
             —— 返回对象需有 `.color`、`.alpha`，可选 `.est_color` / `.est_weight`
-        params: `GaussianAvatar.parameter_groups()` 的结果
+        params: `GaussianAvatar.parameter_groups()` 的结果，或**取参函数**
+            （`params=avatar.parameter_groups`）。会分裂/剪枝的管线必须传函数：
+            那些操作会替换 `nn.Parameter`，重建优化器时要重新取参，否则优化器
+            会一直持有旧张量，模型从第一次分裂起就不再更新。
         iterations: 总步数
         batch_size: 每步样本数
         blend_start: 第几步开始启用 `blend_weight`（暖启动，见 `schedule.blend_active`）
@@ -105,7 +108,7 @@ class Trainer:
     """
 
     def __init__(self, *, source, plan: ParameterPlan, objective: Objective,
-                 render_fn: Callable, params: dict, iterations: int,
+                 render_fn: Callable, params, iterations: int,
                  batch_size: int = 1, blend_start: int = 0,
                  hooks: tuple[Hook, ...] = (), device: str | torch.device = "cuda",
                  optimizer_factory: Callable | None = None,
@@ -119,7 +122,12 @@ class Trainer:
         self.plan = plan
         self.objective = objective
         self.render_fn = render_fn
-        self.params = params
+        # `params` 既可以是 `parameter_groups()` 的结果，也可以是一个**取参函数**。
+        # 后者是加密/生长场景的正确用法：split/prune 会用新的 `nn.Parameter`
+        # 整体替换张量，旧 dict 里的引用随即失效 —— 重建优化器时必须重新取一次，
+        # 否则之后的梯度全落在没人用的旧张量上，模型从第一次分裂起就静止。
+        self._params_fn = params if callable(params) else None
+        self.params = self._params_fn() if callable(params) else params
         self.optimizer_factory = optimizer_factory
         self.iterations = int(iterations)
         self.batch_size = int(batch_size)
@@ -128,7 +136,7 @@ class Trainer:
         self.device = device
         self.post_step = post_step
 
-        groups = plan.opt_groups(params)
+        groups = plan.opt_groups(self.params)
         if optimizer_factory is None:
             self.optimizer = torch.optim.Adam(groups, lr=0.0, eps=1e-15)
         else:
@@ -142,7 +150,13 @@ class Trainer:
     # ------------------------------------------------------------ 控制 --
 
     def rebuild_optimizer(self) -> None:
-        """自由层分裂后重建优化器状态（参数列表已变化）。"""
+        """高斯集合分裂/剪枝后重建优化器（参数张量已被替换）。
+
+        有取参函数时必须**先重新取参数**，再建优化器；只重建 Adam 而不换
+        参数引用是"分裂后不再学习"的根因（见 `_params_fn` 的注释）。
+        """
+        if self._params_fn is not None:
+            self.params = self._params_fn()
         groups = self.plan.opt_groups(self.params)
         if self.optimizer_factory is None:
             self.optimizer = torch.optim.Adam(groups, lr=0.0, eps=1e-15)

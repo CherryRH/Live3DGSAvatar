@@ -592,7 +592,7 @@ def main(argv: list[str] | None = None) -> int:
     evaluator = _Eval(out_dir)
     trainer = Trainer(
         source=source, plan=plan, objective=objective, render_fn=render_fn,
-        params=avatar.parameter_groups(), iterations=args.steps,
+        params=avatar.parameter_groups, iterations=args.steps,
         batch_size=args.refined_per_batch + args.real_per_batch,
         blend_start=0, hooks=[LogHook(every=max(1, args.steps // 10)), evaluator],
         device=device)

@@ -863,3 +863,77 @@ def test_hard_surface_terms_align_short_axis() -> None:
     assert float(terms["surface_normal"]) < 1e-6
     assert float(terms["surface_scale"]) == 0.0
 
+
+
+# ------------------------------------------------ 分裂后的优化器参数刷新 --
+
+
+def test_rebuild_optimizer_refetches_params_after_split() -> None:
+    """split/prune 会替换 `nn.Parameter`；重建优化器必须重新取参。
+
+    旧实现把 `parameter_groups()` 的结果存成 dict，重建优化器时仍用旧
+    引用 → 之后的梯度落在没人用的旧张量上，模型从第一次分裂起就静止
+    （加密管线"split 之后 PSNR 一动不动"的根因）。
+    """
+    container = {"p": torch.nn.Parameter(torch.zeros(4, 1))}
+
+    def params_fn():
+        return {"f_dc": container["p"]}
+
+    t = _trainer(iterations=2, params=params_fn)
+    assert t.optimizer.param_groups[0]["params"][0] is container["p"]
+
+    # 模拟 split：张量被整体替换
+    container["p"] = torch.nn.Parameter(torch.zeros(6, 1))
+    t.rebuild_optimizer()
+
+    assert t.optimizer.param_groups[0]["params"][0] is container["p"], \
+        "重建后的优化器仍指向旧参数 → 分裂后不会再学习"
+    assert t.params["f_dc"] is container["p"]
+
+
+def test_rebuild_optimizer_accepts_plain_dict() -> None:
+    """传 dict 的旧用法保留（不分裂的入口无需改）。"""
+    p = torch.nn.Parameter(torch.zeros(4, 1))
+    t = _trainer(iterations=1, params={"f_dc": p})
+    t.rebuild_optimizer()
+    assert t.optimizer.param_groups[0]["params"][0] is p
+
+
+# ------------------------------------------- 光栅化器 target_image 通道 --
+
+
+def test_target_image_rgb_is_padded_to_rgba() -> None:
+    """内核固定按 RGBA 读第 4 通道；只给 RGB 会越界读一整张平面。
+
+    这不是"少一个通道的小问题"：越界读是否触发 CUDA illegal memory
+    access 取决于显存分配位置，表现为随机崩溃（hard_surface 训练起手
+    就炸、验证/存档阶段炸，重启后又可能正常）。
+    """
+    from live3dgsavatar.core.render.rasterizer import _normalize_target_image
+    from live3dgsavatar.core.types import Camera
+
+    cam = Camera(K=torch.eye(3), w2c=torch.eye(4), width=8, height=8)
+    rgb = torch.rand(2, 3, 8, 8)
+
+    out = _normalize_target_image(rgb, cam, batch_size=2)
+    assert out is not None and out.shape == (2, 4, 8, 8)
+    assert torch.allclose(out[:, 3], torch.ones(2, 8, 8))
+    assert torch.allclose(out[:, :3], rgb)
+
+    rgba = torch.rand(2, 4, 8, 8)
+    assert _normalize_target_image(rgba, cam, batch_size=2) is rgba
+    assert _normalize_target_image(None, cam, batch_size=2) is None
+
+
+def test_target_image_rejects_wrong_resolution_or_batch() -> None:
+    from live3dgsavatar.core.render.rasterizer import _normalize_target_image
+    from live3dgsavatar.core.types import Camera
+
+    cam = Camera(K=torch.eye(3), w2c=torch.eye(4), width=8, height=8)
+    with pytest.raises(ValueError, match="分辨率"):
+        _normalize_target_image(torch.rand(1, 3, 4, 4), cam, batch_size=1)
+    with pytest.raises(ValueError, match="batch"):
+        _normalize_target_image(torch.rand(2, 3, 8, 8), cam, batch_size=1)
+    with pytest.raises(ValueError, match="形状"):
+        _normalize_target_image(torch.rand(3, 8, 8), cam, batch_size=1)
