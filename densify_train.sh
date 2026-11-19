@@ -35,14 +35,12 @@ HARD_ONLY=0
 PLAN=0
 RUN_EVAL=0
 FORCE=0
-WITH_S3=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --subject)   SUBJECT="${2:-}"; shift 2 ;;
     --name)      NAME="${2:-}"; shift 2 ;;
     --hard-only) HARD_ONLY=1; shift ;;
-    --with-s3)   WITH_S3=1; shift ;;
     --plan|--show-plan) PLAN=1; shift ;;
     --eval)      RUN_EVAL=1; shift ;;
     --force)     FORCE=1; shift ;;
@@ -84,9 +82,6 @@ MAX_GAUSS="${DENS_MAX:-${CFG_DENSIFY_MAX_GAUSSIANS:-160000}}"
 PRUNE_OP="${DENS_PRUNE_OPACITY:-${CFG_DENSIFY_PRUNE_OPACITY:-0.01}}"
 JITTER="${DENS_SPLIT_JITTER:-${CFG_DENSIFY_SPLIT_JITTER:-0.8}}"
 PATIENCE="${DENS_PATIENCE:-${CFG_DENSIFY_PATIENCE:-3}}"
-S3_STEPS="${DENS_S3_STEPS:-${CFG_DENSIFY_S3_STEPS:-400}}"
-S3_ANGLE="${DENS_S3_ANGLE_WEIGHT:-${CFG_DENSIFY_S3_ANGLE_WEIGHT:-20}}"
-S3_PATIENCE="${DENS_S3_PATIENCE:-${CFG_DENSIFY_S3_PATIENCE:-3}}"
 
 MODELS="models/$SUBJECT"
 HARD_WORK="${NAME}_hard"
@@ -174,25 +169,6 @@ run "${PY_RUN[@]}" scripts/train.py \
   --densify-max "$MAX_GAUSS" --densify-prune-opacity "$PRUNE_OP" \
   --densify-split-jitter "$JITTER" "${FORCE_FLAG[@]}"
 
-# ---------------------------------------------------------------- stage 3 --
-# 默认关闭：实测 train.py 版 stage3（冻结几何 + 角度加权）在 bala 上掉 1.5~2.5 dB，
-# 还需继续调参（LR/损失/数据配比）。加 --with-s3 才跑。
-if (( ! WITH_S3 )); then
-  info "跳过 stage3（--with-s3 才执行）"
-  info "全部完成：$MODELS/$NAME"
-  eval_after "$NAME"
-  exit 0
-fi
-info "stage3：冻结几何 + 大角度加权，短程微调（上限 $S3_STEPS 步）"
-run "${PY_RUN[@]}" scripts/train.py \
-  --subject "$SUBJECT" --work-name "${NAME}_s3" --stage base \
-  --init-ply "$MODELS/$NAME/model.ply" \
-  --model-config "$MODELS/$NAME/config.yaml" \
-  --freeze-geometry --angle-weight "$S3_ANGLE" \
-  --iterations "$S3_STEPS" --patience "$S3_PATIENCE" \
-  --ssim-weight "$SSIM" --force
-
-info "全部完成：$MODELS/$NAME -> $MODELS/${NAME}_s3"
-echo "         评测：bash eval.sh --subject $SUBJECT --work-name ${NAME}_s3 --no-lpips"
+info "全部完成：$MODELS/$NAME"
+echo "         评测：bash eval.sh --subject $SUBJECT --work-name $NAME --no-lpips"
 eval_after "$NAME"
-eval_after "${NAME}_s3"

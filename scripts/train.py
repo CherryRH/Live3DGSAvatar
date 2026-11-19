@@ -166,8 +166,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="硬表面初始化：额外混入的 SyncFix 修复图目录")
     p.add_argument("--repair-per-batch", type=int, default=None,
                    help="每个 batch 的修复图数量；缺省为 batch/2")
-    p.add_argument("--freeze-geometry", action="store_true",
-                   help="冻结几何（xyz/scaling/rotation 及其形变基），只练外观")
     p.add_argument("--angle-weight", type=float, default=0.0,
                    help="训练帧按 |yaw| 加权的尺度：20 = 每 20° 权重翻倍；0=均匀")
     p.add_argument("--freeze-xyz", action="store_true",
@@ -655,15 +653,6 @@ def main(argv: list[str] | None = None) -> int:
 
     plan = ParameterPlan.rgba_avatar_defaults(
         scene_extent=float(cfg.get("train.pipeline.scene_extent", 1.0)))
-    if args.freeze_geometry:
-        # stage3：高斯数量与几何都冻结，只让颜色/不透明度适配新标签
-        # 高斯本体（几何 + 驱动基 + 权重投影）全冻，只留逐高斯的颜色/不透明度
-        frozen = {"xyz", "scaling", "rotation", "xyz_b", "rotation_b",
-                  "f_dc_b", "weight_module"}
-        plan = ParameterPlan(
-            groups={k: v for k, v in plan.groups.items() if k not in frozen},
-            scene_extent=plan.scene_extent)
-        print("  几何   : 冻结（xyz/scaling/rotation + 形变基），只练外观")
     if args.freeze_xyz:
         plan = ParameterPlan(
             groups={k: v for k, v in plan.groups.items()

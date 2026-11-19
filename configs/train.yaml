@@ -104,10 +104,6 @@ train:
       split_scale: 0.7
       # 加密过程中 PSNR 会因新高斯抖动，早停耐心放宽
       patience: 4
-      # ---- stage3 短程微调（冻结几何 + 大角度加权）----
-      s3_steps: 400
-      s3_angle_weight: 20.0   # 每 20° 采样权重翻倍
-      s3_patience: 3
     iterations: 50000
     batch_size: 10
     # 前 N 步不启用形变基（先用模板网格拟合静态外观）
