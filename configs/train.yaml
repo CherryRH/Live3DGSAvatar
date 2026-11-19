@@ -24,10 +24,11 @@ train:
       margin: 4
       every: 10
       # 强几何：中心贴面、法线对齐、法向尺度压短
-      point_weight: 2000.0
-      normal_weight: 0.10
-      scale_weight: 0.05
-      size_weight: 1.0
+      point_weight: 500.0
+      normal_weight: 0.05
+      scale_weight: 0.03
+      size_weight: 0.5
+      xyz_lr: 0.00005   # 轻微形变余量，补偿 FLAME/RDF 系统误差
       iso_weight: 0.0
       max_scale: 0.0020  # 切向尺度上限 2.0 mm（统一默认）
       outside_weight: 1.0

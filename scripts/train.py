@@ -633,13 +633,16 @@ def main(argv: list[str] | None = None) -> int:
                     if k not in ("xyz", "xyz_b")},
             scene_extent=plan.scene_extent)
         print("  位移   : 冻结硬表面 xyz / xyz_b")
-    if args.hard_xyz_lr is not None:
+    hard_xyz_lr = (args.hard_xyz_lr if args.hard_xyz_lr is not None
+                   else (cfg.get("train.pipeline.hard_surface.xyz_lr")
+                         if stage == "hard_surface" else None))
+    if hard_xyz_lr is not None:
         from live3dgsavatar.training.plans import GroupPlan
         plan.groups["xyz"] = GroupPlan(
-            lr=float(args.hard_xyz_lr),
-            final_lr=float(args.hard_xyz_lr) * 0.1,
+            lr=float(hard_xyz_lr),
+            final_lr=float(hard_xyz_lr) * 0.1,
             max_steps=30000)
-        print(f"  硬位移 : xyz lr {args.hard_xyz_lr:g}（轻度）")
+        print(f"  硬位移 : xyz lr {hard_xyz_lr:g}（轻度）")
     if avatar.free_xyz is not None:
         from live3dgsavatar.training.plans import GroupPlan
         plan.groups["free_xyz"] = GroupPlan(lr=1e-4, final_lr=1e-5,
