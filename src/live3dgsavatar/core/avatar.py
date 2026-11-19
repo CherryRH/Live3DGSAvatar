@@ -313,6 +313,79 @@ class GaussianAvatar(nn.Module):
         self.free_color = nn.Parameter(self.color.data[idx].clone())
         self._free_binder = None
 
+    def split_unified(self, indices: torch.Tensor, *,
+                      scale_factor: float = 0.5,
+                      opacity_factor: float = 0.5) -> int:
+        """统一集合分裂：硬表面/自由层不再区分，含 blendshape 基。"""
+        idx = indices.to(self.xyz.device).long()
+        if idx.numel() == 0:
+            return 0
+        total = int(self.num_gaussians + idx.numel())
+        if total > int(self.config.tex_size) ** 2:
+            raise RuntimeError(
+                f"分裂后 {total} 超过 tex_size={self.config.tex_size} 容量")
+        def cat(a, b):
+            return torch.cat([a, b], dim=0)
+        self.binding_face_id = cat(self.binding_face_id, self.binding_face_id[idx])
+        self.binding_face_bary = cat(self.binding_face_bary, self.binding_face_bary[idx])
+        self.valid_binding_mask = cat(self.valid_binding_mask,
+                                      self.valid_binding_mask[idx])
+        self.xyz = nn.Parameter(cat(self.xyz.data, self.xyz.data[idx]))
+        self.opacity = nn.Parameter(cat(
+            self.opacity.data,
+            self.opacity.data[idx] + math.log(float(opacity_factor))))
+        self.scaling = nn.Parameter(cat(
+            self.scaling.data,
+            self.scaling.data[idx] + math.log(float(scale_factor))))
+        self.rotation = nn.Parameter(cat(self.rotation.data, self.rotation.data[idx]))
+        self.color = nn.Parameter(cat(self.color.data, self.color.data[idx]))
+        self.xyz_b = nn.Parameter(torch.cat(
+            [self.xyz_b.data, self.xyz_b.data[:, idx]], dim=1))
+        self.rotation_b = nn.Parameter(torch.cat(
+            [self.rotation_b.data, self.rotation_b.data[:, idx]], dim=1))
+        self.color_b = nn.Parameter(torch.cat(
+            [self.color_b.data, self.color_b.data[:, idx]], dim=1))
+        self.num_gaussians = total
+        self._binder_cache = None
+        self._free_binder = None
+        return int(idx.numel())
+
+    def prune_unified(self, keep: torch.Tensor) -> int:
+        """按统一 bool mask 剪枝；硬表面/自由层不再区分。"""
+        keep = keep.to(self.xyz.device).bool()
+        removed = int((~keep).sum())
+        if removed == 0:
+            return 0
+        if int(keep.sum()) == 0:
+            raise RuntimeError("剪枝后模型为空")
+        self.binding_face_id = self.binding_face_id[keep].clone()
+        self.binding_face_bary = self.binding_face_bary[keep].clone()
+        self.valid_binding_mask = self.valid_binding_mask[keep].clone()
+        for name in ("xyz", "opacity", "scaling", "rotation", "color"):
+            setattr(self, name, nn.Parameter(getattr(self, name).data[keep].clone()))
+        self.xyz_b = nn.Parameter(self.xyz_b.data[:, keep].clone())
+        self.rotation_b = nn.Parameter(self.rotation_b.data[:, keep].clone())
+        self.color_b = nn.Parameter(self.color_b.data[:, keep].clone())
+        self.num_gaussians = int(keep.sum())
+        self._binder_cache = None
+        self._free_binder = None
+        return removed
+
+    def residual_indices(self, face_score: torch.Tensor, count: int, *,
+                         min_opacity: float = 0.01,
+                         max_offset: float = 0.08) -> torch.Tensor:
+        """按绑定面残差为统一集合选择分裂候选。"""
+        score = face_score.to(self.binding_face_id.device)[self.binding_face_id]
+        with torch.no_grad():
+            op = torch.sigmoid(self.opacity).squeeze(-1)
+            off = self.xyz.norm(dim=-1)
+            ok = (op >= min_opacity) & (off <= max_offset)
+            score = torch.where(ok, score, torch.zeros_like(score))
+            k = min(int(count), int(ok.sum()))
+            if k <= 0:
+                return torch.empty(0, dtype=torch.long, device=self.xyz.device)
+        return torch.topk(score, k).indices
+
     def split_free_layer(self, indices: torch.Tensor, *,
                          scale_factor: float = 0.5,
                          opacity_factor: float = 0.5) -> int:

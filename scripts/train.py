@@ -169,6 +169,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="自由层数量硬上限")
     p.add_argument("--free-prune-opacity", type=float, default=None,
                    help="自由层剪枝的 opacity 下限")
+    p.add_argument("--densify", action="store_true",
+                   help="统一集合加密：全部高斯漂移，高残差处统一 split/prune")
+    p.add_argument("--densify-every", type=int, default=None)
+    p.add_argument("--densify-count", type=int, default=None)
+    p.add_argument("--densify-max", type=int, default=None)
+    p.add_argument("--densify-prune-opacity", type=float, default=None)
     p.add_argument("--hard-xyz-lr", type=float, default=None,
                    help="分层全量阶段硬表面 xyz 的小学习率；缺省沿用默认")
     p.add_argument("--resume-hard", action="store_true",
@@ -1139,11 +1145,82 @@ def main(argv: list[str] | None = None) -> int:
                                         max_offset=float(free_cfg.get("max_offset", 0.08)))
                 trainer.rebuild_optimizer()
                 print(f"  [free] 生长 +{added} → {int(avatar.free_xyz.shape[0])} 个", flush=True)
+    densify_hook = None
+    if args.densify:
+        dcfg = cfg.get("train.pipeline.densify", {}) or {}
+        d_every = int(args.densify_every if args.densify_every is not None
+                      else dcfg.get("every", 300))
+        d_count = int(args.densify_count if args.densify_count is not None
+                      else dcfg.get("count", 500))
+        d_max = int(args.densify_max if args.densify_max is not None
+                    else dcfg.get("max_gaussians", avatar.num_gaussians * 2))
+        d_op = float(args.densify_prune_opacity
+                     if args.densify_prune_opacity is not None
+                     else dcfg.get("prune_opacity", 0.01))
+        d_state = {"step": 0}
+
+        def densify_post():
+            d_state["step"] += 1
+            if d_state["step"] % d_every != 0:
+                return
+            if int(avatar.num_gaussians) >= d_max:
+                return
+            idx = None
+            try:
+                lb, lo = trainer.last_batch, trainer.last_out
+                if lb is not None and lo is not None:
+                    nf = int(scene.faces.shape[0])
+                    face_err = torch.zeros(nf, device=device)
+                    for i in range(int(lb.mesh.shape[0])):
+                        if getattr(lb, "K", None) is not None:
+                            cam_i = Camera(K=lb.K[i:i+1].to(device),
+                                           w2c=lb.w2c[i:i+1].to(device),
+                                           width=scene.width,
+                                           height=scene.height).to(device)
+                        else:
+                            cam_i = camera
+                        v = lb.mesh[i:i+1].to(device)
+                        ids = face_id_map(v, scene.faces.to(device), cam_i,
+                                          glctx, flip_y=False)
+                        if ids.ndim == 3:
+                            ids = ids[0]
+                        err = (lo.color[i:i+1] - lb.image[i:i+1].to(device)).abs().mean(1).reshape(-1)
+                        ids = ids.reshape(-1)
+                        m = lb.mask[i:i+1, 0].to(device).reshape(-1).bool()
+                        valid = (ids >= 0) & m
+                        if bool(valid.any()):
+                            face_err.index_add_(0, ids[valid].long(), err[valid])
+                    if float(face_err.max().detach()) > 0:
+                        idx = avatar.residual_indices(
+                            face_err.detach(),
+                            min(d_count, d_max - int(avatar.num_gaussians)),
+                            min_opacity=d_op,
+                            max_offset=float(cfg.get(
+                                "train.pipeline.free_layer.max_offset", 0.08)))
+            except Exception as e:
+                print(f"  [densify] 残差选择失败：{e}", flush=True)
+            if idx is None or idx.numel() == 0:
+                return
+            n_before = int(avatar.num_gaussians)
+            added = avatar.split_unified(idx)
+            if added:
+                with torch.no_grad():
+                    # 初始硬表面/已有高斯全部保留；只剪本次新增的低 opacity 副本。
+                    keep = torch.ones(int(avatar.num_gaussians), dtype=torch.bool,
+                                      device=avatar.opacity.device)
+                    keep[n_before:] = (
+                        torch.sigmoid(avatar.opacity).squeeze(-1)[n_before:] >= d_op)
+                avatar.prune_unified(keep)
+                trainer.rebuild_optimizer()
+                print(f"  [densify] split +{added} → {int(avatar.num_gaussians)}", flush=True)
+        densify_hook = densify_post
+
     trainer = Trainer(source=train_source, plan=plan, objective=objective,
                       render_fn=render_fn, params=avatar.parameter_groups(),
                       iterations=iterations, batch_size=batch_size,
                       blend_start=blend_start, hooks=hooks, device=device,
-                      post_step=free_post)
+                      post_step=(densify_hook if densify_hook is not None
+                                 else free_post))
     timing["t0"] = time.perf_counter()
     report = trainer.run()
 

@@ -12,7 +12,7 @@ import live3dgsavatar  # noqa: F401
 def main():
     p=argparse.ArgumentParser()
     p.add_argument('--hard',type=Path,required=True)
-    p.add_argument('--free',type=Path,required=True)
+    p.add_argument('--free',type=Path,default=None)
     p.add_argument('--out',type=Path,required=True)
     p.add_argument('--tex-size',type=int,default=384)
     a=p.parse_args()
@@ -22,15 +22,21 @@ def main():
     from live3dgsavatar.core.deform import Binding
     cfg=AvatarConfig.from_yaml(a.hard.parent/'config.yaml')
     hard=load_ply(a.hard,config=cfg,device='cpu')
-    d=np.load(a.free)
-    f_xyz=torch.from_numpy(d['xyz'].astype('float32'))
-    f_rot=torch.from_numpy(d['rotation'].astype('float32'))
-    f_scale=torch.from_numpy(d['scaling'].astype('float32'))
-    f_op=torch.from_numpy(d['opacity'].astype('float32'))
-    f_col=torch.from_numpy(d['color'].astype('float32'))
-    fid=torch.from_numpy(d['face_id'].astype('int64'))
-    fbary=torch.from_numpy(d['face_bary'].astype('float32'))
-    n=int(hard.num_gaussians); m=int(f_xyz.shape[0]); total=n+m
+    n=int(hard.num_gaussians)
+    if a.free is None:
+        f_xyz=torch.empty(0,3); f_rot=torch.empty(0,4); f_scale=torch.empty(0,3)
+        f_op=torch.empty(0,1); f_col=torch.empty(0,1,3)
+        fid=torch.empty(0,dtype=torch.long); fbary=torch.empty(0,3)
+    else:
+        d=np.load(a.free)
+        f_xyz=torch.from_numpy(d['xyz'].astype('float32'))
+        f_rot=torch.from_numpy(d['rotation'].astype('float32'))
+        f_scale=torch.from_numpy(d['scaling'].astype('float32'))
+        f_op=torch.from_numpy(d['opacity'].astype('float32'))
+        f_col=torch.from_numpy(d['color'].astype('float32'))
+        fid=torch.from_numpy(d['face_id'].astype('int64'))
+        fbary=torch.from_numpy(d['face_bary'].astype('float32'))
+    m=int(f_xyz.shape[0]); total=n+m
     if a.tex_size*a.tex_size < total:
         raise SystemExit(f'tex_size {a.tex_size} 容量不足：{total}')
     new_cfg=replace(cfg, tex_size=int(a.tex_size))

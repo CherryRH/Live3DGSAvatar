@@ -46,6 +46,11 @@ train:
       near_normal: 0.0012    # 法向 1.2 mm
       normal_growth: 0.35
       max_normal: 0.025
+    densify:
+      every: 300
+      count: 500
+      max_gaussians: 120000
+      prune_opacity: 0.01
     iterations: 50000
     batch_size: 10
     # 前 N 步不启用形变基（先用模板网格拟合静态外观）
