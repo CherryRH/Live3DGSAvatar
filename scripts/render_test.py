@@ -339,10 +339,6 @@ def render_core(args, scene, frames: list[int], out_dir: Path,
                            mlp_hidden=tuple(args.mlp_hidden),
                            use_weight_proj=args.use_weight_proj)
         avatar = load_ply(ply, config=cfg, device="cuda")
-    free_path = Path(ply).parent / "free_layer.npz"
-    if free_path.is_file():
-        avatar.load_free_layer(free_path)
-        print(f"  自由层  : {free_path}（{avatar.free_xyz.shape[0]} 个高斯）")
     print(f"  结构  : tex {avatar.config.tex_size}  D {avatar.config.num_basis_in}  "
           f"K {avatar.config.num_basis_blend}  "
           f"hidden {avatar.config.mlp_hidden}  "
@@ -366,13 +362,12 @@ def render_core(args, scene, frames: list[int], out_dir: Path,
         weight = scene.weights_tensor(idx, device="cuda")
         timings: dict[str, float] = {}
         if args.frontface:
-            from live3dgsavatar.core.render.frontface import frontface_with_free
+            from live3dgsavatar.core.render.frontface import frontface_gaussians
             from live3dgsavatar.core.render import render_gaussians
             with torch.no_grad():
                 gs = avatar.deform(mesh, weight)
-                gs = frontface_with_free(gs, camera, mesh,
-                                         avatar.binding_face_id,
-                                         avatar.num_gaussians)
+                gs = frontface_gaussians(gs, camera, mesh,
+                                         avatar.binding_face_id)
                 out = render_gaussians(gs, rasterizer, camera, bg)
         else:
             out = render_frame(avatar, rasterizer, mesh, weight, camera, bg,
@@ -500,10 +495,9 @@ def render_showcase(args, scene, avatar, rasterizer, bg,
                      width=scene.width, height=scene.height).to("cuda")
         draw_gs = gs
         if getattr(args, "frontface", False):
-            from live3dgsavatar.core.render.frontface import frontface_with_free
-            draw_gs = frontface_with_free(gs, cam, mesh,
-                                          avatar.binding_face_id,
-                                          avatar.num_gaussians)
+            from live3dgsavatar.core.render.frontface import frontface_gaussians
+            draw_gs = frontface_gaussians(gs, cam, mesh,
+                                          avatar.binding_face_id)
         out = render_gaussians(draw_gs, rasterizer, cam, bg)
         arr = (out.color.clamp(0, 1).permute(0, 2, 3, 1) * 255).byte()
         images.append(np.asarray(Image.fromarray(arr[0].cpu().numpy())))

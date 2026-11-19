@@ -200,15 +200,6 @@ class GaussianAvatar(nn.Module):
         self.color_b = nn.Parameter(torch.zeros(k, n, 1, 3))
 
         self.weight_module = config.build_weight_module()
-        # 自由层（独立高斯集合，后训练/分层模型用）；默认不启用
-        self.free_face_id: torch.Tensor | None = None
-        self.free_face_bary: torch.Tensor | None = None
-        self.free_xyz = None
-        self.free_rotation = None
-        self.free_scaling = None
-        self.free_opacity = None
-        self.free_color = None
-        self._free_binder = None
 
     # ------------------------------------------------------------ 属性分组 --
     def parameter_groups(self) -> dict[str, nn.Parameter]:
@@ -226,10 +217,6 @@ class GaussianAvatar(nn.Module):
             # 它不属于上面的基，但优化器必须能单独配置它。
             **({"weight_module": self.weight_module} if
                self.config.use_weight_proj else {}),
-            **({"free_xyz": self.free_xyz, "free_rotation": self.free_rotation,
-                "free_scaling": self.free_scaling, "free_opacity": self.free_opacity,
-                "free_f_dc": self.free_color}
-               if self.free_xyz is not None else {}),
         }
 
     def to_binding(self) -> Binding:
@@ -287,66 +274,13 @@ class GaussianAvatar(nn.Module):
         # blend_weight=None → 只用基态（对应参照 blend_start_iter 之前的行为）
         tangent = field(blend_weight, batch_size=mesh.batch_size)
         tangent = tangent.to(mesh.verts.device)
-        world = self.build_binder().bind(tangent, mesh)
-        if self.free_xyz is not None:
-            import torch.nn.functional as _F
-            b = mesh.batch_size
-            free = GaussianSet(
-                xyz=self.free_xyz.unsqueeze(0).expand(b, -1, -1),
-                rotation=_F.normalize(
-                    self.free_rotation.unsqueeze(0).expand(b, -1, -1), dim=-1),
-                # 自由层参数与硬表面一样存 log/logit；必须在这里激活
-                scaling=torch.exp(
-                    self.free_scaling.unsqueeze(0).expand(b, -1, -1)),
-                opacity=torch.sigmoid(
-                    self.free_opacity.unsqueeze(0).expand(b, -1, -1)),
-                color=self.free_color.unsqueeze(0).expand(b, -1, -1, -1),
-                space="tangent",
-            )
-            fw = self.build_free_binder().bind(free, mesh)
-            world = GaussianSet(
-                xyz=torch.cat([world.xyz, fw.xyz], dim=1),
-                rotation=torch.cat([world.rotation, fw.rotation], dim=1),
-                scaling=torch.cat([world.scaling, fw.scaling], dim=1),
-                opacity=torch.cat([world.opacity, fw.opacity], dim=1),
-                color=torch.cat([world.color, fw.color], dim=1),
-                space="world",
-            )
-        return world
-
-    def build_free_binder(self) -> MeshBinder:
-        if self.free_face_id is None:
-            raise RuntimeError("自由层未初始化")
-        if self._free_binder is None:
-            self._free_binder = MeshBinder(Binding(
-                face_id=self.free_face_id,
-                face_bary=self.free_face_bary,
-                valid_mask=torch.ones(self.free_face_id.shape[0],
-                                      dtype=torch.bool,
-                                      device=self.free_face_id.device)))
-        return self._free_binder
-
-    def init_free_layer(self, indices: torch.Tensor, opacity: float = 0.02,
-                        scale_factor: float = 0.85) -> None:
-        """从硬表面选中的高斯复制出自由层（切空间残差）。"""
-        idx = indices.to(self.xyz.device).long()
-        self.free_face_id = self.binding_face_id[idx].detach().clone()
-        self.free_face_bary = self.binding_face_bary[idx].detach().clone()
-        self.free_xyz = nn.Parameter(self.xyz.data[idx].clone())
-        self.free_rotation = nn.Parameter(self.rotation.data[idx].clone())
-        self.free_scaling = nn.Parameter(
-            self.scaling.data[idx].clone() + math.log(scale_factor))
-        self.free_opacity = nn.Parameter(
-            torch.full((idx.numel(), 1), inverse_sigmoid(opacity),
-                       device=self.xyz.device))
-        self.free_color = nn.Parameter(self.color.data[idx].clone())
-        self._free_binder = None
+        return self.build_binder().bind(tangent, mesh)
 
     def split_unified(self, indices: torch.Tensor, *,
                       scale_factor: float = 0.5,
                       opacity_factor: float = 0.5,
                       jitter: float = 0.8) -> int:
-        """统一集合分裂：硬表面/自由层不再区分，含 blendshape 基。
+        """统一集合分裂：含 blendshape 基。
 
         Args:
             indices: 要分裂的高斯（按残差挑出来的"欠重建"位置）。
@@ -394,11 +328,10 @@ class GaussianAvatar(nn.Module):
             [self.color_b.data, self.color_b.data[:, idx]], dim=1))
         self.num_gaussians = total
         self._binder_cache = None
-        self._free_binder = None
         return int(idx.numel())
 
     def prune_unified(self, keep: torch.Tensor) -> int:
-        """按统一 bool mask 剪枝；硬表面/自由层不再区分。"""
+        """按 bool mask 剪枝。"""
         keep = keep.to(self.xyz.device).bool()
         removed = int((~keep).sum())
         if removed == 0:
@@ -415,7 +348,6 @@ class GaussianAvatar(nn.Module):
         self.color_b = nn.Parameter(self.color_b.data[:, keep].clone())
         self.num_gaussians = int(keep.sum())
         self._binder_cache = None
-        self._free_binder = None
         return removed
 
     def residual_indices(self, face_score: torch.Tensor, count: int, *,
@@ -432,144 +364,6 @@ class GaussianAvatar(nn.Module):
             if k <= 0:
                 return torch.empty(0, dtype=torch.long, device=self.xyz.device)
         return torch.topk(score, k).indices
-
-    def split_free_layer(self, indices: torch.Tensor, *,
-                         scale_factor: float = 0.5,
-                         opacity_factor: float = 0.5) -> int:
-        """只复制选中的自由高斯；绝不修改硬表面。
-
-        新副本尺度更小、透明度更低，避免一次性铺满；调用方负责容量上限。
-        """
-        if self.free_xyz is None:
-            raise RuntimeError("自由层未初始化")
-        idx = indices.to(self.free_xyz.device).long()
-        if idx.numel() == 0:
-            return 0
-        def cat(a, b):
-            return torch.cat([a, b], dim=0)
-        self.free_face_id = cat(self.free_face_id, self.free_face_id[idx])
-        self.free_face_bary = cat(self.free_face_bary, self.free_face_bary[idx])
-        self.free_xyz = nn.Parameter(cat(self.free_xyz.data, self.free_xyz.data[idx]))
-        self.free_rotation = nn.Parameter(cat(self.free_rotation.data,
-                                              self.free_rotation.data[idx]))
-        self.free_scaling = nn.Parameter(cat(
-            self.free_scaling.data,
-            self.free_scaling.data[idx] + math.log(float(scale_factor))))
-        new_op = self.free_opacity.data[idx] + math.log(float(opacity_factor))
-        self.free_opacity = nn.Parameter(cat(self.free_opacity.data, new_op))
-        self.free_color = nn.Parameter(cat(self.free_color.data, self.free_color.data[idx]))
-        self._free_binder = None
-        return int(idx.numel())
-
-    def free_residual_indices(self, face_score: torch.Tensor, count: int, *,
-                              min_opacity: float = 0.005,
-                              max_offset: float = 0.08) -> torch.Tensor:
-        """按自由高斯绑定面的当前残差选择分裂候选。"""
-        if self.free_xyz is None or face_score.numel() == 0:
-            return torch.empty(0, dtype=torch.long, device=self.xyz.device)
-        score = face_score.to(self.free_face_id.device)[self.free_face_id]
-        with torch.no_grad():
-            op = torch.sigmoid(self.free_opacity).squeeze(-1)
-            off = self.free_xyz.norm(dim=-1)
-            ok = (op >= min_opacity) & (off <= max_offset)
-            score = torch.where(ok, score, torch.zeros_like(score))
-            k = min(int(count), int(ok.sum()))
-            if k <= 0:
-                return torch.empty(0, dtype=torch.long, device=self.xyz.device)
-        return torch.topk(score, k).indices
-
-    def free_growth_indices(self, count: int, *,
-                            min_opacity: float = 0.005,
-                            max_offset: float = 0.08) -> torch.Tensor:
-        """按“大尺度 + 足够可见”选择要分裂的自由高斯。"""
-        if self.free_xyz is None:
-            return torch.empty(0, dtype=torch.long, device=self.xyz.device)
-        with torch.no_grad():
-            op = torch.sigmoid(self.free_opacity).squeeze(-1)
-            scale = torch.exp(self.free_scaling).amax(dim=-1)
-            off = self.free_xyz.norm(dim=-1)
-            ok = (op >= min_opacity) & (off <= max_offset)
-            score = torch.where(ok, scale, torch.zeros_like(scale))
-            k = min(int(count), int(ok.sum()))
-            if k <= 0:
-                return torch.empty(0, dtype=torch.long, device=self.xyz.device)
-        return torch.topk(score, k).indices
-
-    def prune_free_layer(self, *, min_opacity: float = 0.005,
-                         max_offset: float = 0.08) -> int:
-        """剪掉低透明度或离表面过远的自由高斯；硬表面不变。"""
-        if self.free_xyz is None:
-            return 0
-        with torch.no_grad():
-            keep = (torch.sigmoid(self.free_opacity).squeeze(-1) >= min_opacity)
-            keep &= self.free_xyz.norm(dim=-1) <= float(max_offset)
-        n_keep = int(keep.sum())
-        if n_keep == 0:
-            raise RuntimeError("剪枝后自由层为空；降低 min_opacity 或 max_offset")
-        removed = int(self.free_xyz.shape[0] - n_keep)
-        for name in ("free_face_id", "free_face_bary"):
-            setattr(self, name, getattr(self, name)[keep].clone())
-        self.free_xyz = nn.Parameter(self.free_xyz.data[keep].clone())
-        self.free_rotation = nn.Parameter(self.free_rotation.data[keep].clone())
-        self.free_scaling = nn.Parameter(self.free_scaling.data[keep].clone())
-        self.free_opacity = nn.Parameter(self.free_opacity.data[keep].clone())
-        self.free_color = nn.Parameter(self.free_color.data[keep].clone())
-        self._free_binder = None
-        return removed
-
-    def apply_free_constraints(self, max_offset: float = 0.08,
-                               near_scale: float = 0.0006,
-                               scale_growth: float = 0.15,
-                               max_scale: float = 0.008,
-                               near_normal: float = 0.0012,
-                               normal_growth: float = 0.35,
-                               max_normal: float = 0.025) -> None:
-        """限制自由层：法向/切向分开限制；切向近表面更严格。"""
-        if self.free_xyz is None:
-            return
-        with torch.no_grad():
-            off = self.free_xyz.norm(dim=-1, keepdim=True).clamp_min(1e-8)
-            f = (float(max_offset) / off).clamp(max=1.0)
-            self.free_xyz.mul_(f)
-            off = self.free_xyz.norm(dim=-1, keepdim=True)
-            scale = torch.exp(self.free_scaling)
-            axis = scale.argmin(dim=-1)                 # 最短轴视为法向
-            onehot = torch.nn.functional.one_hot(axis, 3).bool()
-            cap_tan = (float(near_scale) + float(scale_growth) * off).clamp(
-                max=float(max_scale))
-            cap_norm = (float(near_normal) + float(normal_growth) * off).clamp(
-                max=float(max_normal))
-            # 法向轴单独允许稍大；其余两个切向轴收紧
-            cap = torch.where(onehot, cap_norm, cap_tan)
-            self.free_scaling.copy_(
-                torch.minimum(self.free_scaling, torch.log(cap)))
-
-    def save_free_layer(self, path: str | Path) -> None:
-        import numpy as np
-        if self.free_xyz is None:
-            raise RuntimeError("没有自由层可保存")
-        np.savez_compressed(
-            path,
-            xyz=self.free_xyz.detach().cpu().numpy(),
-            rotation=self.free_rotation.detach().cpu().numpy(),
-            scaling=self.free_scaling.detach().cpu().numpy(),
-            opacity=self.free_opacity.detach().cpu().numpy(),
-            color=self.free_color.detach().cpu().numpy(),
-            face_id=self.free_face_id.detach().cpu().numpy(),
-            face_bary=self.free_face_bary.detach().cpu().numpy(),
-        )
-
-    def load_free_layer(self, path: str | Path) -> None:
-        import numpy as np
-        d = np.load(path)
-        self.free_face_id = torch.from_numpy(d["face_id"].astype("int64")).to(self.xyz.device)
-        self.free_face_bary = torch.from_numpy(d["face_bary"].astype("float32")).to(self.xyz.device)
-        self.free_xyz = nn.Parameter(torch.from_numpy(d["xyz"].astype("float32")).to(self.xyz.device))
-        self.free_rotation = nn.Parameter(torch.from_numpy(d["rotation"].astype("float32")).to(self.xyz.device))
-        self.free_scaling = nn.Parameter(torch.from_numpy(d["scaling"].astype("float32")).to(self.xyz.device))
-        self.free_opacity = nn.Parameter(torch.from_numpy(d["opacity"].astype("float32")).to(self.xyz.device))
-        self.free_color = nn.Parameter(torch.from_numpy(d["color"].astype("float32")).to(self.xyz.device))
-        self._free_binder = None
 
     # ------------------------------------------------------------ 纹理视图 --
     def extract_texture(self) -> torch.Tensor:
@@ -602,8 +396,4 @@ class GaussianAvatar(nn.Module):
         module = super().to(*args, **kwargs)
         self.binding_face_id = self.binding_face_id.to(
             module.binding_face_bary.device)
-        if self.free_face_id is not None:
-            self.free_face_id = self.free_face_id.to(module.binding_face_bary.device)
-            self.free_face_bary = self.free_face_bary.to(module.binding_face_bary.device)
-        self._free_binder = None
         return module

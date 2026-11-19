@@ -846,3 +846,45 @@ def test_app_and_scripts_use_the_shared_render_path() -> None:
     assert not offenders, (
         "脚本仍在直接拼 rasterizer.render；改用 render_frame / render_gaussians：\n  "
         + "\n  ".join(offenders))
+
+
+# ------------------------------------------------- 旧的分层/自由层实现已删除 --
+
+
+LEGACY_FREE_ENTRIES = (
+    "scripts/init_free_layer.py",
+    "scripts/init_free_residual.py",
+    "scripts/edit_free_layer.py",
+    "layered_train.sh",
+)
+
+
+def test_legacy_free_layer_entrypoints_are_gone() -> None:
+    """自由层/分层训练入口已并入统一 PLY 加密管线，旧脚本不应再出现。"""
+    for rel in LEGACY_FREE_ENTRIES:
+        assert not (REPO_ROOT / rel).exists(), f"旧入口仍然存在：{rel}"
+
+
+def test_no_free_layer_api_or_config_left() -> None:
+    """`free_*` 参数与 `free_layer` 配置必须在代码/脚本/配置里彻底消失。
+
+    模型已经证明可以用**单个 PLY** 表达全部高斯，保留两套并行实现只会让
+    硬表面/加密路径的边界变模糊。
+    """
+    from live3dgsavatar.core.avatar import GaussianAvatar
+
+    leftovers = [name for name in dir(GaussianAvatar) if name.startswith("free_")]
+    assert leftovers == [], f"GaussianAvatar 仍有自由层接口：{leftovers}"
+
+    roots = [SCRIPTS, SRC, REPO_ROOT / "configs"]
+    patterns = ("free_layer", "free_xyz", "free_grow", "free_prune")
+    hits: list[str] = []
+    for root in roots:
+        for path in root.rglob("*"):
+            if path.suffix not in (".py", ".sh", ".yaml") or not path.is_file():
+                continue
+            text = path.read_text(encoding="utf-8", errors="ignore")
+            for pattern in patterns:
+                if pattern in text:
+                    hits.append(f"{path.relative_to(REPO_ROOT)}: {pattern}")
+    assert hits == [], f"仍有自由层残留：{hits}"

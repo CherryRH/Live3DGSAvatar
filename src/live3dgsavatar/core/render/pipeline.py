@@ -85,10 +85,9 @@ def render_frame(
         t0 = time.perf_counter()
         gaussians: GaussianSet = avatar.deform(mesh, blend_weight)
         if frontface:
-            from .frontface import frontface_with_free
-            gaussians = frontface_with_free(
-                gaussians, camera, mesh, avatar.binding_face_id,
-                avatar.num_gaussians)
+            from .frontface import frontface_gaussians
+            gaussians = frontface_gaussians(
+                gaussians, camera, mesh, avatar.binding_face_id)
         if sync:
             _synchronize()
         if timings is not None:

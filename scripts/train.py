@@ -158,17 +158,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--repair-per-batch", type=int, default=None,
                    help="每个 batch 的修复图数量；缺省为 batch/2")
     p.add_argument("--freeze-xyz", action="store_true",
-                   help="冻结硬表面 xyz/xyz_b；自由层参数不受影响")
-    p.add_argument("--free-layer", type=Path, default=None,
-                   help="加载自由层 npz（与 --init-ply 硬表面一起渲染/训练）")
-    p.add_argument("--free-grow-every", type=int, default=None,
-                   help="自由层动态生长周期；0=关闭")
-    p.add_argument("--free-grow-count", type=int, default=None,
-                   help="每次自由层最多新增数量")
-    p.add_argument("--free-max-gaussians", type=int, default=None,
-                   help="自由层数量硬上限")
-    p.add_argument("--free-prune-opacity", type=float, default=None,
-                   help="自由层剪枝的 opacity 下限")
+                   help="冻结 xyz / xyz_b（只训练外观与形状参数）")
     p.add_argument("--densify", action="store_true",
                    help="统一集合加密：全部高斯漂移，高残差处统一 split/prune")
     p.add_argument("--densify-every", type=int, default=None)
@@ -550,11 +540,6 @@ def main(argv: list[str] | None = None) -> int:
         K=scene.K, R=scene.R, T=scene.T,
         width=scene.width, height=scene.height).to(str(device))
     print(f"  高斯数 : {avatar.num_gaussians}   基 K={avatar.num_basis}")
-    if args.free_layer is not None:
-        if not args.free_layer.is_file():
-            raise SystemExit(f"[error] --free-layer 不存在：{args.free_layer}")
-        avatar.load_free_layer(args.free_layer)
-        print(f"  自由层 : {args.free_layer}（{avatar.free_xyz.shape[0]} 个高斯）")
 
     # 硬表面从零初始化时，可把 SyncFix 修复图作为等比例额外观测。
     # 修复图没有相机/网格，用基准帧的 mesh + 目标 yaw 构造 camera。
@@ -651,15 +636,6 @@ def main(argv: list[str] | None = None) -> int:
             final_lr=float(hard_xyz_lr) * 0.1,
             max_steps=30000)
         print(f"  硬位移 : xyz lr {hard_xyz_lr:g}（轻度）")
-    if avatar.free_xyz is not None:
-        from live3dgsavatar.training.plans import GroupPlan
-        plan.groups["free_xyz"] = GroupPlan(lr=1e-4, final_lr=1e-5,
-                                             max_steps=5000)
-        plan.groups["free_f_dc"] = GroupPlan(lr=8e-3)
-        plan.groups["free_opacity"] = GroupPlan(lr=5e-2)
-        plan.groups["free_scaling"] = GroupPlan(lr=0.01)
-        plan.groups["free_rotation"] = GroupPlan(lr=2e-3)
-        print("  自由层 : 颜色/opacity/scaling/rotation/轻位移")
     if lr_scale != 1.0:
         plan = plan.scaled(lr_scale)
         print(f"  lr 缩放 : {lr_scale:g}")
@@ -1069,84 +1045,6 @@ def main(argv: list[str] | None = None) -> int:
     else:
         print("  取数   : 逐帧解 PNG —— 可跑 scripts/cache_images.py 加速")
 
-    free_cfg = cfg.get("train.pipeline.free_layer", {}) or {}
-    free_post = None
-    if avatar.free_xyz is not None:
-        from functools import partial
-        constraints = partial(
-            avatar.apply_free_constraints,
-            max_offset=float(free_cfg.get("max_offset", 0.08)),
-            near_scale=float(free_cfg.get("near_scale", 0.0012)),
-            scale_growth=float(free_cfg.get("scale_growth", 0.35)),
-            max_scale=float(free_cfg.get("max_scale", 0.008)),
-            near_normal=float(free_cfg.get("near_normal", 0.0012)),
-            normal_growth=float(free_cfg.get("normal_growth", 0.35)),
-            max_normal=float(free_cfg.get("max_normal", 0.025)),
-        )
-        grow_every = int(args.free_grow_every if args.free_grow_every is not None
-                         else free_cfg.get("grow_every", 0))
-        grow_count = int(args.free_grow_count if args.free_grow_count is not None
-                         else free_cfg.get("grow_count", 500))
-        max_free = int(args.free_max_gaussians if args.free_max_gaussians is not None
-                       else free_cfg.get("max_gaussians", 24000))
-        prune_op = float(args.free_prune_opacity if args.free_prune_opacity is not None
-                         else free_cfg.get("prune_min_opacity", 0.005))
-        growth = {"step": 0}
-
-        def free_post():
-            constraints()
-            growth["step"] += 1
-            if (grow_every <= 0 or growth["step"] % grow_every != 0):
-                return
-            n = int(avatar.free_xyz.shape[0])
-            if n >= max_free:
-                return
-            # 残差驱动：用最近一个 batch 的颜色残差累加到 FLAME 面，
-            # 再映射到自由高斯；失败时退回尺度排序。
-            idx = None
-            try:
-                lb, lo = trainer.last_batch, trainer.last_out
-                if lb is not None and lo is not None:
-                    nf = int(scene.faces.shape[0])
-                    face_err = torch.zeros(nf, device=device)
-                    for i in range(int(lb.mesh.shape[0])):
-                        if getattr(lb, "K", None) is not None:
-                            cam_i = Camera(K=lb.K[i:i+1].to(device),
-                                           w2c=lb.w2c[i:i+1].to(device),
-                                           width=scene.width,
-                                           height=scene.height).to(device)
-                        else:
-                            cam_i = camera
-                        v = lb.mesh[i:i+1].to(device)
-                        ids = face_id_map(v, scene.faces.to(device), cam_i,
-                                          glctx, flip_y=False)
-                        if ids.ndim == 3:
-                            ids = ids[0]
-                        err = (lo.color[i:i+1] - lb.image[i:i+1].to(device)).abs().mean(1).reshape(-1)
-                        ids = ids.reshape(-1)
-                        m = lb.mask[i:i+1, 0].to(device).reshape(-1).bool()
-                        valid = (ids >= 0) & m
-                        if bool(valid.any()):
-                            face_err.index_add_(0, ids[valid].long(), err[valid])
-                    if float(face_err.max()) > 0:
-                        idx = avatar.free_residual_indices(
-                            face_err, min(grow_count, max_free - n),
-                            min_opacity=prune_op,
-                            max_offset=float(free_cfg.get("max_offset", 0.08)))
-            except Exception as e:
-                print(f"  [free] 残差生长回退尺度选择：{e}", flush=True)
-            if idx is None or idx.numel() == 0:
-                idx = avatar.free_growth_indices(
-                    min(grow_count, max_free - n),
-                    min_opacity=prune_op,
-                    max_offset=float(free_cfg.get("max_offset", 0.08)))
-            added = avatar.split_free_layer(idx)
-            if added:
-                constraints()
-                avatar.prune_free_layer(min_opacity=prune_op,
-                                        max_offset=float(free_cfg.get("max_offset", 0.08)))
-                trainer.rebuild_optimizer()
-                print(f"  [free] 生长 +{added} → {int(avatar.free_xyz.shape[0])} 个", flush=True)
     densify_hook = None
     if args.densify:
         dcfg = cfg.get("train.pipeline.densify", {}) or {}
@@ -1200,8 +1098,7 @@ def main(argv: list[str] | None = None) -> int:
                             face_err.detach(),
                             min(d_count, d_max - int(avatar.num_gaussians)),
                             min_opacity=d_op,
-                            max_offset=float(cfg.get(
-                                "train.pipeline.free_layer.max_offset", 0.08)))
+                            max_offset=float(dcfg.get("max_offset", 0.08)))
             except Exception as e:
                 print(f"  [densify] 残差选择失败：{e}", flush=True)
             if idx is None or idx.numel() == 0:
@@ -1224,8 +1121,7 @@ def main(argv: list[str] | None = None) -> int:
                       render_fn=render_fn, params=avatar.parameter_groups,
                       iterations=iterations, batch_size=batch_size,
                       blend_start=blend_start, hooks=hooks, device=device,
-                      post_step=(densify_hook if densify_hook is not None
-                                 else free_post))
+                      post_step=densify_hook)
     timing["t0"] = time.perf_counter()
     report = trainer.run()
 
@@ -1234,8 +1130,6 @@ def main(argv: list[str] | None = None) -> int:
 
     final_ply = out_dir / "model.ply"
     save_ply(avatar, final_ply)
-    if avatar.free_xyz is not None:
-        avatar.save_free_layer(out_dir / "free_layer.npz")
 
     print(f"\n最终模型：{final_ply}（累计 {_elapsed():.1f}s）")
 
@@ -1282,9 +1176,6 @@ def main(argv: list[str] | None = None) -> int:
     except (FileExistsError, FileNotFoundError) as e:
         print(f"[error] {e}", file=sys.stderr)
         return 1
-    if avatar.free_xyz is not None:
-        import shutil as _shutil
-        _shutil.copyfile(out_dir / "free_layer.npz", target / "free_layer.npz")
     print(f"已装入：{target}")
     # 最终模型只保留在 models/；output/train 只留 checkpoint 与报告。
     for duplicate in (final_ply, best_ply):

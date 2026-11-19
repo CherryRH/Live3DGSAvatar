@@ -33,19 +33,6 @@ train:
       max_scale: 0.0020  # 切向尺度上限 2.0 mm（统一默认）
       outside_weight: 1.0
       bg_weight: 1.0
-    # 自由层：近表面严格，远离表面逐步放宽；用于表面细节和大体积头发
-    free_layer:
-      max_gaussians: 24000   # 硬上限；分裂工具不得越过
-      grow_every: 0          # >0 时训练中按周期生长；默认关闭
-      grow_count: 500        # 每次最多新增
-      prune_min_opacity: 0.005
-      max_offset: 0.08       # 允许离开 FLAME 表面最多 8 cm（头发体积）
-      near_scale: 0.0006     # 贴表面切向最大尺度 0.6 mm
-      scale_growth: 0.15     # 切向尺度随距离放宽
-      max_scale: 0.008       # 切向最大 8 mm
-      near_normal: 0.0012    # 法向 1.2 mm
-      normal_growth: 0.35
-      max_normal: 0.025
     # 统一集合加密训练管线（densify_train.sh 读取；--shell-densify 输出 CFG_DENSIFY_*）
     #
     # 两段式：
