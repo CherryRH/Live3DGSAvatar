@@ -310,3 +310,31 @@ def test_split_unified_quad_pattern_is_deterministic_and_offsets() -> None:
     # 4 个副本方向两两不同
     d = copy - parent
     assert len({tuple(v.round(decimals=6).tolist()) for v in d}) == 4
+
+
+def test_split_unified_subdivide_replaces_parent_with_two_children() -> None:
+    """subdivide：父换成两个 0.7 倍尺度、同透明度的子高斯，位置沿 ± 分开。"""
+    torch.manual_seed(0)
+    av = _tiny_avatar(n=8, k=2, tex_size=16)
+    before = int(av.num_gaussians)
+    idx = torch.arange(2)
+    old_scaling = av.scaling.data[idx].clone()
+    old_opacity = av.opacity.data[idx].clone()
+    old_xyz = av.xyz.data[idx].clone()
+
+    added = av.split_unified(idx, scale_factor=0.7, jitter=1.0,
+                             pattern="quad", mode="subdivide")
+
+    assert added == 2
+    assert int(av.num_gaussians) == before + 2
+    # 父与新子都缩到 0.7
+    assert torch.allclose(av.scaling.data[idx], old_scaling + np.log(0.7), atol=1e-6)
+    assert torch.allclose(av.scaling.data[before:], old_scaling + np.log(0.7), atol=1e-6)
+    # 透明度不变
+    assert torch.allclose(av.opacity.data[idx], old_opacity, atol=1e-6)
+    assert torch.allclose(av.opacity.data[before:], old_opacity, atol=1e-6)
+    # 父、子分居原位两侧
+    parent = av.xyz.data[idx]
+    child = av.xyz.data[before:]
+    assert torch.allclose((parent + child) / 2, old_xyz, atol=1e-6)
+    assert not torch.allclose(parent, child)

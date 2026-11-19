@@ -281,15 +281,25 @@ class GaussianAvatar(nn.Module):
                       opacity_factor: float = 0.5,
                       jitter: float = 0.8,
                       pattern: str = "random",
-                      phase: int = 0) -> int:
+                      phase: int = 0,
+                      mode: str = "copy") -> int:
         """统一集合分裂：含 blendshape 基。
 
         Args:
             indices: 要分裂的高斯（按残差挑出来的"欠重建"位置）。
             scale_factor / opacity_factor: 副本的尺度/不透明度倍率。
-            jitter: 副本沿自身尺度随机位移的倍数（单位：1σ）。**必须 > 0**：
-                原地复制会得到两个完全重合的高斯，既不增加覆盖，又让
-                后续 split 反复选中同一批位置。
+            jitter: 位移倍数（单位：1σ）。**必须 > 0**：原地复制会得到
+                两个完全重合的高斯，既不增加覆盖，又让后续 split 反复选中
+                同一批位置。
+            pattern: `random` 随机方向；`quad` 切平面 4 方向轮转。
+            phase: quad 方向的轮转相位（每轮 45°）。
+            mode:
+                ``copy``      父高斯不动，追加一个"更小更淡"的副本。总量增加，
+                              画面偏软（历史默认）。
+                ``subdivide`` 父高斯替换成**两个**子高斯：两者都缩到
+                              `scale_factor`、**透明度不变**，位置沿 ±方向
+                              分开。radiance 总量近似不变，但等效分辨率翻倍 ——
+                              用来补精细纹理。
         """
         idx = indices.to(self.xyz.device).long()
         if idx.numel() == 0:
@@ -308,8 +318,10 @@ class GaussianAvatar(nn.Module):
         #   quad    切平面内 4 个正交方向轮转，phase 每轮转 45°
         #           —— 相当于把一个 texel 细分成 4 个子格，适合补高频纹理
         base_xyz = self.xyz.data[idx]
+        base_scaling = self.scaling.data[idx]
+        base_opacity = self.opacity.data[idx]
         if float(jitter) > 0:
-            sigma = torch.exp(self.scaling.data[idx]) * float(jitter)
+            sigma = torch.exp(base_scaling) * float(jitter)
             if pattern == "quad":
                 k = torch.arange(idx.numel(), device=base_xyz.device)
                 ang = (k % 4).to(base_xyz.dtype) * (math.pi / 2)
@@ -320,20 +332,38 @@ class GaussianAvatar(nn.Module):
                 offset = direction * sigma
             else:
                 offset = torch.randn_like(base_xyz) * sigma
-            new_xyz = base_xyz + offset
         else:
-            new_xyz = base_xyz
+            offset = torch.zeros_like(base_xyz)
+
+        if mode == "subdivide":
+            # 父 -> 两个子：都缩到 scale_factor，透明度不变，位置沿 ± 分开
+            child_xyz = base_xyz - offset
+            parent_xyz = base_xyz + offset
+            child_scaling = base_scaling + math.log(float(scale_factor))
+            child_opacity = base_opacity
+            new_xyz = child_xyz
+            new_scaling = child_scaling
+            new_opacity = child_opacity
+            # 原地改父（先复制，避免之后 concat 时别名）
+            xyz_all = self.xyz.data.clone()
+            scaling_all = self.scaling.data.clone()
+            xyz_all[idx] = parent_xyz
+            scaling_all[idx] = child_scaling
+            opacity_all = self.opacity.data
+        else:
+            new_xyz = base_xyz + offset
+            new_scaling = base_scaling + math.log(float(scale_factor))
+            new_opacity = base_opacity + math.log(float(opacity_factor))
+            xyz_all = self.xyz.data
+            scaling_all = self.scaling.data
+            opacity_all = self.opacity.data
         self.binding_face_id = cat(self.binding_face_id, self.binding_face_id[idx])
         self.binding_face_bary = cat(self.binding_face_bary, self.binding_face_bary[idx])
         self.valid_binding_mask = cat(self.valid_binding_mask,
                                       self.valid_binding_mask[idx])
-        self.xyz = nn.Parameter(cat(self.xyz.data, new_xyz))
-        self.opacity = nn.Parameter(cat(
-            self.opacity.data,
-            self.opacity.data[idx] + math.log(float(opacity_factor))))
-        self.scaling = nn.Parameter(cat(
-            self.scaling.data,
-            self.scaling.data[idx] + math.log(float(scale_factor))))
+        self.xyz = nn.Parameter(cat(xyz_all, new_xyz))
+        self.opacity = nn.Parameter(cat(opacity_all, new_opacity))
+        self.scaling = nn.Parameter(cat(scaling_all, new_scaling))
         self.rotation = nn.Parameter(cat(self.rotation.data, self.rotation.data[idx]))
         self.color = nn.Parameter(cat(self.color.data, self.color.data[idx]))
         self.xyz_b = nn.Parameter(torch.cat(

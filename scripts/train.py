@@ -171,6 +171,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--densify-count", type=int, default=None)
     p.add_argument("--densify-max", type=int, default=None)
     p.add_argument("--densify-prune-opacity", type=float, default=None)
+    p.add_argument("--densify-split-mode", choices=("copy", "subdivide"),
+                   default=None,
+                   help="copy=父不动+追加副本（偏软）；subdivide=父换成两个子高斯")
     p.add_argument("--densify-split-jitter", type=float, default=None,
                    help="分裂副本沿自身尺度的随机位移倍数（1σ；0=原地复制）")
     p.add_argument("--hard-xyz-lr", type=float, default=None,
@@ -1148,8 +1151,12 @@ def main(argv: list[str] | None = None) -> int:
                          else dcfg.get("split_jitter", 0.8))
         d_state = {"step": 0}
 
-        d_hole = float(dcfg.get("split_hole_weight", 0.5))
-        d_pattern = str(dcfg.get("split_pattern", "quad"))
+        d_hole = float(dcfg.get("split_hole_weight", 0.0))
+        d_pattern = str(dcfg.get("split_pattern", "random"))
+        d_mode = str(args.densify_split_mode
+                     if args.densify_split_mode is not None
+                     else dcfg.get("split_mode", "copy"))
+        d_scale = float(dcfg.get("split_scale", 0.7))
         d_state = {"step": 0, "splits": 0}
 
         def densify_post():
@@ -1236,8 +1243,9 @@ def main(argv: list[str] | None = None) -> int:
                 return
             n_before = int(avatar.num_gaussians)
             added = avatar.split_unified(
-                idx, jitter=d_jitter, pattern=d_pattern,
-                phase=d_state["splits"] % 8)
+                idx, scale_factor=(d_scale if d_mode == "subdivide" else 0.5),
+                jitter=d_jitter, pattern=d_pattern,
+                phase=d_state["splits"] % 8, mode=d_mode)
             d_state["splits"] += 1
             if added:
                 with torch.no_grad():

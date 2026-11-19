@@ -97,6 +97,11 @@ train:
       # 分裂方向：quad=切平面 4 方向轮转（细分 texel），random=随机。
       # 实测两者差异在噪声内，默认保留随机。
       split_pattern: random
+      # 分裂方式：copy=父不动+追加半透明副本；subdivide=父换成两个子高斯
+      # （0.7 倍尺度、同透明度），等效分辨率翻倍、radiance 总量不变。
+      # 实测 4000 步：copy 29.22/0.8647，subdivide 28.95/0.8651 —— 没用，默认 copy。
+      split_mode: copy
+      split_scale: 0.7
       # 加密过程中 PSNR 会因新高斯抖动，早停耐心放宽
       patience: 4
     iterations: 50000
