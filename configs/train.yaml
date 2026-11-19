@@ -33,6 +33,12 @@ train:
       max_scale: 0.0020  # 切向尺度上限 2.0 mm（统一默认）
       outside_weight: 1.0
       bg_weight: 1.0
+      # 切空间偏移上限（米）：允许补偿 FLAME/RDF 误差的微小形变，
+      # 但每步投影回 3mm 内，避免长训练时少数高斯慢慢漂到表面外。
+      max_offset: 0.003
+      # 硬表面只做初始化：形变基一直关，早停不必等 blend_start。
+      # 第几步之后允许早停（之前只记录/挑 best）。
+      early_stop_after: 200
     # 统一集合加密训练管线（densify_train.sh 读取；--shell-densify 输出 CFG_DENSIFY_*）
     #
     # 两段式：
@@ -55,10 +61,18 @@ train:
       # 盘状初始化（configs/model.yaml 的 init_scale_*）让高斯一开始就是 2.2mm 的
       # 小圆片，1000 步就能铺满；各向同性球要 5000 步才压到同样的形状。
       # 这一段不做表情残差，所以不给形变基开步数（init_blend_start >= init_steps）。
-      init_steps: 1000
+      # 步数是**上限**：默认按表面内 PSNR 自动早停，实测 600~800 步就收。
+      init_steps: 2500
       init_batch: 8
       init_repair: 2
       init_blend_start: 100000
+      # 验证每 100 步一次，只抽 120 帧（全量 1198 帧 × 每 100 步太贵）。
+      init_eval_every: 100
+      init_eval_frames: 120
+      # 边际收益 < 0.15 dB/100 步连续两次就停：实测在 900 步左右触发，
+      # 此时平均切向偏移已饱和（~1.05 mm），再练只是 1% 尾巴慢慢外漂。
+      init_min_delta: 0.15
+      init_patience: 2
       # ---- stage2 统一集合加密（全部高斯 + 残差驱动 split）----
       # 形变基从第 0 步开启（warm start 的基是 0，晚开只会浪费步数）。
       tex_size: 512

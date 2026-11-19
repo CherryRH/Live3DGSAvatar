@@ -111,8 +111,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="认为'有提升'的最小 dB 幅度")
     p.add_argument("--prefetch-workers", type=int, default=None,
                    help="后台预取线程数；0 表示不预取")
-    p.add_argument("--early-metric", choices=("psnr", "robust"), default=None,
-                   help="早停指标；psnr 使用 mask 内 PSNR，robust 使用大角度综合分")
+    p.add_argument("--early-metric", choices=("psnr", "psnr_surface", "robust"),
+                   default=None,
+                   help="早停指标；psnr=mask 内 PSNR，psnr_surface=FLAME 表面内 PSNR"
+                        "（硬表面阶段默认），robust=大角度综合分")
+    p.add_argument("--eval-frames", type=int, default=None,
+                   help="验证只用其中 N 帧（等间隔抽样）；缺省用全部留出集")
+    p.add_argument("--early-stop-after", type=int, default=None,
+                   help="第几步之后允许早停；硬表面阶段默认 200，其余默认 blend_start+1000")
     p.add_argument("--robust-eval", dest="robust_eval", action="store_true",
                    default=None,
                    help="验证时加入大角度视角，用 正脸PSNR − λ·缺口 早停")
@@ -169,6 +175,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="分裂副本沿自身尺度的随机位移倍数（1σ；0=原地复制）")
     p.add_argument("--hard-xyz-lr", type=float, default=None,
                    help="分层全量阶段硬表面 xyz 的小学习率；缺省沿用默认")
+    p.add_argument("--hard-offset-cap", type=float, default=None,
+                   help="硬表面阶段切空间偏移上限（米）；每步后投影，防止长训练缓慢外漂")
     p.add_argument("--resume-hard", action="store_true",
                    help="hard_surface 阶段允许 --init-ply 热启动（带几何约束的 refine）")
     p.add_argument("--init-ply", type=Path, default=None,
@@ -240,12 +248,12 @@ def main(argv: list[str] | None = None) -> int:
                      else cfg.get("train.pipeline.batch_size", 10))
     blend_start = int(args.blend_start if args.blend_start is not None
                       else cfg.get("train.pipeline.blend_start", 3_000))
-    # 形变基在 blend_start 才打开；早停至少等它生效 1000 步
-    early_stop_after = max(0, blend_start + 1000)
     test_ratio = float(args.test_ratio if args.test_ratio is not None
                        else cfg.get("train.pipeline.test_ratio", 0.3))
     eval_every = int(args.eval_every if args.eval_every is not None
                      else cfg.get("train.pipeline.eval_every", 500))
+    eval_frames = (int(args.eval_frames) if args.eval_frames is not None
+                   else cfg.get("train.pipeline.eval_frames", None))
     save_every = int(args.save_every if args.save_every is not None
                      else cfg.get("train.pipeline.save_every", 5000))
     patience = int(args.patience if args.patience is not None
@@ -296,6 +304,16 @@ def main(argv: list[str] | None = None) -> int:
                 else cfg.get("train.pipeline.stage", "base"))
     if stage not in ("base", "hard_surface"):
         raise SystemExit(f"[error] 未知训练阶段：{stage!r}")
+
+    if args.early_stop_after is not None:
+        early_stop_after = max(0, int(args.early_stop_after))
+    elif stage == "hard_surface":
+        # 硬表面只做初始化：形变基一直是关的，早停没必要等 blend_start。
+        early_stop_after = int(
+            cfg.get("train.pipeline.hard_surface.early_stop_after", 200))
+    else:
+        # 形变基在 blend_start 才打开；早停至少等它生效 1000 步
+        early_stop_after = max(0, blend_start + 1000)
     surface_hole = float(
         args.surface_hole_weight if args.surface_hole_weight is not None
         else cfg.get("train.pipeline.hard_surface.hole_weight", 0.02))
@@ -639,6 +657,21 @@ def main(argv: list[str] | None = None) -> int:
     if lr_scale != 1.0:
         plan = plan.scaled(lr_scale)
         print(f"  lr 缩放 : {lr_scale:g}")
+
+    # 硬表面允许微小形变（补偿 FLAME/RDF 误差），但每步把切空间偏移投影到
+    # 上限之内：否则长期训练时 1% 的高斯会慢慢漂到表面外 8mm+，既不再是
+    # "硬表面"，也浪费步数。
+    offset_guard = None
+    if stage == "hard_surface":
+        cap = float(args.hard_offset_cap if args.hard_offset_cap is not None
+                    else cfg.get("train.pipeline.hard_surface.max_offset", 0.003))
+        if cap > 0:
+            def offset_guard() -> None:
+                with torch.no_grad():
+                    n = avatar.xyz.data.norm(dim=-1, keepdim=True)
+                    f = (cap / n.clamp_min(1e-8)).clamp(max=1.0)
+                    avatar.xyz.data.mul_(f)
+            print(f"  硬偏移 : 切空间偏移上限 {cap * 1000:.1f} mm（每步投影）")
     mask_weight = float(args.mask_weight if args.mask_weight is not None
                         else cfg.get("train.pipeline.mask_weight", 1.0))
     ssim_weight = float(args.ssim_weight if args.ssim_weight is not None
@@ -854,6 +887,7 @@ def main(argv: list[str] | None = None) -> int:
         return out
 
     last_eval: dict[str, float] = {}
+    geom_ref: dict[str, tuple] = {}
 
     @torch.no_grad()
     def evaluate(source) -> dict[str, float]:
@@ -866,8 +900,16 @@ def main(argv: list[str] | None = None) -> int:
         所以评测单独走一条纯推理路径。
         """
         total, n = 0.0, 0
+        surf_psnr, surf_hole = 0.0, 0.0
         try:
             batches = list(source.iter_batches(max(1, batch_size)))
+            if eval_frames is not None and eval_frames > 0 and batches:
+                # 等间隔抽批：硬表面阶段每 100 步就要验证一次，跑全量太贵
+                per_batch = max(1, int(batches[0].mesh.shape[0]))
+                want = max(1, int(eval_frames) // per_batch)
+                if want < len(batches):
+                    step = max(1, len(batches) // want)
+                    batches = batches[::step][:want]
         except Exception as e:                                  # noqa: BLE001
             print(f"[warn] 验证集遍历失败：{type(e).__name__}: {e}", flush=True)
             raise
@@ -881,7 +923,43 @@ def main(argv: list[str] | None = None) -> int:
             mse = (((pred - tgt) ** 2) * mask).sum() / (mask.sum() * 3).clamp(min=1)
             total += float(10.0 * torch.log10(1.0 / mse.clamp(min=1e-10))) * len(batch)
             n += len(batch)
+            if stage == "hard_surface":
+                # 硬表面只负责 FLAME 表面那一片：mask 内 PSNR 会被头发/衣服
+                # 拖住，不能反映"壳做得好不好"。这里按表面 mask 单独统计，
+                # 顺带量一下表面被覆盖的比例（孔洞率）。
+                surf = torch.cat(
+                    [_surface_mask(batch, i).to(device)
+                     for i in range(int(batch.mesh.shape[0]))], dim=0) & mask
+                mse_s = (((pred - tgt) ** 2) * surf).sum() \
+                    / (surf.sum() * 3).clamp(min=1)
+                surf_psnr += float(
+                    10.0 * torch.log10(1.0 / mse_s.clamp(min=1e-10))) * len(batch)
+                surf_hole += float(
+                    (out.alpha < 0.5)[surf].float().mean()) * len(batch)
         metrics = {"psnr": total / max(1, n)}
+        if stage == "hard_surface":
+            metrics["psnr_surface"] = surf_psnr / max(1, n)
+            metrics["surface_hole"] = surf_hole / max(1, n)
+            # "初始化是否定型"：几何参数每次验证之间还在挪多少（mm）。
+            # 覆盖与贴面会先收敛，颜色/PSNR 会后收敛 —— 后者 stage2 会重练，
+            # 所以硬表面段的早停应该看几何，而不是看 PSNR 平台。
+            with torch.no_grad():
+                geom = (avatar.xyz.detach().clone(),
+                        avatar.scaling.detach().clone())
+                # 离绑定面的切空间偏移（mm）：初始化时是 0，训练中被允许
+                # "微小形变"补偿 FLAME/RDF 误差，但不应长期缓慢外漂。
+                off_mm = avatar.xyz.detach().norm(dim=-1) * 1000.0
+                metrics["offset_mean_mm"] = float(off_mm.mean())
+                metrics["offset_p99_mm"] = float(off_mm.quantile(0.99))
+            prev = geom_ref.get("prev")
+            if prev is not None:
+                d_xyz = float((geom[0] - prev[0]).norm(dim=-1).mean()) * 1000.0
+                d_sc = float((geom[1] - prev[1]).abs().mean()) * 1000.0
+                metrics["geom_drift_mm"] = d_xyz
+                metrics["scale_drift_mm"] = d_sc
+                # EarlyStopping 越大越好：取负号
+                metrics["geom_settled"] = -d_xyz
+            geom_ref["prev"] = geom
 
         if robust_cfg is not None:
             # 只在部分验证帧上加大角度视角：全量会拖慢训练
@@ -960,27 +1038,35 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  [save] 第 {iteration} 步 {path.name}（累计 {secs:.1f}s）",
               flush=True)
 
+    early_metric_name = (args.early_metric or
+                         ("robust" if robust_cfg is not None else
+                          ("psnr_surface" if stage == "hard_surface" else "psnr")))
+
     def save_best(iteration: int, metric: float) -> None:
         """验证指标刷新最好成绩时存一份 —— 后训变差也能拿回好的那份。"""
         save_ply(avatar, out_dir / "model_best.ply")
         secs = _elapsed()
         timing["best"] = secs
+        shown_psnr = (last_eval.get("psnr_surface", last_eval.get("psnr", float("nan")))
+                      if stage == "hard_surface"
+                      else last_eval.get("psnr", float("nan")))
         if robust_cfg is not None:
             print(f"  [best] 第 {iteration} 步 robust {metric:.2f}"
-                  f"（PSNR {last_eval.get('psnr', float('nan')):.2f}，"
+                  f"（PSNR {shown_psnr:.2f}，"
                   f"缺口 {last_eval.get('deficit_mean', float('nan')):.3f}，"
                   f"阈值孔洞 {last_eval.get('hole_mean', float('nan')):.1%}，"
                   f"面外溢出 {last_eval.get('outside_mean', float('nan')):.1%}）"
                   f" → model_best.ply（累计 {secs:.1f}s）", flush=True)
         else:
-            print(f"  [best] 第 {iteration} 步 验证 {metric:.2f} dB"
+            label = {"psnr_surface": "表面 PSNR", "psnr": "PSNR（mask 内）"}.get(
+                early_metric_name, early_metric_name)
+            print(f"  [best] 第 {iteration} 步 {label} {metric:.2f} dB"
                   f" → model_best.ply（累计 {secs:.1f}s）", flush=True)
 
     val_hook = ValidationHook(
         source=val_src, evaluate=evaluate, every=eval_every,
         early_stop=EarlyStopping(patience=patience, min_delta=min_delta),
-        metric=(args.early_metric or
-                ("robust" if robust_cfg is not None else "psnr")),
+        metric=early_metric_name,
         on_improve=save_best, start_after=early_stop_after)
     hooks = [
         LogHook(every=100),
@@ -1121,7 +1207,8 @@ def main(argv: list[str] | None = None) -> int:
                       render_fn=render_fn, params=avatar.parameter_groups,
                       iterations=iterations, batch_size=batch_size,
                       blend_start=blend_start, hooks=hooks, device=device,
-                      post_step=densify_hook)
+                      post_step=(densify_hook if densify_hook is not None
+                                 else offset_guard))
     timing["t0"] = time.perf_counter()
     report = trainer.run()
 

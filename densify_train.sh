@@ -64,6 +64,10 @@ INIT_STEPS="${DENS_INIT_STEPS:-${CFG_DENSIFY_INIT_STEPS:-1500}}"
 INIT_BATCH="${DENS_INIT_BATCH:-${CFG_DENSIFY_INIT_BATCH:-8}}"
 INIT_REPAIR="${DENS_INIT_REPAIR:-${CFG_DENSIFY_INIT_REPAIR:-2}}"
 INIT_BLEND="${DENS_INIT_BLEND_START:-${CFG_DENSIFY_INIT_BLEND_START:-100000}}"
+INIT_EVAL="${DENS_INIT_EVAL_EVERY:-${CFG_DENSIFY_INIT_EVAL_EVERY:-100}}"
+INIT_EVAL_FRAMES="${DENS_INIT_EVAL_FRAMES:-${CFG_DENSIFY_INIT_EVAL_FRAMES:-120}}"
+INIT_MIN_DELTA="${DENS_INIT_MIN_DELTA:-${CFG_DENSIFY_INIT_MIN_DELTA:-0.15}}"
+INIT_PATIENCE="${DENS_INIT_PATIENCE:-${CFG_DENSIFY_INIT_PATIENCE:-2}}"
 
 TEX="${DENS_TEX_SIZE:-${CFG_DENSIFY_TEX_SIZE:-512}}"
 STEPS="${DENS_STEPS:-${CFG_DENSIFY_STEPS:-5000}}"
@@ -98,7 +102,9 @@ eval_after() {
 
 echo "=============================================================="
 echo "加密训练管线：$SUBJECT / $NAME"
-echo "  stage1 hard    : $INIT_STEPS 步  batch $INIT_BATCH  repair $INIT_REPAIR" \
+echo "  stage1 hard    : 上限 $INIT_STEPS 步（每 $INIT_EVAL 步验证 $INIT_EVAL_FRAMES 帧，" \
+     "边际 < $INIT_MIN_DELTA dB × $INIT_PATIENCE 次即停）" \
+     " batch $INIT_BATCH  repair $INIT_REPAIR" \
      " 形变基 $( (( INIT_BLEND < INIT_STEPS )) && echo "第 $INIT_BLEND 步开启" || echo 关闭 )"
 echo "  stage2 densify : $STEPS 步  batch $BATCH  repair $REPAIR" \
      " blend_start $BLEND  every $EVERY count $COUNT max $MAX_GAUSS tex $TEX"
@@ -114,7 +120,9 @@ run "${PY_RUN[@]}" scripts/train.py \
   --repair-dir "datasets/$SUBJECT/repair/repairs" \
   --repair-per-batch "$INIT_REPAIR" \
   --batch-size "$INIT_BATCH" --iterations "$INIT_STEPS" \
-  --blend-start "$INIT_BLEND" \
+  --blend-start "$INIT_BLEND" --eval-every "$INIT_EVAL" \
+  --eval-frames "$INIT_EVAL_FRAMES" --min-delta "$INIT_MIN_DELTA" \
+  --patience "$INIT_PATIENCE" \
   --no-robust-eval --ssim-weight 0 "${FORCE_FLAG[@]}"
 (( PLAN )) || [[ -f "$MODELS/$HARD_WORK/model.ply" ]] || \
   die "stage1 没有产出 $MODELS/$HARD_WORK/model.ply"
