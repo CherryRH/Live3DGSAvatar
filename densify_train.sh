@@ -6,8 +6,8 @@
 #   bash densify_train.sh --subject bala --train-hard --name densify_full
 set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"; cd "$REPO_ROOT"
-ENV="${MAIN_ENV:-live3dgs}"; SUBJECT="bala"; HARD=""; NAME="densify"; STEPS=2000
-TRAIN_HARD=0; HARD_STEPS=5000; TEX=512
+ENV="${MAIN_ENV:-live3dgs}"; SUBJECT="bala"; HARD=""; NAME="densify"; STEPS=3000
+TRAIN_HARD=0; HARD_STEPS=3000; TEX=512; HARD_BATCH=4; HARD_REPAIR=1
 while [[ $# -gt 0 ]]; do
  case "$1" in
   --subject) SUBJECT="${2:-}"; shift 2;;
@@ -26,9 +26,9 @@ if (( TRAIN_HARD == 1 )); then
   echo "[densify] stage1 hard from scratch, early stop mask PSNR"
   conda run -n "$ENV" --no-capture-output python scripts/train.py \
     --subject "$SUBJECT" --work-name densify_hard --stage hard_surface \
-    --repair-dir "datasets/$SUBJECT/repair/repairs" --repair-per-batch 2 \
-    --batch-size 8 --iterations "$HARD_STEPS" --early-metric psnr \
-    --ssim-weight 0 --force
+    --repair-dir "datasets/$SUBJECT/repair/repairs" --repair-per-batch "$HARD_REPAIR" \
+    --batch-size "$HARD_BATCH" --iterations "$HARD_STEPS" --early-metric psnr \
+    --no-robust-eval --ssim-weight 0 --force
 fi
 [[ -f "$HARD" ]] || { echo "[error] 缺少 hard model：$HARD" >&2; exit 2; }
 base="models/$SUBJECT/$NAME"
@@ -50,6 +50,6 @@ echo "[densify] stage2 unified drift + residual split/prune"
 conda run -n "$ENV" --no-capture-output python scripts/train.py \
   --subject "$SUBJECT" --work-name "$NAME" --stage base --init-ply "$unified" \
   --model-config "$cfg" --repair-dir "datasets/$SUBJECT/repair/repairs" \
-  --repair-per-batch 2 --batch-size 8 --hard-xyz-lr 5e-5 --iterations "$STEPS" \
+  --repair-per-batch 1 --batch-size 4 --hard-xyz-lr 5e-5 --iterations "$STEPS" \
   --ssim-weight 0 --densify --force
 echo "[densify] 完成 models/$SUBJECT/$NAME"
