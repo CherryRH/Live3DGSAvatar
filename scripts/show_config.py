@@ -35,6 +35,8 @@ def parse_args() -> argparse.Namespace:
                    help="显示配置文件来源与是否存在")
     p.add_argument("--shell-post", action="store_true",
                    help="输出 post_train 的 shell 变量 CFG_POST_*（post_train.sh 用）")
+    p.add_argument("--shell-densify", action="store_true",
+                   help="输出加密管线的 shell 变量 CFG_DENSIFY_*（densify_train.sh 用）")
     p.add_argument("--config-dir", type=Path, default=None)
     return p.parse_args()
 
@@ -66,6 +68,12 @@ def main() -> int:
         section = data["train"]["pipeline"]["post_train"]
         for key, value in section.items():
             print(f"CFG_POST_{key.upper()}={shlex.quote(str(value))}")
+        return 0
+    if args.shell_densify:
+        import shlex
+        section = data["train"]["pipeline"]["densify"]
+        for key, value in section.items():
+            print(f"CFG_DENSIFY_{key.upper()}={shlex.quote(str(value))}")
         return 0
     if args.section:
         if args.section not in data:
