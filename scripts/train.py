@@ -1070,7 +1070,10 @@ def main(argv: list[str] | None = None) -> int:
             max_offset=float(free_cfg.get("max_offset", 0.08)),
             near_scale=float(free_cfg.get("near_scale", 0.0012)),
             scale_growth=float(free_cfg.get("scale_growth", 0.35)),
-            max_scale=float(free_cfg.get("max_scale", 0.025)),
+            max_scale=float(free_cfg.get("max_scale", 0.008)),
+            near_normal=float(free_cfg.get("near_normal", 0.0012)),
+            normal_growth=float(free_cfg.get("normal_growth", 0.35)),
+            max_normal=float(free_cfg.get("max_normal", 0.025)),
         )
         grow_every = int(args.free_grow_every if args.free_grow_every is not None
                          else free_cfg.get("grow_every", 0))

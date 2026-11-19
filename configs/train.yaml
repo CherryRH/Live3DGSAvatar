@@ -40,9 +40,12 @@ train:
       grow_count: 500        # 每次最多新增
       prune_min_opacity: 0.005
       max_offset: 0.08       # 允许离开 FLAME 表面最多 8 cm（头发体积）
-      near_scale: 0.0012     # 贴表面时单高斯最大尺度 1.2 mm
-      scale_growth: 0.35     # 每离表面 1 m 放宽的尺度上限（上限 clamp）
-      max_scale: 0.025       # 远离表面时最大尺度 25 mm
+      near_scale: 0.0006     # 贴表面切向最大尺度 0.6 mm
+      scale_growth: 0.15     # 切向尺度随距离放宽
+      max_scale: 0.008       # 切向最大 8 mm
+      near_normal: 0.0012    # 法向 1.2 mm
+      normal_growth: 0.35
+      max_normal: 0.025
     iterations: 50000
     batch_size: 10
     # 前 N 步不启用形变基（先用模板网格拟合静态外观）

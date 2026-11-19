@@ -398,10 +398,13 @@ class GaussianAvatar(nn.Module):
         return removed
 
     def apply_free_constraints(self, max_offset: float = 0.08,
-                               near_scale: float = 0.0012,
-                               scale_growth: float = 0.35,
-                               max_scale: float = 0.025) -> None:
-        """限制自由层：位移有上限；离表面越近尺度上限越小。"""
+                               near_scale: float = 0.0006,
+                               scale_growth: float = 0.15,
+                               max_scale: float = 0.008,
+                               near_normal: float = 0.0012,
+                               normal_growth: float = 0.35,
+                               max_normal: float = 0.025) -> None:
+        """限制自由层：法向/切向分开限制；切向近表面更严格。"""
         if self.free_xyz is None:
             return
         with torch.no_grad():
@@ -409,11 +412,17 @@ class GaussianAvatar(nn.Module):
             f = (float(max_offset) / off).clamp(max=1.0)
             self.free_xyz.mul_(f)
             off = self.free_xyz.norm(dim=-1, keepdim=True)
-            cap = (float(near_scale) + float(scale_growth) * off).clamp(
+            scale = torch.exp(self.free_scaling)
+            axis = scale.argmin(dim=-1)                 # 最短轴视为法向
+            onehot = torch.nn.functional.one_hot(axis, 3).bool()
+            cap_tan = (float(near_scale) + float(scale_growth) * off).clamp(
                 max=float(max_scale))
-            cur = torch.exp(self.free_scaling).amax(dim=-1, keepdim=True)
-            self.free_scaling.sub_(
-                torch.log((cur / cap).clamp_min(1.0)))
+            cap_norm = (float(near_normal) + float(normal_growth) * off).clamp(
+                max=float(max_normal))
+            # 法向轴单独允许稍大；其余两个切向轴收紧
+            cap = torch.where(onehot, cap_norm, cap_tan)
+            self.free_scaling.copy_(
+                torch.minimum(self.free_scaling, torch.log(cap)))
 
     def save_free_layer(self, path: str | Path) -> None:
         import numpy as np
