@@ -101,6 +101,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="LPIPS 项权重（默认 0；建议 >=20000 步再开 0.01–0.03）")
     p.add_argument("--lpips-from", type=int, default=None,
                    help="第几步开始启用 LPIPS（默认取配置）")
+    p.add_argument("--train-split", choices=("train", "all"), default=None,
+                   help="训练帧来源：train=前 70%%（默认）；all=全数据集"
+                        "（仅用于对齐后训练口径的诊断，会让留出集指标虚高）")
     p.add_argument("--test-ratio", type=float, default=None,
                    help="验证集比例（0.3 表示末尾 30%%，默认 0.3）")
     p.add_argument("--eval-every", type=int, default=None)
@@ -425,7 +428,10 @@ def main(argv: list[str] | None = None) -> int:
     max_frames = cfg.get("train.pipeline.max_frames", None)
     if max_frames is not None and int(max_frames) <= 0:
         max_frames = None
-    train_src = ManifestSource(data_dir, split="train", test_ratio=test_ratio,
+    train_split = str(args.train_split
+                      if args.train_split is not None
+                      else cfg.get("train.pipeline.train_split", "train"))
+    train_src = ManifestSource(data_dir, split=train_split, test_ratio=test_ratio,
                                device="cpu", seed=args.seed,
                                max_frames=(None if max_frames is None
                                            else int(max_frames)))
