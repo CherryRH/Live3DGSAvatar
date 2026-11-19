@@ -292,3 +292,21 @@ def test_disc_init_keys_roundtrip_through_yaml(tmp_path) -> None:
     old = AvatarConfig.from_yaml(legacy)
     assert old.init_scale_tangent is None
     assert old.init_scale_normal is None
+
+
+def test_split_unified_quad_pattern_is_deterministic_and_offsets() -> None:
+    """quad 方向 = 切平面 4 个正交方向轮转，用于把一个 texel 细分成 4 格。"""
+    torch.manual_seed(0)
+    av = _tiny_avatar(n=8, k=2, tex_size=8)
+    before = int(av.num_gaussians)
+    idx = torch.arange(4)
+
+    av.split_unified(idx, jitter=1.0, pattern="quad", phase=0)
+    parent = av.xyz.data[:before][idx]
+    copy = av.xyz.data[before:]
+    assert not torch.allclose(parent, copy)
+    # 切平面内 (x, y) 有位移，法向 (z) 不动
+    assert float((copy[..., 2] - parent[..., 2]).abs().max()) == pytest.approx(0.0, abs=1e-7)
+    # 4 个副本方向两两不同
+    d = copy - parent
+    assert len({tuple(v.round(decimals=6).tolist()) for v in d}) == 4

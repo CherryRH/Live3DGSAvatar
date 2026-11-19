@@ -279,7 +279,9 @@ class GaussianAvatar(nn.Module):
     def split_unified(self, indices: torch.Tensor, *,
                       scale_factor: float = 0.5,
                       opacity_factor: float = 0.5,
-                      jitter: float = 0.8) -> int:
+                      jitter: float = 0.8,
+                      pattern: str = "random",
+                      phase: int = 0) -> int:
         """统一集合分裂：含 blendshape 基。
 
         Args:
@@ -298,12 +300,26 @@ class GaussianAvatar(nn.Module):
                 f"分裂后 {total} 超过 tex_size={self.config.tex_size} 容量")
         def cat(a, b):
             return torch.cat([a, b], dim=0)
-        # 副本位置 = 父位置 + 随机方向 × 父尺度 × jitter（切空间内，
+        # 副本位置 = 父位置 + 方向 × 父尺度 × jitter（切空间内，
         # 与 `xyz` 同一坐标系，绑定变换会把它一起带到世界空间）。
+        #
+        # pattern:
+        #   random  随机方向（探索，但同一 texel 多次分裂方向不固定）
+        #   quad    切平面内 4 个正交方向轮转，phase 每轮转 45°
+        #           —— 相当于把一个 texel 细分成 4 个子格，适合补高频纹理
         base_xyz = self.xyz.data[idx]
         if float(jitter) > 0:
             sigma = torch.exp(self.scaling.data[idx]) * float(jitter)
-            offset = torch.randn_like(base_xyz) * sigma
+            if pattern == "quad":
+                k = torch.arange(idx.numel(), device=base_xyz.device)
+                ang = (k % 4).to(base_xyz.dtype) * (math.pi / 2)
+                ang = ang + float(phase) * (math.pi / 4)
+                zero = torch.zeros_like(ang)
+                direction = torch.stack([torch.cos(ang), torch.sin(ang), zero],
+                                        dim=-1)
+                offset = direction * sigma
+            else:
+                offset = torch.randn_like(base_xyz) * sigma
             new_xyz = base_xyz + offset
         else:
             new_xyz = base_xyz

@@ -89,8 +89,14 @@ train:
       count: 900
       max_gaussians: 200000
       prune_opacity: 0.01
-      # 分裂副本沿自身尺度的随机位移（1σ）；0 = 原地复制（会与父高斯重合）
+      # 分裂副本沿自身尺度的位移（1σ）；0 = 原地复制（会与父高斯重合）
       split_jitter: 0.8
+      # 选点权重：大角度覆盖缺口 vs 颜色残差（0=纯颜色，1=纯缺口）。
+      # 实测 0.5 与 0.0 在 bala 上无差别（大角度孔洞都是 14.4%），默认关。
+      split_hole_weight: 0.0
+      # 分裂方向：quad=切平面 4 方向轮转（细分 texel），random=随机。
+      # 实测两者差异在噪声内，默认保留随机。
+      split_pattern: random
       # 加密过程中 PSNR 会因新高斯抖动，早停耐心放宽
       patience: 4
     iterations: 50000

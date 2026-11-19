@@ -1148,6 +1148,10 @@ def main(argv: list[str] | None = None) -> int:
                          else dcfg.get("split_jitter", 0.8))
         d_state = {"step": 0}
 
+        d_hole = float(dcfg.get("split_hole_weight", 0.5))
+        d_pattern = str(dcfg.get("split_pattern", "quad"))
+        d_state = {"step": 0, "splits": 0}
+
         def densify_post():
             d_state["step"] += 1
             if d_state["step"] % d_every != 0:
@@ -1157,40 +1161,84 @@ def main(argv: list[str] | None = None) -> int:
             idx = None
             try:
                 lb, lo = trainer.last_batch, trainer.last_out
-                if lb is not None and lo is not None:
-                    nf = int(scene.faces.shape[0])
-                    face_err = torch.zeros(nf, device=device)
-                    for i in range(int(lb.mesh.shape[0])):
-                        if getattr(lb, "K", None) is not None:
-                            cam_i = Camera(K=lb.K[i:i+1].to(device),
-                                           w2c=lb.w2c[i:i+1].to(device),
-                                           width=scene.width,
-                                           height=scene.height).to(device)
-                        else:
-                            cam_i = camera
-                        v = lb.mesh[i:i+1].to(device)
-                        ids = face_id_map(v, scene.faces.to(device), cam_i,
-                                          glctx, flip_y=False)
-                        if ids.ndim == 3:
-                            ids = ids[0]
-                        err = (lo.color[i:i+1] - lb.image[i:i+1].to(device)).abs().mean(1).reshape(-1)
-                        ids = ids.reshape(-1)
-                        m = lb.mask[i:i+1, 0].to(device).reshape(-1).bool()
-                        valid = (ids >= 0) & m
-                        if bool(valid.any()):
-                            face_err.index_add_(0, ids[valid].long(), err[valid])
-                    if float(face_err.max().detach()) > 0:
-                        idx = avatar.residual_indices(
-                            face_err.detach(),
-                            min(d_count, d_max - int(avatar.num_gaussians)),
-                            min_opacity=d_op,
-                            max_offset=float(dcfg.get("max_offset", 0.08)))
+                if lb is None or lo is None:
+                    return
+                nf = int(scene.faces.shape[0])
+                face_err = torch.zeros(nf, device=device)
+                face_cnt = torch.zeros(nf, device=device)
+                face_hole = torch.zeros(nf, device=device)
+                for i in range(int(lb.mesh.shape[0])):
+                    if getattr(lb, "K", None) is not None:
+                        cam_i = Camera(K=lb.K[i:i+1].to(device),
+                                       w2c=lb.w2c[i:i+1].to(device),
+                                       width=scene.width,
+                                       height=scene.height).to(device)
+                    else:
+                        cam_i = camera
+                    v = lb.mesh[i:i+1].to(device)
+                    ids = face_id_map(v, scene.faces.to(device), cam_i,
+                                      glctx, flip_y=False)
+                    if ids.ndim == 3:
+                        ids = ids[0]
+                    err = (lo.color[i:i+1] - lb.image[i:i+1].to(device)).abs().mean(1).reshape(-1)
+                    ids = ids.reshape(-1)
+                    m = lb.mask[i:i+1, 0].to(device).reshape(-1).bool()
+                    valid = (ids >= 0) & m
+                    if bool(valid.any()):
+                        f = ids[valid].long()
+                        face_err.index_add_(0, f, err[valid])
+                        face_cnt.index_add_(0, f, torch.ones_like(
+                            err[valid], dtype=face_cnt.dtype))
+
+                # 大角度覆盖缺口：渲染一个随机侧视角，统计表面内 alpha<0.5
+                # 的像素。颜色残差会把"有高斯但纹理糊"和"根本没盖住"混在一起，
+                # 这一项专门找后者，让分裂长到真正缺覆盖的面上。
+                if d_hole > 0:
+                    i = random.randrange(int(lb.mesh.shape[0]))
+                    verts_nv = lb.mesh[i:i + 1].to(device)
+                    weight_nv = lb.blend_weight[i:i + 1].to(device)
+                    yaw_nv = float(random.choice((-40.0, -30.0, 30.0, 40.0)))
+                    center_nv = verts_nv[0].mean(dim=0).detach().cpu()
+                    view_nv = orbit_w2c(w2c_data, center_nv, yaw_nv, 0.0)
+                    cam_nv = Camera(K=scene.K, w2c=view_nv.unsqueeze(0).to(device),
+                                    width=scene.width,
+                                    height=scene.height).to(device)
+                    mesh_nv = Mesh(verts=verts_nv, faces=scene.faces.to(device),
+                                   uvs=scene.uvs.to(device),
+                                   uv_faces=scene.uv_faces.to(device))
+                    with torch.no_grad():
+                        ids_nv = face_id_map(verts_nv, scene.faces.to(device),
+                                             cam_nv, glctx, flip_y=False)
+                        gs_nv = avatar.deform(mesh_nv, weight_nv)
+                        out_nv = render_gaussians(
+                            gs_nv, rasterizer, cam_nv,
+                            torch.zeros(1, 3, 1, 1, device=device))
+                        surf_nv = ids_nv >= 0
+                        hole_nv = (out_nv.alpha[0, 0] < 0.5) & surf_nv
+                        if bool(surf_nv.any()):
+                            f_nv = ids_nv[surf_nv].long()
+                            face_hole.index_add_(0, f_nv, hole_nv[surf_nv].float())
+
+                cnt = face_cnt.clamp_min(1.0)
+                err_mean = face_err / cnt
+                err_mean = err_mean / err_mean.max().clamp_min(1e-8)
+                hole_rate = face_hole / cnt
+                score = d_hole * hole_rate + (1.0 - d_hole) * err_mean
+                if float(score.max()) > 0:
+                    idx = avatar.residual_indices(
+                        score,
+                        min(d_count, d_max - int(avatar.num_gaussians)),
+                        min_opacity=d_op,
+                        max_offset=float(dcfg.get("max_offset", 0.08)))
             except Exception as e:
                 print(f"  [densify] 残差选择失败：{e}", flush=True)
             if idx is None or idx.numel() == 0:
                 return
             n_before = int(avatar.num_gaussians)
-            added = avatar.split_unified(idx, jitter=d_jitter)
+            added = avatar.split_unified(
+                idx, jitter=d_jitter, pattern=d_pattern,
+                phase=d_state["splits"] % 8)
+            d_state["splits"] += 1
             if added:
                 with torch.no_grad():
                     # 初始硬表面/已有高斯全部保留；只剪本次新增的低 opacity 副本。
