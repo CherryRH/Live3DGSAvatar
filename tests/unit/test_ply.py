@@ -236,3 +236,59 @@ def test_prune_unified_drops_masked_rows() -> None:
     removed = av.prune_unified(keep)
     assert removed == 2
     assert int(av.num_gaussians) == 6
+
+
+# ------------------------------------------------------------ 盘状初始化 --
+
+
+def test_disc_init_sets_anisotropic_scaling() -> None:
+    """给了切向/法向尺度就按 (t, t, n) 逐轴初始化，否则保持各向同性。"""
+    from live3dgsavatar.core.avatar import AvatarConfig, GaussianAvatar
+    from live3dgsavatar.core.deform.bind import Binding
+
+    binding = Binding(
+        face_id=torch.zeros(4, dtype=torch.long),
+        face_bary=torch.tensor([[1.0, 0.0, 0.0]] * 4),
+        valid_mask=torch.ones(4, dtype=torch.bool),
+    )
+
+    disc_cfg = AvatarConfig(tex_size=8, num_basis_in=8, num_basis_blend=2,
+                            mlp_hidden=(), init_scale_tangent=0.0022,
+                            init_scale_normal=0.0004)
+    av = GaussianAvatar(disc_cfg, binding)
+    scale_mm = (av.scaling.detach().exp() * 1000).numpy()
+    assert np.allclose(scale_mm[:, :2], 2.2, atol=1e-3)
+    assert np.allclose(scale_mm[:, 2], 0.4, atol=1e-3)
+
+    iso_cfg = AvatarConfig(tex_size=8, num_basis_in=8, num_basis_blend=2,
+                           mlp_hidden=(), init_scaling=0.0008)
+    av_iso = GaussianAvatar(iso_cfg, binding)
+    assert np.allclose((av_iso.scaling.detach().exp() * 1000).numpy(), 0.8,
+                       atol=1e-4)
+
+
+def test_disc_init_keys_roundtrip_through_yaml(tmp_path) -> None:
+    from live3dgsavatar.core.avatar import AvatarConfig
+
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        "model:\n"
+        "  tex_size: 8\n"
+        "  num_basis_in: 8\n"
+        "  num_basis_blend: 2\n"
+        "  mlp_hidden: []\n"
+        "  init_scale_tangent: 0.0022\n"
+        "  init_scale_normal: 0.0004\n",
+        encoding="utf-8")
+
+    cfg = AvatarConfig.from_yaml(path)
+    assert cfg.init_scale_tangent == pytest.approx(0.0022)
+    assert cfg.init_scale_normal == pytest.approx(0.0004)
+
+    # 缺省（老 config）保持 None → 各向同性
+    legacy = tmp_path / "legacy.yaml"
+    legacy.write_text("model:\n  tex_size: 8\n  num_basis_blend: 2\n",
+                      encoding="utf-8")
+    old = AvatarConfig.from_yaml(legacy)
+    assert old.init_scale_tangent is None
+    assert old.init_scale_normal is None

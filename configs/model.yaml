@@ -20,6 +20,12 @@ model:
   use_weight_proj: true
   # 初始化
   init_opacity: 0.5
+  # 盘状初始化：高斯从一开始就是贴面小圆片（切向, 切向, 法向）。
+  # 切向要给到 UV texel 间距量级（256² 头上约 2.2 mm），比 texel 小
+  # 会在网格上留条纹；法向压薄让它像"面片"而不是"球"。
+  # 删掉这两个键即退回各向同性球（init_scaling）。
+  init_scale_tangent: 0.0022
+  init_scale_normal: 0.0004
   init_scaling: 0.0008
   # 球谐阶数：0 = 只用 DC（当前模型格式只存 DC）
   sh_degree: 0

@@ -65,8 +65,10 @@ train:
     densify:
       # ---- stage1 硬表面初始化（静态；形变基关闭）----
       # 只要求"壳"干净：贴 FLAME 表面、法向对齐、切成小圆片、覆盖住大角度可见区。
+      # 盘状初始化（configs/model.yaml 的 init_scale_*）让高斯一开始就是 2.2mm 的
+      # 小圆片，1000 步就能铺满；各向同性球要 5000 步才压到同样的形状。
       # 这一段不做表情残差，所以不给形变基开步数（init_blend_start >= init_steps）。
-      init_steps: 1500
+      init_steps: 1000
       init_batch: 8
       init_repair: 2
       init_blend_start: 100000

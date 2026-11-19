@@ -33,6 +33,11 @@ from .types import GaussianSet, Mesh
 SH_C0 = 0.28209479177387814
 
 
+def _opt_float(value) -> float | None:
+    """yaml 里的可选浮点：缺失/None 保持 None。"""
+    return None if value is None else float(value)
+
+
 @dataclass
 class AvatarConfig:
     """模型结构定义。**必须完整描述网络**，否则 PLY 中的 `weight_module` 无法还原。
@@ -44,6 +49,11 @@ class AvatarConfig:
         mlp_hidden: 权重投影 MLP 的隐藏层宽度；空元组表示单层线性映射
         use_weight_proj: 是否启用权重投影；False 时直接用前 K 维驱动参数
         init_opacity / init_scaling: 初始化值（激活前空间由 `inverse_*` 处理）
+        init_scale_tangent / init_scale_normal: 盘状初始化。给了就按
+            (切向, 切向, 法向) 逐轴设尺度，高斯一开始就是贴在绑定面上的小圆片；
+            缺省（None）沿用 `init_scaling` 的各向同性球。UV 网格的 texel 间距
+            决定了切向下限：圆片比 texel 还小就会在网格上留下条纹/空洞，
+            所以盘状初始化应该给到 texel 间距量级（256² 头上约 2.2 mm）。
     """
 
     tex_size: int = 256
@@ -53,6 +63,8 @@ class AvatarConfig:
     use_weight_proj: bool = True
     init_opacity: float = 0.5
     init_scaling: float = 0.0008
+    init_scale_tangent: float | None = None
+    init_scale_normal: float | None = None
     sh_degree: int = 0
 
     def __post_init__(self) -> None:
@@ -62,6 +74,10 @@ class AvatarConfig:
             raise ValueError(f"num_basis_blend 必须为正，实际 {self.num_basis_blend}")
         if self.use_weight_proj and self.num_basis_in <= 0:
             raise ValueError("启用 use_weight_proj 时 num_basis_in 必须为正")
+        for name in ("init_scale_tangent", "init_scale_normal"):
+            value = getattr(self, name)
+            if value is not None and float(value) <= 0:
+                raise ValueError(f"{name} 必须为正，实际 {value}")
 
     @classmethod
     def from_yaml(cls, path, *, section: str = "model") -> "AvatarConfig":
@@ -102,6 +118,8 @@ class AvatarConfig:
             use_weight_proj=use_weight_proj,
             init_opacity=float(sec.get("init_opacity", cls.init_opacity)),
             init_scaling=float(sec.get("init_scaling", cls.init_scaling)),
+            init_scale_tangent=_opt_float(sec.get("init_scale_tangent")),
+            init_scale_normal=_opt_float(sec.get("init_scale_normal")),
             sh_degree=int(sec.get("sh_degree", cls.sh_degree)),
         )
 
@@ -159,8 +177,19 @@ class GaussianAvatar(nn.Module):
         self.xyz = nn.Parameter(torch.zeros(n, 3))
         self.opacity = nn.Parameter(
             torch.full((n, 1), inverse_sigmoid(config.init_opacity)))
-        self.scaling = nn.Parameter(
-            torch.full((n, 3), math.log(config.init_scaling)))
+        if (config.init_scale_tangent is None
+                and config.init_scale_normal is None):
+            self.scaling = nn.Parameter(
+                torch.full((n, 3), math.log(config.init_scaling)))
+        else:
+            # 盘状初始化：切空间 (x, y) 是面内两轴、z 是法向。单位旋转下
+            # 局部 z 轴正好落在绑定面法线上，所以只压 z 就能得到贴面小圆片。
+            st = float(config.init_scale_tangent if config.init_scale_tangent
+                       is not None else config.init_scaling)
+            sn = float(config.init_scale_normal if config.init_scale_normal
+                       is not None else config.init_scaling)
+            scale = torch.tensor([st, st, sn]).log()
+            self.scaling = nn.Parameter(scale.repeat(n, 1))
         self.rotation = nn.Parameter(
             torch.tensor([1.0, 0.0, 0.0, 0.0]).repeat(n, 1))
         self.color = nn.Parameter(torch.zeros(n, 1, 3))
