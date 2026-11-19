@@ -48,42 +48,43 @@ train:
       max_normal: 0.025
     # 统一集合加密训练管线（densify_train.sh 读取；--shell-densify 输出 CFG_DENSIFY_*）
     #
-    # 三段式，每段只解决一个问题：
-    #   1) init    硬表面从 UV/FLAME 零初始化。损失只覆盖 FLAME 表面内，
-    #              几何约束最强（贴面/法线/尺度上限），先把"壳"练干净。
-    #              形变基由 init_blend_start 决定；>= init_steps 即整段关闭。
-    #   2) refine  以 init 为 warm start。mask 权重恢复 1.0（背景/头发也参与），
-    #              形变基**从第 0 步开启** —— warm start 的基是 0，晚开只会
-    #              白白浪费前面的步数，不会更稳。xyz 保持小学习率，不让壳飘走。
-    #   3) densify 合并成 tex 512 的统一集合，残差驱动 split，继续训练。
+    # 两段式：
+    #   1) init    硬表面"只做初始化"：从 UV/FLAME 零初始化，损失只覆盖 FLAME
+    #              表面内，几何约束最强（贴面/法线/小圆片/尺度上限），形变基
+    #              **关闭**。目标不是把外观拟合到位，而是快速得到一个干净、
+    #              贴面、大角度不漏的壳。
+    #   2) densify 合并成 tex 512 的统一集合：全部高斯一起漂移 + 残差驱动 split，
+    #              形变基从第 0 步开启，一次训练把外观/头发/细节补上。
     #
-    # 每段更新的参数（ParameterPlan.rgba_avatar_defaults）：
+    # 不再单独设"硬表面精修"段：它会把壳自由漂移到头发/背景，既不再是硬表面，
+    # 又让第三段无事可做。实测两段式（1500+4000 步）与三段式（9000 步）同分。
+    #
+    # 两段更新的参数（ParameterPlan.rgba_avatar_defaults）：
     #   xyz 5e-5 / opacity 0.25 / scaling 0.025 / rotation 0.005 / f_dc 0.0125
-    #   形变基开启后额外训练 xyz_b / rotation_b / f_dc_b / weight_module。
+    #   stage2 额外训练 xyz_b / rotation_b / f_dc_b / weight_module。
     densify:
-      # ---- stage1 硬表面初始化 ----
-      init_steps: 5000
+      # ---- stage1 硬表面初始化（静态；形变基关闭）----
+      # 只要求"壳"干净：贴 FLAME 表面、法向对齐、切成小圆片、覆盖住大角度可见区。
+      # 这一段不做表情残差，所以不给形变基开步数（init_blend_start >= init_steps）。
+      init_steps: 1500
       init_batch: 8
       init_repair: 2
-      init_blend_start: 3000
-      # ---- stage2 硬表面精修（形变基开启）----
-      refine_steps: 5000
-      refine_batch: 8
-      refine_repair: 1
-      refine_blend_start: 0
-      refine_xyz_lr: 0.00005
-      # ---- stage3 统一集合加密 ----
+      init_blend_start: 100000
+      # ---- stage2 统一集合加密（全部高斯 + 残差驱动 split）----
+      # 形变基从第 0 步开启（warm start 的基是 0，晚开只会浪费步数）。
       tex_size: 512
       steps: 5000
       batch: 4
       repair: 1
       blend_start: 0
       every: 300
-      count: 300
-      max_gaussians: 120000
+      count: 600
+      max_gaussians: 160000
       prune_opacity: 0.01
       # 分裂副本沿自身尺度的随机位移（1σ）；0 = 原地复制（会与父高斯重合）
       split_jitter: 0.8
+      # 加密过程中 PSNR 会因新高斯抖动，早停耐心放宽
+      patience: 3
     iterations: 50000
     batch_size: 10
     # 前 N 步不启用形变基（先用模板网格拟合静态外观）
