@@ -81,6 +81,8 @@ class Objective:
     surface_iso: float = 0.0
     surface_outside: float = 0.0
     surface_bg: float = 0.0
+    # 加密阶段：FLAME 表面内 alpha 要接近实心（防"半透明、透出背面"）
+    alpha_sat: float = 0.0
     mask_weight: float = 0.0
     lpips_from: int = 20_000
     _lpips_model: object | None = field(default=None, repr=False)

@@ -160,6 +160,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="硬表面阶段：切向尺度上限（米）")
     p.add_argument("--surface-outside-weight", type=float, default=None,
                    help="硬表面阶段：FLAME 表面外 alpha 归零权重")
+    p.add_argument("--alpha-sat-weight", type=float, default=None,
+                   help="加密阶段：FLAME 表面内 alpha 欠饱和的惩罚权重（0=关）")
+    p.add_argument("--alpha-sat-target", type=float, default=None,
+                   help="alpha 饱和目标（默认 0.98）")
     p.add_argument("--surface-bg-weight", type=float, default=None,
                    help="硬表面阶段：FLAME 表面内、原图无数据区域的 alpha 归零权重")
     p.add_argument("--repair-dir", type=Path, default=None,
@@ -358,8 +362,16 @@ def main(argv: list[str] | None = None) -> int:
     surface_bg = float(
         args.surface_bg_weight if args.surface_bg_weight is not None
         else cfg.get("train.pipeline.hard_surface.bg_weight", 1.0))
+    alpha_sat = float(
+        args.alpha_sat_weight if args.alpha_sat_weight is not None
+        else cfg.get("train.pipeline.alpha_saturation.weight", 0.0))
+    alpha_sat_target = float(
+        args.alpha_sat_target if args.alpha_sat_target is not None
+        else cfg.get("train.pipeline.alpha_saturation.target", 0.98))
     if surface_every <= 0:
         raise SystemExit("[error] --surface-every 必须为正")
+    if stage == "hard_surface":
+        alpha_sat = 0.0
     if stage != "hard_surface":
         surface_hole = surface_spill = 0.0
         surface_point = surface_normal = surface_scale = 0.0
@@ -709,6 +721,7 @@ def main(argv: list[str] | None = None) -> int:
     objective.surface_iso = surface_iso
     objective.surface_outside = surface_outside
     objective.surface_bg = surface_bg
+    objective.alpha_sat = alpha_sat
     objective.ssim = ssim_weight
     objective.lpips = lpips_weight
     objective.lpips_from = lpips_from
@@ -737,6 +750,8 @@ def main(argv: list[str] | None = None) -> int:
         loss_terms.append(f"surface_outside {surface_outside:g}")
     if surface_bg > 0:
         loss_terms.append(f"surface_bg {surface_bg:g}")
+    if alpha_sat > 0:
+        loss_terms.append(f"alpha_sat {alpha_sat:g}(目标 {alpha_sat_target:g})")
     if ssim_weight > 0:
         loss_terms.append(f"ssim {ssim_weight:g}")
     if lpips_weight > 0:
@@ -843,6 +858,14 @@ def main(argv: list[str] | None = None) -> int:
                                None if weight is None else weight.to(device),
                                cam, bg, target_image=batch.image.to(device),
                                build_graph=True)
+            if alpha_sat > 0:
+                # 表面内 alpha 欠饱和：防止"半透明、透出背面"
+                surf = torch.cat(
+                    [_surface_mask(batch, i).to(device)
+                     for i in range(int(mesh_verts.shape[0]))], dim=0)
+                deficit = (alpha_sat_target - out.alpha).clamp_min(0.0)
+                out.alpha_sat_loss = ((deficit * surf).sum()
+                                      / surf.sum().clamp_min(1))
 
         if nv_enabled and (int(iteration) + 1) % int(nv_every) == 0:
             from live3dgsavatar.training.losses import (alpha_hole_loss,

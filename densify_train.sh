@@ -50,10 +50,8 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ -n "$SUBJECT" ]] || die "需要 --subject（例如 --subject bala）"
-[[ -f "datasets/$SUBJECT/repair/manifest.json" ]] || \
-  die "缺少 datasets/$SUBJECT/repair/manifest.json"
 [[ -d "datasets/$SUBJECT/repair/repairs" ]] || \
-  die "缺少 datasets/$SUBJECT/repair/repairs/"
+  die "缺少 datasets/$SUBJECT/repair/repairs/（先用 make_repairs.py 生成）"
 
 cfg_shell="$("${PY_RUN[@]}" scripts/show_config.py --shell-densify)" || \
   die "读取 configs/train.yaml 的 train.pipeline.densify 失败"
@@ -74,7 +72,9 @@ STEPS="${DENS_STEPS:-${CFG_DENSIFY_STEPS:-5000}}"
 BATCH="${DENS_BATCH:-${CFG_DENSIFY_BATCH:-4}}"
 REPAIR="${DENS_REPAIR:-${CFG_DENSIFY_REPAIR:-2}}"
 BLEND="${DENS_BLEND_START:-${CFG_DENSIFY_BLEND_START:-0}}"
-SSIM="${DENS_SSIM_WEIGHT:-${CFG_DENSIFY_SSIM_WEIGHT:-0.03}}"
+SSIM="${DENS_SSIM_WEIGHT:-${CFG_DENSIFY_SSIM_WEIGHT:-0.08}}"
+LPIPS="${DENS_LPIPS_WEIGHT:-${CFG_DENSIFY_LPIPS_WEIGHT:-0.01}}"
+LPIPS_FROM="${DENS_LPIPS_FROM:-${CFG_DENSIFY_LPIPS_FROM:-3000}}"
 XYZ_LR="${DENS_XYZ_LR:-${CFG_DENSIFY_XYZ_LR:-0.0002}}"
 EVERY="${DENS_EVERY:-${CFG_DENSIFY_EVERY:-300}}"
 COUNT="${DENS_COUNT:-${CFG_DENSIFY_COUNT:-600}}"
@@ -164,7 +164,7 @@ run "${PY_RUN[@]}" scripts/train.py \
   --repair-per-batch "$REPAIR" \
   --batch-size "$BATCH" --iterations "$STEPS" \
   --blend-start "$BLEND" --hard-xyz-lr "$XYZ_LR" --patience "$PATIENCE" \
-  --ssim-weight "$SSIM" \
+  --ssim-weight "$SSIM" --lpips-weight "$LPIPS" --lpips-from "$LPIPS_FROM" \
   --densify --densify-every "$EVERY" --densify-count "$COUNT" \
   --densify-max "$MAX_GAUSS" --densify-prune-opacity "$PRUNE_OP" \
   --densify-split-jitter "$JITTER" "${FORCE_FLAG[@]}"
