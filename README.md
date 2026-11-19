@@ -41,7 +41,7 @@ conda activate live3dgs
 bash build_dataset.sh <图像目录> --name <对象>
 bash build_dataset.sh --video videos/<对象> --name <对象>   # 从视频直接构建
 bash train.sh --subject <对象> --work-name base
-bash post_train.sh --subject <对象> --work-name base
+bash densify_train.sh --subject <对象>
 bash eval.sh --subject <对象> --work-name base
 # 多版本对比：原图 + N 个渲染并排，showcase 为 N 图并列
 bash eval.sh --subject <对象> --work-name base -- \
@@ -56,7 +56,7 @@ bash run_gui.sh --subject <对象> --work-name base
 | `setup_env.sh` | 创建 conda 环境、编译本地 CUDA 扩展 | `live3dgs` 环境 |
 | `build_dataset.sh` | 跟踪、对齐并烘焙训练数据 | `datasets/<对象>/` |
 | `train.sh` | 基础训练 | `models/<对象>/<版本>/` |
-| `post_train.sh` | 后训练：SyncFix 迭代修复 | `models/<对象>/<版本>_post_rN/` |
+| `densify_train.sh` | 硬表面初始化 → 加密 → 短程微调 | `models/<对象>/densify*/` |
 | `eval.sh` | 留出集渲染评测（支持 `--work-names` 多版本） | `output/render_test/.../report.json`、`compare.mp4`、`showcase.mp4` |
 | `run_gui.sh` | 浏览器预览与实时驱动 | `http://localhost:8000` |
 | `run_tracking.sh` | 启动 RDF 实时追踪服务 | 追踪 sidecar |
@@ -69,10 +69,9 @@ bash run_gui.sh --subject <对象> --work-name base
 bash train.sh --subject <对象> --work-name <版本> --no-spill
 bash train.sh --subject <对象> --work-name <版本> -- --iterations 8000
 
-# 后训练
-bash post_train.sh --subject <对象> --work-name <版本> --plan
-bash post_train.sh --subject <对象> --work-name <版本> --in-place
-bash post_train.sh --subject <对象> --work-name <版本> --repair-mode syncfix
+# 加密管线（硬表面 -> 加密 -> stage3 微调）
+bash densify_train.sh --subject <对象> --hard-only     # 只到硬表面
+bash densify_train.sh --subject <对象>                 # 全流程
 
 # 评测（默认末尾留出集全部；--frames 可只测前 N 帧）
 bash eval.sh --subject <对象> --work-name <版本> --frames 200

@@ -166,6 +166,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="硬表面初始化：额外混入的 SyncFix 修复图目录")
     p.add_argument("--repair-per-batch", type=int, default=None,
                    help="每个 batch 的修复图数量；缺省为 batch/2")
+    p.add_argument("--freeze-geometry", action="store_true",
+                   help="冻结几何（xyz/scaling/rotation 及其形变基），只练外观")
+    p.add_argument("--angle-weight", type=float, default=0.0,
+                   help="训练帧按 |yaw| 加权的尺度：20 = 每 20° 权重翻倍；0=均匀")
     p.add_argument("--freeze-xyz", action="store_true",
                    help="冻结 xyz / xyz_b（只训练外观与形状参数）")
     p.add_argument("--densify", action="store_true",
@@ -425,6 +429,10 @@ def main(argv: list[str] | None = None) -> int:
         def random_indices(self, n):
             return self.real.random_indices(n)
 
+        def set_sample_weights(self, weights):
+            """透传给真实帧源：修复帧按固定配额混入，不受权重影响。"""
+            self.real.set_sample_weights(weights)
+
     max_frames = cfg.get("train.pipeline.max_frames", None)
     if max_frames is not None and int(max_frames) <= 0:
         max_frames = None
@@ -647,6 +655,15 @@ def main(argv: list[str] | None = None) -> int:
 
     plan = ParameterPlan.rgba_avatar_defaults(
         scene_extent=float(cfg.get("train.pipeline.scene_extent", 1.0)))
+    if args.freeze_geometry:
+        # stage3：高斯数量与几何都冻结，只让颜色/不透明度适配新标签
+        # 高斯本体（几何 + 驱动基 + 权重投影）全冻，只留逐高斯的颜色/不透明度
+        frozen = {"xyz", "scaling", "rotation", "xyz_b", "rotation_b",
+                  "f_dc_b", "weight_module"}
+        plan = ParameterPlan(
+            groups={k: v for k, v in plan.groups.items() if k not in frozen},
+            scene_extent=plan.scene_extent)
+        print("  几何   : 冻结（xyz/scaling/rotation + 形变基），只练外观")
     if args.freeze_xyz:
         plan = ParameterPlan(
             groups={k: v for k, v in plan.groups.items()
@@ -1130,11 +1147,20 @@ def main(argv: list[str] | None = None) -> int:
 
     from live3dgsavatar.data.sources import PrefetchSource
 
+    if float(args.angle_weight) > 0:
+        from live3dgsavatar.data.pose import angle_weights, head_yaw
+        with np.load(data_dir / "render_inputs.npz", allow_pickle=True) as _d:
+            _bw = np.asarray(_d["blend_weight"], dtype=np.float32)
+        _yaw = np.abs(head_yaw(_bw))
+        train_src.set_sample_weights(
+            angle_weights(_yaw, scale=float(args.angle_weight), floor=1.0))
+        print(f"  采样   : 按 |yaw| 加权（每 {float(args.angle_weight):g}° 翻倍）")
+
     train_source = train_src
     if workers > 0:
         train_source = PrefetchSource(train_source, batch_size, workers=workers,
                                       depth=max(2, workers * 2))
-        print(f"  取数   : 预取 {workers} 线程（批 {batch_size}）")
+    print(f"  取数   : 预取 {workers} 线程（批 {batch_size}）")
     if getattr(train_src, "has_image_cache", False):
         print("  取数   : 使用 images.npy 缓存（跳过 PNG 解码）")
     else:

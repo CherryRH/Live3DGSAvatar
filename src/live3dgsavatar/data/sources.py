@@ -260,9 +260,30 @@ class ManifestSource:
         """当前切分的帧数（`PrefetchSource` 也依赖它）。"""
         return len(self._index)
 
+    def set_sample_weights(self, weights_by_frame: np.ndarray) -> None:
+        """按**全局帧号**给训练采样加权（验证遍历不受影响）。
+
+        用于"大角度帧多抽"：`weights_by_frame[i]` 是第 i 帧的权重，
+        本方法只取当前切分里那些帧的权重并归一化。
+        """
+        w = np.asarray(weights_by_frame, dtype=np.float64)
+        if w.shape[0] <= max(self._index, default=0):
+            raise ValueError("采样权重长度不足，需覆盖所有全局帧号")
+        picked = np.asarray([w[i] for i in self._index], dtype=np.float64)
+        total = float(picked.sum())
+        if total <= 0:
+            raise ValueError("采样权重之和必须为正")
+        self._sample_w = picked / total
+
     def random_indices(self, n: int) -> list[int]:
-        """随机取 n 个帧号（有放回，训练用）。"""
-        return [self._rng.choice(self._index) for _ in range(int(n))]
+        """随机取 n 个帧号（有放回，训练用）。
+
+        设过 `set_sample_weights` 就按权重抽，否则均匀。
+        """
+        w = getattr(self, "_sample_w", None)
+        if w is None:
+            return [self._rng.choice(self._index) for _ in range(int(n))]
+        return list(self._rng.choices(self._index, weights=w.tolist(), k=int(n)))
 
     def random_batch(self, batch_size: int) -> Batch:
         return self.batch(self.random_indices(batch_size))

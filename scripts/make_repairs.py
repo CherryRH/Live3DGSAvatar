@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""stage3：[渲染固定 yaw 视图 + 参考图] -> 直接喂给 `syncfix_label.py`。
+"""一次性生成修复图：按固定 yaw 渲染当前模型 -> SyncFix -> unsharp -> 输出目录。
 
 与 `find_defects.py` 的区别：**不选缺陷**。stage3 的输入模型已经在大角度上
 明显好于基础模型，欠的是"没见过的角度"，所以按固定间隔（如 5°）逐个视角
@@ -10,6 +10,8 @@
     <out>/views/yaw+45_pitch+0_roll+0_frame02104.png   # 待修复的渲染图
     <out>/refs/*.png                                    # 身份参考图（真实帧）
     <out>/selected.json                                 # 本次视角清单
+    <out>/syncfix/*.png                                 # SyncFix 输出
+    --out-dir/*.png                                     # unsharp 后的最终标签
 """
 from __future__ import annotations
 
@@ -41,7 +43,17 @@ def parse_args(argv=None):
                    help="基帧：auto=训练段里 |yaw| 最小的帧；或给帧号")
     p.add_argument("--refs", type=Path, default=None,
                    help="参考图目录（真实帧）；缺省用 datasets/<obj>/repair/refs")
-    p.add_argument("--out", type=Path, required=True)
+    p.add_argument("--out", type=Path, required=True,
+                   help="中间目录（views/ refs/ selected.json syncfix/）")
+    p.add_argument("--out-dir", type=Path, default=None,
+                   help="最终修复图目录（unsharp 后）；缺省 <out>/final")
+    p.add_argument("--syncfix-repo", type=Path,
+                   default=Path("/home/test/Projects/SyncFix"))
+    p.add_argument("--syncfix-python", default="syncfix")
+    p.add_argument("--syncfix-model", type=Path,
+                   default=Path("/home/test/Projects/SyncFix/models/paper"))
+    p.add_argument("--ref-size", type=int, default=3)
+    p.add_argument("--sharpen", type=float, default=0.35)
     p.add_argument("--dry-run", action="store_true")
     return p.parse_args(argv)
 
@@ -164,6 +176,34 @@ def main(argv=None) -> int:
         }, indent=2, ensure_ascii=False), encoding="utf-8")
         print(f"  参考图 : {copied} 张 -> {refs_dir}")
         print(f"  输出   : {views_dir}")
+
+        # ---- SyncFix 修复 + unsharp ----
+        import subprocess
+        subprocess.run([
+            sys.executable, str(REPO_ROOT / "scripts" / "syncfix_label.py"),
+            "--defects", str(out), "--out", str(out / "syncfix"),
+            "--repo", str(args.syncfix_repo),
+            "--python", str(args.syncfix_python),
+            "--model", str(args.syncfix_model),
+            "--ref-size", str(args.ref_size),
+        ], check=True)
+        final = args.out_dir or (out / "final")
+        final.mkdir(parents=True, exist_ok=True)
+        from PIL import ImageFilter
+        n = 0
+        for p in sorted((out / "syncfix").glob("*.png")):
+            im = Image.open(p).convert("RGB")
+            if args.sharpen > 0:
+                arr = np.asarray(im, np.float32)
+                blur = np.asarray(im.filter(ImageFilter.GaussianBlur(radius=1.0)),
+                                  np.float32)
+                im = Image.fromarray(np.clip(arr + args.sharpen * (arr - blur),
+                                             0, 255).astype(np.uint8))
+            im.save(final / p.name)
+            n += 1
+        print(f"  修复图 : {n} 张 -> {final}")
+        if n == 0:
+            raise SystemExit("[error] SyncFix 没有产出图片")
     return 0
 
 

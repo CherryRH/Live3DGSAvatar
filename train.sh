@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 基础训练入口。后训练已拆分到独立的 post_train.sh。
+# 基础训练入口（硬表面/加密/后训练见 densify_train.sh）。
 #
 # 用法：
 #   bash train.sh --subject biden --work-name base
@@ -8,7 +8,7 @@
 #   bash train.sh --subject biden --work-name base -- --force
 #
 # 产物：models/<对象>/<版本>/；中间产物 output/train/<对象>/<版本>/。
-# 后训练：bash post_train.sh --subject <对象> --work-name <版本> [--in-place]
+# 加密/后训练：bash densify_train.sh --subject <对象> [-—hard-only]
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -61,5 +61,5 @@ info "基础训练：python scripts/train.py ${ARGS[*]}"
 
 if (( DRY == 0 )); then
   info "已装入 models/$SUBJECT/$WORK/"
-  info "后训练：bash post_train.sh --subject $SUBJECT --work-name $WORK"
+  info "后续加密/微调：bash densify_train.sh --subject $SUBJECT"
 fi
