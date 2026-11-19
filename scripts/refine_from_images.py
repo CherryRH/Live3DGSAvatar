@@ -88,6 +88,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="angle=全数据集里挑大角度帧（默认，适合增强阶段）；"
                         "random=全数据集随机；holdout=末尾 30%%（仅供对照）；"
                         "both=选点用 angle、另外报告 holdout")
+    p.add_argument("--anchor-scope", choices=("train", "all"), default="train",
+                   help="锚定帧范围：train=只用训练段（默认，留出集不参与监督）；"
+                        "all=全数据集（旧行为，会把留出集练进去，指标虚高）")
     p.add_argument("--anchor-mode", choices=("angle", "uniform"), default="angle",
                    help="锚定帧采样：angle=按角度加权（默认），uniform=均匀；"
                         "两者都从整个数据集里取，且排除选点帧")
@@ -344,7 +347,7 @@ def main(argv: list[str] | None = None) -> int:
     if skipped:
         print(f"  [warn] 跳过 {len(skipped)} 张：" +
               "，".join(f"{l}（{r}）" for l, r in skipped[:3]) + "…")
-    if not obs:
+    if not obs and int(args.refined_per_batch) > 0:
         raise SystemExit("[error] 没有可用的精修视角")
 
     # ---- 选点帧：不依赖预训练的切片方式 ----
@@ -494,10 +497,15 @@ def main(argv: list[str] | None = None) -> int:
             for _ in range(4):
                 yield self.random_batch(batch_size)
 
-    # 锚定帧来自**整个数据集**（不看预训练切片），并排除选点帧
-    real = ManifestSource(data_dir, split="all", device="cpu", seed=args.seed,
+    # 锚定帧：默认**只用训练段**（留出集绝不参与监督，否则指标虚高）；
+    # --anchor-scope all 是旧行为，仅用于复现历史数字。
+    scope = "train" if args.anchor_scope == "train" else "all"
+    real = ManifestSource(data_dir, split=scope, device="cpu", seed=args.seed,
                           exclude=eval_ids or None)
-    anchor_ids = np.array([i for i in range(total) if i not in eval_ids])
+    anchor_end = train_end if scope == "train" else total
+    anchor_ids = np.array([i for i in range(anchor_end) if i not in eval_ids])
+    print(f"  锚定集 : {'训练段' if scope == 'train' else '全数据集'}"
+          f"（{len(anchor_ids)} 帧，留出集不参与）")
     if args.anchor_mode == "angle":
         w = angle_weights(yaw_all[anchor_ids])
         anchor_probs = w / w.sum()

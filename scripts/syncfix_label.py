@@ -37,17 +37,21 @@ def main(argv=None) -> int:
     repo = Path(args.repo).expanduser()
     infer = repo / "inference.py"
     model = Path(args.model).expanduser()
-    views = Path(args.defects) / "views"
-    refs = Path(args.defects) / "refs"
+    # SyncFix 在它自己的仓库目录下运行，相对路径会失效 —— 统一转绝对路径
+    defects = Path(args.defects).expanduser().resolve()
+    out = Path(args.out).expanduser().resolve()
+    model = model.resolve()
+    views = defects / "views"
+    refs = defects / "refs"
     if not infer.is_file():
         raise SystemExit(f"[error] 找不到 SyncFix inference.py：{infer}")
     if not model.exists():
         raise SystemExit(f"[error] 找不到 SyncFix 权重：{model}")
     if not views.is_dir():
         raise SystemExit(f"[error] 没有待修复的 views：{views}")
-    args.out.mkdir(parents=True, exist_ok=True)
+    out.mkdir(parents=True, exist_ok=True)
     # 输出目录按视角标签命名；先清掉上次残留，避免少视角时混入旧图。
-    for stale in args.out.glob("*.png"):
+    for stale in out.glob("*.png"):
         stale.unlink()
 
     py = Path(args.python).expanduser()
@@ -60,7 +64,7 @@ def main(argv=None) -> int:
            "--input_image", str(views),
            "--ref_image", str(refs),
            "--model_path", str(model),
-           "--output_dir", str(args.out),
+           "--output_dir", str(out),
            "--n_per_pass", str(args.n_per_pass),
            "--ref_size", str(args.ref_size),
            "--height", str(args.height),
