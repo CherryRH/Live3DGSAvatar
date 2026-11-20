@@ -399,6 +399,7 @@ def render_core(args, scene, frames: list[int], out_dir: Path,
     rasterizer = SimpleRasterizer()
 
     stages: dict[str, list[float]] = {"deform": [], "rasterize": []}
+    haze_vals: list[float] = []
 
     def run_batch(idx: list[int]):
         mesh = Mesh(verts=scene.frames_tensor(idx, device="cuda"),
@@ -424,6 +425,15 @@ def render_core(args, scene, frames: list[int], out_dir: Path,
         if args.profile:
             stages["deform"].append(timings["deform"] / len(idx))
             stages["rasterize"].append(timings["rasterize"] / len(idx))
+        # 白底可见暗雾：半透明（0.05<α<0.9）且叠到白底后仍偏暗的像素占比。
+        # 这是"轮廓发虚/黑色薄雾"的正式量化（评审 A5），随报告一起落盘。
+        with torch.no_grad():
+            alpha = out.alpha[:, 0]
+            gray = out.color.mean(dim=1)
+            haze = ((alpha > 0.05) & (alpha < 0.9)
+                    & (gray + (1.0 - alpha) < 0.9))
+            for b in range(int(alpha.shape[0])):
+                haze_vals.append(float(haze[b].float().mean()))
         return out
 
     run_batch(frames[:1])                       # 预热
@@ -459,6 +469,7 @@ def render_core(args, scene, frames: list[int], out_dir: Path,
 
     print(f"  [render] {total_frames}/{total_frames} 完成", flush=True)
     perf = {
+        "haze": (float(np.median(haze_vals)) if haze_vals else None),
         "mean_ms_per_frame": float(np.mean(per_frame_ms)),
         "median_ms_per_frame": float(np.median(per_frame_ms)),
         "fps": 1000.0 / float(np.mean(per_frame_ms)),
@@ -894,6 +905,8 @@ def main() -> int:
 
     for m in models:
         quality, per_frame = _evaluate_images(m["images"], gt, args)
+        if quality is not None:
+            quality["haze"] = {"median": m["perf"].get("haze")}
         m["quality"] = quality
         m["per_frame"] = per_frame
         if gt is None:
