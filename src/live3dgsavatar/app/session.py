@@ -200,6 +200,9 @@ class Session:
         self.live_fallback = False
         #: 当前 scene 对应的数据集目录（判断"要不要重载"）
         self._active_dataset_dir: Path | None = None
+        #: 头转驱动（RDF identity/pose）；懒加载，切换数据集时重建
+        self._pose_driver = None
+        self._pose_driver_dir: Path | None = None
         #: 取帧器构造失败的原因（例如数据集缺画面目录）
         self._live_frames_error: str | None = None
         #: 最近一次的对比帧缓存 `(key, rgb_u8, mask)`（给计时口径用）
@@ -570,9 +573,35 @@ class Session:
     def _view_shifted(self) -> bool:
         return abs(self.params.yaw) > 1e-6 or abs(self.params.pitch) > 1e-6
 
+    def _turn_driver(self):
+        """按当前数据集懒加载头转驱动；没有 RDF 跟踪结果时返回 None。"""
+        from pathlib import Path
+
+        dirp = getattr(self, "_active_dataset_dir", None)
+        if dirp is None:
+            return None
+        if self._pose_driver is not None and self._pose_driver_dir == dirp:
+            return self._pose_driver
+        if not (Path(dirp) / "rdf_tracking.npz").is_file():
+            self._pose_driver, self._pose_driver_dir = None, Path(dirp)
+            return None
+        try:
+            from ..tracking.pose_drive import PoseDriver
+            self._pose_driver = PoseDriver(Path(dirp))
+        except Exception:
+            self._pose_driver = None
+        self._pose_driver_dir = Path(dirp)
+        return self._pose_driver
+
     def _view_camera(self, mesh):
-        """当前帧的相机：有 yaw/pitch 时绕**头心**旋转，与缺陷定位同一语义。"""
+        """当前帧的相机。
+
+        有 yaw/pitch 时优先按 **头转**（语义同 GT）：相机保持不动，由
+        `PoseDriver` 改网格的头姿。没有 RDF 跟踪结果才退回绕头心转相机。
+        """
         if not self._view_shifted or self._w2c_cpu is None:
+            return self.camera
+        if self._turn_driver() is not None:
             return self.camera
         from ..core.camera import orbit_w2c
         from ..core.types import Camera
@@ -605,6 +634,17 @@ class Session:
         t_all = time.perf_counter()
 
         mesh, blend_weight = self._frame_inputs()
+        if self._view_shifted:
+            driver = self._turn_driver()
+            if driver is not None and self.timeline is not None:
+                try:
+                    turned = driver.turn(int(self.timeline.index),
+                                         float(self.params.yaw),
+                                         float(self.params.pitch))
+                    mesh = turned.mesh.unsqueeze(0).to(self.device)
+                    blend_weight = turned.weight.unsqueeze(0).to(self.device)
+                except Exception:
+                    pass
 
         m = Mesh(verts=mesh, faces=self.scene.faces,
                  uvs=self.scene.uvs, uv_faces=self.scene.uv_faces)

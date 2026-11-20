@@ -591,6 +591,15 @@ def main(argv: list[str] | None = None) -> int:
         avatar = GaussianAvatar(avatar_cfg, binding).to(device)
     rasterizer = SimpleRasterizer()
 
+    # 头转（pose 驱动）需要 RDF 的 identity/pose；没有就退回相机绕转
+    pose_driver = None
+    if (data_dir / "rdf_tracking.npz").is_file():
+        try:
+            from live3dgsavatar.tracking.pose_drive import PoseDriver
+            pose_driver = PoseDriver(data_dir, device="cpu")
+        except Exception as exc:  # 资产缺失等：不阻断训练
+            print(f"  提示   : pose 驱动不可用（{exc}），退回相机绕转")
+
     camera = Camera.from_intrinsics_extrinsics(
         K=scene.K, R=scene.R, T=scene.T,
         width=scene.width, height=scene.height).to(str(device))
@@ -626,16 +635,29 @@ def main(argv: list[str] | None = None) -> int:
         w2c_data[:3, :3] = scene.R.detach().cpu()
         w2c_data[:3, 3] = scene.T.detach().cpu()
         K_data = scene.K.detach().cpu()
+        # 修复图是"头转、胸不动"：网格必须用同一套 pose 驱动重建，
+        # 相机保持数据集相机；没有 RDF 跟踪结果才退回相机绕转。
+        driver = pose_driver
         repair_batches = []
         for pth in labels:
             info = parse_view_label(pth.stem)
             yaw = float(info["yaw"])
-            R_target = (rotation_x(0.0) @ rotation_y(yaw))[:3, :3]
-            view = orbit_w2c_matrix(w2c_data, center, R_target @ head_R.T)
-            cam = Camera(K=K_data, w2c=view.unsqueeze(0),
-                         width=scene.width, height=scene.height).to("cuda")
+            if driver is not None:
+                turned = driver.turn(base_idx, yaw)
+                mesh_t = turned.mesh.unsqueeze(0)
+                weight_t = turned.weight.unsqueeze(0)
+                view = w2c_data
+                cam = Camera(K=K_data, w2c=w2c_data.unsqueeze(0),
+                             width=scene.width, height=scene.height).to("cuda")
+            else:
+                R_target = (rotation_x(0.0) @ rotation_y(yaw))[:3, :3]
+                view = orbit_w2c_matrix(w2c_data, center, R_target @ head_R.T)
+                cam = Camera(K=K_data, w2c=view.unsqueeze(0),
+                             width=scene.width, height=scene.height).to("cuda")
+                mesh_t = base_mesh.unsqueeze(0)
+                weight_t = base_weight.unsqueeze(0)
             with torch.no_grad():
-                ids = face_id_map(base_mesh.unsqueeze(0).cuda(),
+                ids = face_id_map(mesh_t.cuda(),
                                   scene.faces.cuda(), cam, glctx, flip_y=False)
                 surf = (ids >= 0).unsqueeze(0).unsqueeze(0).cpu()
             raw = Image.open(pth)
@@ -648,7 +670,7 @@ def main(argv: list[str] | None = None) -> int:
             image = torch.from_numpy(rgb.transpose(2, 0, 1) / 255.0).float()
             mask = torch.from_numpy(fg[None, None]).bool()
             repair_batches.append(Batch(
-                mesh=base_mesh.unsqueeze(0), blend_weight=base_weight.unsqueeze(0),
+                mesh=mesh_t, blend_weight=weight_t,
                 image=image.unsqueeze(0), mask=mask,
                 indices=torch.tensor([base_idx], dtype=torch.long),
                 K=K_data.unsqueeze(0), w2c=view.unsqueeze(0),
@@ -670,7 +692,8 @@ def main(argv: list[str] | None = None) -> int:
     robust_cfg = (RobustConfig(frames=robust_frames, weight=robust_weight)
                   if robust_enabled else None)
     if robust_cfg is not None:
-        print(f"  验证   : 额外视角 ±{', ±'.join(f'{y:g}' for y in robust_cfg.yaws)}°"
+        print(f"  验证   : {'头转' if pose_driver is not None else '相机绕转'} "
+              f"±{', ±'.join(f'{y:g}' for y in robust_cfg.yaws)}°"
               f"（{robust_cfg.frames} 帧，λ={robust_cfg.weight:g}）")
 
     plan = ParameterPlan.rgba_avatar_defaults(
@@ -895,13 +918,23 @@ def main(argv: list[str] | None = None) -> int:
                                                        surface_spill_loss)
             i = random.randrange(int(mesh_verts.shape[0]))
             yaw = float(random.choice(nv_yaws))
-            verts_nv = mesh_verts[i:i + 1].to(device)
-            weight_nv = None if weight is None else weight[i:i + 1].to(device)
-            center_nv = verts_nv[0].mean(dim=0).detach().cpu()
-            view_nv = orbit_w2c(w2c_data, center_nv, yaw, 0.0)
-            cam_nv = Camera(K=scene.K, w2c=view_nv.unsqueeze(0).to(device),
-                            width=scene.width,
-                            height=scene.height).to(device)
+            if pose_driver is not None:
+                # 与 GT 同语义：相机不动，头转
+                turned = pose_driver.turn(int(batch.indices[i]), yaw, 0.0)
+                verts_nv = turned.mesh.unsqueeze(0).to(device)
+                weight_nv = turned.weight.unsqueeze(0).to(device)
+                cam_nv = Camera(K=scene.K,
+                                w2c=w2c_data.unsqueeze(0).to(device),
+                                width=scene.width,
+                                height=scene.height).to(device)
+            else:
+                verts_nv = mesh_verts[i:i + 1].to(device)
+                weight_nv = None if weight is None else weight[i:i + 1].to(device)
+                center_nv = verts_nv[0].mean(dim=0).detach().cpu()
+                view_nv = orbit_w2c(w2c_data, center_nv, yaw, 0.0)
+                cam_nv = Camera(K=scene.K, w2c=view_nv.unsqueeze(0).to(device),
+                                width=scene.width,
+                                height=scene.height).to(device)
             mesh_nv = Mesh(verts=verts_nv, faces=scene.faces.to(device),
                            uvs=scene.uvs.to(device),
                            uv_faces=scene.uv_faces.to(device))
@@ -1041,16 +1074,34 @@ def main(argv: list[str] | None = None) -> int:
                         gs = avatar.deform(mesh, weight_i)
                         center = verts[0].mean(dim=0).detach().cpu()
                         for view in robust_views(robust_cfg):
-                            view_w2c = orbit_w2c(w2c_data, center, view.yaw,
-                                                 view.pitch)
-                            cam = Camera(K=scene.K,
-                                         w2c=view_w2c.unsqueeze(0).to(device),
-                                         width=scene.width,
-                                         height=scene.height).to(device)
+                            verts_v, gs_v = verts, gs
+                            if pose_driver is not None:
+                                # 与 GT 同语义：相机不动，头转
+                                turned = pose_driver.turn(
+                                    int(batch.indices[i]), view.yaw, view.pitch)
+                                verts_v = turned.mesh.unsqueeze(0).to(device)
+                                mesh_v = Mesh(verts=verts_v,
+                                              faces=scene.faces.to(device),
+                                              uvs=scene.uvs.to(device),
+                                              uv_faces=scene.uv_faces.to(device))
+                                gs_v = avatar.deform(
+                                    mesh_v, turned.weight.unsqueeze(0).to(device))
+                                cam = Camera(
+                                    K=scene.K,
+                                    w2c=w2c_data.unsqueeze(0).to(device),
+                                    width=scene.width,
+                                    height=scene.height).to(device)
+                            else:
+                                view_w2c = orbit_w2c(w2c_data, center, view.yaw,
+                                                     view.pitch)
+                                cam = Camera(K=scene.K,
+                                             w2c=view_w2c.unsqueeze(0).to(device),
+                                             width=scene.width,
+                                             height=scene.height).to(device)
                             out = render_gaussians(
-                                gs, rasterizer, cam,
+                                gs_v, rasterizer, cam,
                                 torch.zeros(1, 3, 1, 1, device=device))
-                            ids = face_id_map(verts, scene.faces, cam, glctx)
+                            ids = face_id_map(verts_v, scene.faces, cam, glctx)
                             surface = ids >= 0
                             if bool(surface.any()):
                                 alpha = out.alpha[0, 0]
@@ -1267,14 +1318,24 @@ def main(argv: list[str] | None = None) -> int:
                 # 这一项专门找后者，让分裂长到真正缺覆盖的面上。
                 if d_hole > 0:
                     i = random.randrange(int(lb.mesh.shape[0]))
-                    verts_nv = lb.mesh[i:i + 1].to(device)
-                    weight_nv = lb.blend_weight[i:i + 1].to(device)
                     yaw_nv = float(random.choice((-40.0, -30.0, 30.0, 40.0)))
-                    center_nv = verts_nv[0].mean(dim=0).detach().cpu()
-                    view_nv = orbit_w2c(w2c_data, center_nv, yaw_nv, 0.0)
-                    cam_nv = Camera(K=scene.K, w2c=view_nv.unsqueeze(0).to(device),
-                                    width=scene.width,
-                                    height=scene.height).to(device)
+                    if pose_driver is not None:
+                        turned = pose_driver.turn(int(lb.indices[i]), yaw_nv, 0.0)
+                        verts_nv = turned.mesh.unsqueeze(0).to(device)
+                        weight_nv = turned.weight.unsqueeze(0).to(device)
+                        cam_nv = Camera(K=scene.K,
+                                        w2c=w2c_data.unsqueeze(0).to(device),
+                                        width=scene.width,
+                                        height=scene.height).to(device)
+                    else:
+                        verts_nv = lb.mesh[i:i + 1].to(device)
+                        weight_nv = lb.blend_weight[i:i + 1].to(device)
+                        center_nv = verts_nv[0].mean(dim=0).detach().cpu()
+                        view_nv = orbit_w2c(w2c_data, center_nv, yaw_nv, 0.0)
+                        cam_nv = Camera(K=scene.K,
+                                        w2c=view_nv.unsqueeze(0).to(device),
+                                        width=scene.width,
+                                        height=scene.height).to(device)
                     mesh_nv = Mesh(verts=verts_nv, faces=scene.faces.to(device),
                                    uvs=scene.uvs.to(device),
                                    uv_faces=scene.uv_faces.to(device))

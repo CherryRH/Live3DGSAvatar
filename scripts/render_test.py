@@ -486,17 +486,37 @@ def render_showcase(args, scene, avatar, rasterizer, bg,
     with torch.no_grad():
         gs = avatar.deform(mesh, weight)
 
+    # 有 RDF 跟踪结果就按"头转"渲染（与 GT 语义一致），否则退回相机绕转
+    driver = None
+    data_dir = getattr(args, "data", None)
+    if data_dir is not None and (Path(data_dir) / "rdf_tracking.npz").is_file():
+        from live3dgsavatar.tracking.pose_drive import PoseDriver
+        try:
+            driver = PoseDriver(Path(data_dir))
+        except Exception:
+            driver = None
+
     yaws = (-15.0, -30.0, -45.0, 0.0, 15.0, 30.0, 45.0)
     images = []
     for yaw in yaws:
-        R_target = (rotation_x(0.0) @ rotation_y(yaw))[:3, :3]
-        view = orbit_w2c_matrix(w2c_data, center, R_target @ head_R.T)
-        cam = Camera(K=K, w2c=view.unsqueeze(0),
-                     width=scene.width, height=scene.height).to("cuda")
         draw_gs = gs
+        if driver is not None:
+            turned = driver.turn(frame_idx, yaw)
+            mesh_t = Mesh(verts=turned.mesh.unsqueeze(0).cuda(),
+                          faces=scene.faces, uvs=scene.uvs,
+                          uv_faces=scene.uv_faces)
+            with torch.no_grad():
+                draw_gs = avatar.deform(mesh_t, turned.weight.unsqueeze(0).cuda())
+            cam = Camera(K=K, w2c=w2c_data.unsqueeze(0),
+                         width=scene.width, height=scene.height).to("cuda")
+        else:
+            R_target = (rotation_x(0.0) @ rotation_y(yaw))[:3, :3]
+            view = orbit_w2c_matrix(w2c_data, center, R_target @ head_R.T)
+            cam = Camera(K=K, w2c=view.unsqueeze(0),
+                         width=scene.width, height=scene.height).to("cuda")
         if getattr(args, "frontface", False):
             from live3dgsavatar.core.render.frontface import frontface_gaussians
-            draw_gs = frontface_gaussians(gs, cam, mesh,
+            draw_gs = frontface_gaussians(draw_gs, cam, mesh,
                                           avatar.binding_face_id)
         out = render_gaussians(draw_gs, rasterizer, cam, bg)
         arr = (out.color.clamp(0, 1).permute(0, 2, 3, 1) * 255).byte()

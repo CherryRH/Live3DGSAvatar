@@ -123,6 +123,19 @@ def main(argv=None) -> int:
                       device=device)
     rasterizer = SimpleRasterizer()
 
+    # 头转（pose 驱动）：语义与 GT 一致；没有 RDF 跟踪结果时退回相机绕转
+    driver = None
+    if (data_dir / "rdf_tracking.npz").is_file():
+        from live3dgsavatar.tracking.pose_drive import PoseDriver
+        driver = PoseDriver(data_dir, device=device)
+        cam_fixed = Camera.from_intrinsics_extrinsics(
+            K=scene.K, R=scene.R, T=scene.T,
+            width=scene.width, height=scene.height).to(device)
+        print("  视角   : FLAME 头姿驱动（头转、胸不动）")
+    else:
+        cam_fixed = None
+        print("  视角   : 相机绕转（缺少 rdf_tracking.npz，建议先补 RDF 跟踪）")
+
     w2c = torch.eye(4, dtype=torch.float32)
     w2c[:3, :3] = torch.as_tensor(scene.R).detach().cpu()
     w2c[:3, 3] = torch.as_tensor(scene.T).detach().cpu()
@@ -149,15 +162,21 @@ def main(argv=None) -> int:
         if args.dry_run:
             print(f"  [dry-run] {label}")
             continue
-        R_target = rotation_y(yaw)[:3, :3]
-        R_orbit = R_target @ head_R.T
-        view = orbit_w2c_matrix(w2c, center, R_orbit)
-        cam = Camera(K=scene.K, w2c=view.unsqueeze(0).to(device),
-                     width=scene.width, height=scene.height).to(device)
-        mesh = Mesh(verts=base_verts, faces=scene.faces.to(device),
+        if driver is not None:
+            turned = driver.turn(base_idx, yaw)
+            cam = cam_fixed
+            verts = turned.mesh.unsqueeze(0)
+            weight = turned.weight.unsqueeze(0)
+        else:
+            R_target = rotation_y(yaw)[:3, :3]
+            view = orbit_w2c_matrix(w2c, center, R_target @ head_R.T)
+            cam = Camera(K=scene.K, w2c=view.unsqueeze(0).to(device),
+                         width=scene.width, height=scene.height).to(device)
+            verts, weight = base_verts, weight0
+        mesh = Mesh(verts=verts, faces=scene.faces.to(device),
                     uvs=scene.uvs.to(device), uv_faces=scene.uv_faces.to(device))
         with torch.no_grad():
-            res = render_frame(avatar, rasterizer, mesh, weight0, cam, bg)
+            res = render_frame(avatar, rasterizer, mesh, weight, cam, bg)
         img = (res.color[0].clamp(0, 1).permute(1, 2, 0).cpu().numpy() * 255.0
                ).astype(np.uint8)
         Image.fromarray(img).save(views_dir / f"{label}.png")
@@ -263,7 +282,6 @@ def main(argv=None) -> int:
         print(f"  修复图 : {n} 张（matte={'off' if args.no_matte else 'on'}）-> {final}")
 
         if args.repair_root is not None:
-            import json
             root = Path(args.repair_root)
             for sub in ("views", "refs", "masks", "repairs"):
                 (root / sub).mkdir(parents=True, exist_ok=True)
@@ -277,7 +295,9 @@ def main(argv=None) -> int:
                     if im.mode == "RGBA":
                         im.getchannel("A").save(root / "masks" / p.name)
             for p in final.glob("*.png"):
-                shutil.copyfile(p, root / "repairs" / p.name)
+                dst = root / "repairs" / p.name
+                if p.resolve() != dst.resolve():   # --out-dir 可能就是 root/repairs
+                    shutil.copyfile(p, dst)
             (root / "manifest.json").write_text(json.dumps({
                 "subject": subject, "base_frame": base_idx, "yaws": yaws,
                 "pitch": 0,
