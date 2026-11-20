@@ -19,7 +19,7 @@ train:
     stage: base
     # hard_surface 阶段的真实视角表面约束；chest 在 FLAME 覆盖内，不单独排除。
     hard_surface:
-      hole_weight: 0.02
+      # 空洞监督实测无效（见 docs/TRAINING.md 消融），只保留轮廓外溢约束
       spill_weight: 0.05
       margin: 4
       every: 10
@@ -57,13 +57,6 @@ train:
     #   stage2 额外训练 xyz_b / rotation_b / f_dc_b / weight_module。
     # 加密阶段：alpha 直接向 GT 前景 mask 回归（治"半透明 + 轮廓外黑色薄雾"）
     alpha_weight: 0.2
-    # 加密阶段：FLAME 表面内 alpha 欠饱和惩罚（防"半透明、透出背面"）
-    alpha_saturation:
-      weight: 0.03
-      target: 0.98
-      # 只约束轮廓内部（腐蚀像素）：避免把轮廓上的高斯压成外溢黑片
-      erode: 3
-
     densify:
       # ---- stage1 硬表面初始化（静态；形变基关闭）----
       # 只要求"壳"干净：贴 FLAME 表面、法向对齐、切成小圆片、覆盖住大角度可见区。

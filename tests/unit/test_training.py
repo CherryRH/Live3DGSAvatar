@@ -154,13 +154,11 @@ def test_objective_mask_weight_includes_background() -> None:
 
 
 def test_objective_surface_terms() -> None:
-    """硬表面阶段可以按 extras 计入真实视角的 hole/spill 两项。"""
-    total, parts = Objective(l1=0.0, surface_hole=2.0, surface_spill=3.0)(
+    """硬表面阶段按 extras 计入真实视角的 surface_spill。"""
+    total, parts = Objective(l1=0.0, surface_spill=3.0)(
         pred=torch.zeros(1, 3, 4, 4), target=torch.zeros(1, 3, 4, 4),
-        extras={"surface_hole": torch.tensor(0.1),
-                "surface_spill": torch.tensor(0.2)})
-    assert float(total) == pytest.approx(0.8, abs=1e-6)
-    assert parts["surface_hole"] == pytest.approx(0.1)
+        extras={"surface_spill": torch.tensor(0.2)})
+    assert float(total) == pytest.approx(0.6, abs=1e-6)
     assert parts["surface_spill"] == pytest.approx(0.2)
 
 

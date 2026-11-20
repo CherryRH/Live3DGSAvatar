@@ -72,7 +72,6 @@ class Objective:
     nv_hole: float = 0.0
     nv_spill: float = 0.0
     # 硬表面阶段：直接在真实视角的 FLAME 支撑面上约束 alpha 覆盖/外溢
-    surface_hole: float = 0.0
     surface_spill: float = 0.0
     surface_point: float = 0.0
     surface_normal: float = 0.0
@@ -82,7 +81,6 @@ class Objective:
     surface_outside: float = 0.0
     surface_bg: float = 0.0
     # 加密阶段：FLAME 表面内 alpha 要接近实心（防"半透明、透出背面"）
-    alpha_sat: float = 0.0
     mask_weight: float = 0.0
     lpips_from: int = 20_000
     _lpips_model: object | None = field(default=None, repr=False)
@@ -137,7 +135,7 @@ class Objective:
             total = total + self.lpips * v
             parts["lpips"] = float(v.detach())
 
-        for key in ("nv_hole", "nv_spill", "surface_hole", "surface_spill",
+        for key in ("nv_hole", "nv_spill", "surface_spill",
                     "surface_point", "surface_normal", "surface_scale",
                     "surface_size", "surface_iso", "surface_outside",
                     "surface_bg"):
@@ -155,7 +153,7 @@ class Objective:
             parts["alpha"] = float(v.detach())
 
         for name, value in (extras or {}).items():
-            if name in ("nv_hole", "nv_spill", "surface_hole", "surface_spill",
+            if name in ("nv_hole", "nv_spill", "surface_spill",
                         "surface_point", "surface_normal", "surface_scale",
                     "surface_size", "surface_iso", "surface_outside",
                     "surface_bg"):

@@ -249,7 +249,6 @@ class Trainer:
                            ("orth_loss", "orth_loss"),
                            ("nv_hole", "nv_hole_loss"),
                            ("nv_spill", "nv_spill_loss"),
-                           ("surface_hole", "surface_hole_loss"),
                            ("surface_spill", "surface_spill_loss"),
                            ("surface_point", "surface_point_loss"),
                            ("surface_normal", "surface_normal_loss"),
@@ -257,8 +256,7 @@ class Trainer:
                            ("surface_size", "surface_size_loss"),
                            ("surface_iso", "surface_iso_loss"),
                            ("surface_outside", "surface_outside_loss"),
-                           ("surface_bg", "surface_bg_loss"),
-                           ("alpha_sat", "alpha_sat_loss")):
+                           ("surface_bg", "surface_bg_loss")):
             value = getattr(out, attr, None)
             if callable(value):
                 extras[name] = value()

@@ -73,6 +73,11 @@ BATCH="${DENS_BATCH:-${CFG_DENSIFY_BATCH:-4}}"
 REPAIR="${DENS_REPAIR:-${CFG_DENSIFY_REPAIR:-2}}"
 BLEND="${DENS_BLEND_START:-${CFG_DENSIFY_BLEND_START:-0}}"
 SSIM="${DENS_SSIM_WEIGHT:-${CFG_DENSIFY_SSIM_WEIGHT:-0.08}}"
+# 消融用：不设则用配置默认
+S1_SPILL="${DENS_S1_SPILL:-}"
+S1_EXTRA=()
+[[ -n "$S1_SPILL" ]] && S1_EXTRA+=(--surface-spill-weight "$S1_SPILL")
+S2_EXTRA=()
 LPIPS="${DENS_LPIPS_WEIGHT:-${CFG_DENSIFY_LPIPS_WEIGHT:-0.01}}"
 LPIPS_FROM="${DENS_LPIPS_FROM:-${CFG_DENSIFY_LPIPS_FROM:-3000}}"
 XYZ_LR="${DENS_XYZ_LR:-${CFG_DENSIFY_XYZ_LR:-0.0002}}"
@@ -125,7 +130,7 @@ run "${PY_RUN[@]}" scripts/train.py \
   --blend-start "$INIT_BLEND" --eval-every "$INIT_EVAL" \
   --eval-frames "$INIT_EVAL_FRAMES" --min-delta "$INIT_MIN_DELTA" \
   --patience "$INIT_PATIENCE" \
-  --no-robust-eval --ssim-weight 0 "${FORCE_FLAG[@]}"
+  --no-robust-eval --ssim-weight 0 "${S1_EXTRA[@]}" "${FORCE_FLAG[@]}"
 (( PLAN )) || [[ -f "$MODELS/$HARD_WORK/model.ply" ]] || \
   die "stage1 没有产出 $MODELS/$HARD_WORK/model.ply"
 info "stage1 完成：硬表面初始化 $MODELS/$HARD_WORK"
@@ -165,6 +170,7 @@ run "${PY_RUN[@]}" scripts/train.py \
   --batch-size "$BATCH" --iterations "$STEPS" \
   --blend-start "$BLEND" --hard-xyz-lr "$XYZ_LR" --patience "$PATIENCE" \
   --alpha-weight "${DENS_ALPHA_WEIGHT:-${CFG_ALPHA_WEIGHT:-0.2}}" \
+  "${S2_EXTRA[@]}" \
   --ssim-weight "$SSIM" --lpips-weight "$LPIPS" --lpips-from "$LPIPS_FROM" \
   --densify --densify-every "$EVERY" --densify-count "$COUNT" \
   --densify-max "$MAX_GAUSS" --densify-prune-opacity "$PRUNE_OP" \
