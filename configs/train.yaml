@@ -91,7 +91,7 @@ train:
       batch: 8
       repair: 2
       blend_start: 0
-      ssim_weight: 0.08
+      ssim_weight: 0.1
       # LPIPS 只做低权重、后段启用（它会让每步慢 4~5 倍）
       lpips_weight: 0.01
       lpips_from: 3000

@@ -45,6 +45,8 @@ def parse_args(argv=None):
                    help="参考图目录（真实帧）；缺省用 datasets/<obj>/repair/refs")
     p.add_argument("--out", type=Path, required=True,
                    help="中间目录（views/ refs/ selected.json syncfix/）")
+    p.add_argument("--repair-root", type=Path, default=None,
+                   help="同时恢复数据集的 repair/ 结构：views/ refs/ masks/ repairs/ + manifest")
     p.add_argument("--out-dir", type=Path, default=None,
                    help="最终修复图目录（unsharp 后）；缺省 <out>/final")
     p.add_argument("--syncfix-repo", type=Path,
@@ -259,6 +261,31 @@ def main(argv=None) -> int:
             out_im.save(final / p.name)
             n += 1
         print(f"  修复图 : {n} 张（matte={'off' if args.no_matte else 'on'}）-> {final}")
+
+        if args.repair_root is not None:
+            import json
+            root = Path(args.repair_root)
+            for sub in ("views", "refs", "masks", "repairs"):
+                (root / sub).mkdir(parents=True, exist_ok=True)
+            for p in views_dir.glob("*.png"):
+                shutil.copyfile(p, root / "views" / p.name)
+            for p in refs_dir.glob("*.png"):
+                shutil.copyfile(p, root / "refs" / p.name)
+            if alpha_dir is not None:
+                for p in alpha_dir.glob("*.png"):
+                    im = Image.open(p)
+                    if im.mode == "RGBA":
+                        im.getchannel("A").save(root / "masks" / p.name)
+            for p in final.glob("*.png"):
+                shutil.copyfile(p, root / "repairs" / p.name)
+            (root / "manifest.json").write_text(json.dumps({
+                "subject": subject, "base_frame": base_idx, "yaws": yaws,
+                "pitch": 0,
+                "source": "SyncFix (batched, refs per batch) + BiRefNet alpha",
+                "files": {"views": "views/", "repairs": "repairs/",
+                          "masks": "masks/", "refs": "refs/"},
+            }, indent=2, ensure_ascii=False), encoding="utf-8")
+            print(f"  repair/ 结构：{root}")
     return 0
 
 
