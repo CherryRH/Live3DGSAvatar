@@ -2,7 +2,7 @@
 """按 **RDF 的 identity + pose** 驱动 FLAME，渲染"转头"视角（不依赖 checkpoint）。
 
 GT 的"大角度"是头转、肩/胸不动；`orbit_w2c` 是绕头心转相机，会把胸口一起
-转走。这里用我们自己的 RDF 跟踪结果（`render_inputs.rdf.npz` 的 `identity`
+转走。这里用我们自己的 RDF 跟踪结果（`rdf_tracking.npz` 的 `identity`
 与 `x`）驱动 FLAME2023，只改头姿，再映射回数据集坐标渲染。
 
 用法::
@@ -73,10 +73,19 @@ def main(argv=None) -> int:
     if work:
         cfg.set("work_name", work)
     data = resolve_dataset_dir(cfg, args.dataset or subject)
-    rdf_path = data / "render_inputs.rdf.npz"
+    from live3dgsavatar.tracking.tracked import (LEGACY_FRAMES_FILES,
+                                                 RDF_TRACKING_FILE)
+    rdf_path = data / RDF_TRACKING_FILE
+    if not rdf_path.is_file():
+        for legacy in LEGACY_FRAMES_FILES:
+            alt = data / legacy
+            if alt.is_file():
+                rdf_path = alt
+                print(f"[warn] 使用旧文件名 {legacy}，建议改名为 {RDF_TRACKING_FILE}")
+                break
     if not rdf_path.is_file():
         raise SystemExit(
-            f"[error] 缺少 {rdf_path}（RDF 的 identity/pose）。\n"
+            f"[error] 缺少 {data / RDF_TRACKING_FILE}（RDF 的 identity/pose）。\n"
             "        先跑 scripts/rdf_dump.py（realdenseface 环境）并保留结果。")
     with np.load(rdf_path, allow_pickle=True) as d:
         x = torch.from_numpy(np.asarray(d["x"], dtype=np.float32))

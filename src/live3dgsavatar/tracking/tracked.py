@@ -25,8 +25,12 @@ import torch
 #: 可渲染目录里的帧文件（与数据集同名）
 FRAMES_FILE = "render_inputs.npz"
 
+#: RDF 原始跟踪结果（`x`/`verts`/`identity`）的文件名：与烘焙后的
+#: `render_inputs.npz` 区分开，一眼能看出"这是没烘焙的跟踪输出"。
+RDF_TRACKING_FILE = "rdf_tracking.npz"
+
 #: 旧命名，仍可读但会提示改名
-LEGACY_FRAMES_FILES = ("rdf.npz",)
+LEGACY_FRAMES_FILES = ("rdf.npz", "render_inputs.rdf.npz", "rdf_track.npz")
 
 #: RDF 的原生顶点数（补牙前的网格）
 RDF_VERTS = 5023

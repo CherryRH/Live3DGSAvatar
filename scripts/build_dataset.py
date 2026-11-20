@@ -31,7 +31,7 @@ python scripts/build_dataset.py --from datasets/<对象> --name <对象>
 通常不直接调用本脚本，而是用根目录的 `build_dataset.sh`：它会先把 RDF 跑好。
 
 **来源就是目标目录时**（跟踪结果直接落在 `datasets/<对象>/`）：npz 已是训练格式就
-直接跳过；还是 RDF 原始格式就**原地烘焙**，原文件备份为 `render_inputs.rdf.npz`。
+直接跳过；还是 RDF 原始格式就**原地烘焙**，原文件备份为 `rdf_tracking.npz`。
 """
 
 from __future__ import annotations
@@ -155,7 +155,8 @@ def build(*, source: Path, out_dir: Path, flame_dir: Path,
         return out_dir
     if action == "bake_in_place":
         # 原地烘焙：先把原始 RDF 结果备份一份，再覆盖成训练格式
-        backup = out_dir / "render_inputs.rdf.npz"
+        from live3dgsavatar.tracking.tracked import RDF_TRACKING_FILE
+        backup = out_dir / RDF_TRACKING_FILE
         if not backup.is_file():
             shutil.copyfile(out_dir / "render_inputs.npz", backup)
         print(f"原地烘焙：原始结果已备份为 {backup.name}")
