@@ -58,6 +58,12 @@ def ssim(a: np.ndarray, b: np.ndarray, mask: np.ndarray | None = None,
         return None
     x = np.asarray(a, dtype=np.float64).mean(axis=-1)
     y = np.asarray(b, dtype=np.float64).mean(axis=-1)
+    m = None if mask is None else np.asarray(mask, bool)
+    if m is not None and bool(np.any(m)):
+        # 背景不参与：掩码外一律置 0（两张图同样处理）。否则换背景色会通过
+        # 高斯滤波的邻域统计改变掩码内的 SSIM —— 同一内容黑/白底能差 0.04+。
+        x = np.where(m, x, 0.0)
+        y = np.where(m, y, 0.0)
     mu_x = gaussian_filter(x, sigma)
     mu_y = gaussian_filter(y, sigma)
     var_x = gaussian_filter(x * x, sigma) - mu_x * mu_x
@@ -68,12 +74,28 @@ def ssim(a: np.ndarray, b: np.ndarray, mask: np.ndarray | None = None,
     num = (2 * mu_x * mu_y + c1) * (2 * cov + c2)
     den = (mu_x * mu_x + mu_y * mu_y + c1) * (var_x + var_y + c2)
     ssim_map = num / np.maximum(den, 1e-12)
-    if mask is not None and bool(np.any(mask)):
-        inner = binary_erosion(np.asarray(mask, bool), iterations=2)
+    if m is not None and bool(np.any(m)):
+        inner = binary_erosion(m, iterations=2)
         if not bool(inner.any()):
             inner = np.asarray(mask, bool)
         return float(ssim_map[inner].mean())
     return float(ssim_map.mean())
+
+
+def sharpness(image: np.ndarray, mask: np.ndarray | None = None) -> float | None:
+    """锐度：掩码内**平均梯度幅值**，0–255 尺度（越大越锐）。
+
+    全项目只用这一个定义。之前三处各写一遍、其中两处多乘了 255，
+    导致报告里的"锐度比"和缺陷脚本里的量纲对不上（评审 C）。
+    """
+    if mask is not None and not bool(np.any(mask)):
+        return None
+    grey = np.asarray(image, dtype=np.float32).mean(axis=-1)
+    gy, gx = np.gradient(grey)
+    mag = np.hypot(gx, gy)
+    if mask is None:
+        return float(mag.mean())
+    return float(mag[np.asarray(mask, bool)].mean())
 
 
 def psnr_pair(render: np.ndarray, target: np.ndarray,

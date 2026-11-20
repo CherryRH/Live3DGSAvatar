@@ -35,6 +35,8 @@ from dataclasses import dataclass, field
 import numpy as np
 import torch
 
+from .robustness import HOLE_THRESHOLD
+
 __all__ = ["DefectMap", "attribute_to_faces", "per_texel", "coverage_counts",
            "floater_offsets", "alpha_hole_ratio", "sharpness_map",
            "refine_delta", "refine_weight_map"]
@@ -202,7 +204,7 @@ def alpha_hole_ratio(alpha: np.ndarray, face_id: np.ndarray,
     if not bool(front.any()):
         return out
     ids = face_id[front]
-    holes = (alpha[front] < 0.5).astype(np.float64)
+    holes = (alpha[front] < HOLE_THRESHOLD).astype(np.float64)
     np.add.at(out, ids, holes)
     counts = np.bincount(ids, minlength=n_faces).astype(np.float64)
     nz = counts > 0

@@ -543,7 +543,8 @@ def main(argv: list[str] | None = None) -> int:
     from live3dgsavatar.core.render import (SimpleRasterizer, render_frame,
                                             render_gaussians)
     from live3dgsavatar.core.render.faceid import detect_flip, face_id_map
-    from live3dgsavatar.evaluation import (RobustConfig, alpha_deficit,
+    from live3dgsavatar.evaluation import (HOLE_THRESHOLD, RobustConfig,
+                                           alpha_deficit,
                                            robust_score, robust_views,
                                            subsample, summarise_coverage,
                                            summarise_holes)
@@ -995,7 +996,7 @@ def main(argv: list[str] | None = None) -> int:
                 surf_psnr += float(
                     10.0 * torch.log10(1.0 / mse_s.clamp(min=1e-10))) * len(batch)
                 surf_hole += float(
-                    (out.alpha < 0.5)[surf].float().mean()) * len(batch)
+                    (out.alpha < HOLE_THRESHOLD)[surf].float().mean()) * len(batch)
         metrics = {"psnr": total / max(1, n)}
         if stage == "hard_surface":
             metrics["psnr_surface"] = surf_psnr / max(1, n)
@@ -1073,8 +1074,9 @@ def main(argv: list[str] | None = None) -> int:
                             surface = ids >= 0
                             if bool(surface.any()):
                                 alpha = out.alpha[0, 0]
-                                holes.append(float((alpha[surface] < 0.5).float()
-                                                   .mean()))
+                                holes.append(float(
+                                    (alpha[surface] < HOLE_THRESHOLD).float()
+                                    .mean()))
                                 deficits.append(alpha_deficit(alpha, surface))
                                 filled = alpha > 0.5
                                 spills.append(float((filled & ~surface).sum())
@@ -1083,7 +1085,11 @@ def main(argv: list[str] | None = None) -> int:
             summary = summarise_holes(holes)
             metrics.update(summary)
             metrics.update(summarise_coverage(deficits))
-            metrics["outside_mean"] = (float(np.mean(spills)) if spills else 0.0)
+            # 名字写实：统计的是"FLAME 轮廓外的**实心**像素"（含头发/肩），
+            # 与训练里同名 loss（alpha∈[0.05,0.6] 的半透明溢出）不是一回事。
+            outside = float(np.mean(spills)) if spills else 0.0
+            metrics["opaque_outside_flame"] = outside
+            metrics["outside_mean"] = outside          # 兼容旧字段名
             # 早停用阈值孔洞：与离线评估（compare_defects）同一口径。
             # 连续缺口只作为诊断量记录 —— 实测它与阈值口径几乎同值。
             # 面外溢出按 robust_spill 权重计入（默认 0，保持旧行为）。

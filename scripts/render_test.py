@@ -276,10 +276,10 @@ def _finalize(args: argparse.Namespace, cfg: Config) -> argparse.Namespace:
 # --------------------------------------------------------------- 指标 --
 # 口径与 GUI/在线更新一致：图像度量来自 `core.metrics`，
 #: 指标口径版本：口径一变就必须改这个串（报告里可追溯）。
-METRIC_VERSION = "2026-11-20.pose-headturn"
+METRIC_VERSION = "2026-11-20.pose-headturn.mask-ssim"
 
 
-def _provenance(models: list[dict]) -> dict:
+def _provenance(models: list[dict], *, background=(0, 0, 0)) -> dict:
     """报告溯源：commit / 模型哈希 / 口径版本 / mask 与阈值定义。"""
     import hashlib
     import subprocess
@@ -304,7 +304,19 @@ def _provenance(models: list[dict]) -> dict:
             digest = h.hexdigest()[:16]
         except OSError:
             pass
-        files[m["work_name"]] = {"path": str(path), "sha256": digest}
+        cfg_path = m.get("model_config")
+        cfg_digest = None
+        if cfg_path:
+            try:
+                ch = hashlib.sha256()
+                with Path(cfg_path).open("rb") as fh:
+                    ch.update(fh.read())
+                cfg_digest = ch.hexdigest()[:16]
+            except OSError:
+                cfg_digest = None
+        files[m["work_name"]] = {"path": str(path), "sha256": digest,
+                                 "config": cfg_path,
+                                 "config_sha256": cfg_digest}
     try:
         import lpips as _lpips
         lpips_version = getattr(_lpips, "__version__", None)
@@ -316,10 +328,16 @@ def _provenance(models: list[dict]) -> dict:
         "model_files": files,
         "metric_version": METRIC_VERSION,
         "mask": "数据集人像 alpha>127（masked PSNR/SSIM）",
-        "hole_threshold": 0.5,
+        "hole_threshold": __import__(
+            "live3dgsavatar.evaluation.robustness",
+            fromlist=["HOLE_THRESHOLD"]).HOLE_THRESHOLD,
         "alpha_deficit": "mean(1-alpha) over FLAME surface (robust score)",
+        "sharpness": "mask 内平均梯度幅值（0–255，core.metrics.sharpness）",
+        "ssim": "mask 外置 0 后的局部 SSIM（背景无关）",
+        "lpips_scope": "full-image（两侧都合成到同一 metrics 背景）",
+        "metric_background": list(background),
+        "robust_views": "±20/30/40 度头转（无 RDF 时相机绕转）",
         "lpips": {"backbone": "alex", "version": lpips_version},
-        "sharpness": "mask 内梯度均值（渲染 / GT）",
     }
 
 
@@ -468,11 +486,16 @@ def render_core(args, scene, frames: list[int], out_dir: Path,
                 Image.fromarray(arr[j]).save(share_dir / f"{i:05d}.png")
 
     print(f"  [render] {total_frames}/{total_frames} 完成", flush=True)
+    _fps = 1000.0 / np.asarray(per_frame_ms, dtype=np.float64).clip(min=1e-6)
     perf = {
         "haze": (float(np.median(haze_vals)) if haze_vals else None),
         "mean_ms_per_frame": float(np.mean(per_frame_ms)),
         "median_ms_per_frame": float(np.median(per_frame_ms)),
         "fps": 1000.0 / float(np.mean(per_frame_ms)),
+        # 单次运行内的离散度；跨运行波动（GPU 频率/独占）不在其中（评审 C）
+        "fps_median": float(np.median(_fps)),
+        "fps_std": float(np.std(_fps)),
+        "timing_note": "单次渲染遍历；warmup=1 帧；fps_std 是帧间离散度",
         "peak_memory_mib": torch.cuda.max_memory_allocated() / 2**20,
         "batch_size": args.batch_size,
         "num_gaussian": int(avatar.num_gaussians),
@@ -843,7 +866,7 @@ def main() -> int:
              "num_gaussian": m["perf"].get("num_gaussian"),
              **m["perf"].get("structure", {})} for m in models],
         # 溯源：报告必须能落回具体 commit / 文件 / 口径版本（评审 A3/A4/C）
-        "provenance": _provenance(models),
+        "provenance": _provenance(models, background=args.background),
         # 评测口径：留出集同时用于选模型和报数，必须写明（评审 A1）
         "evaluation": {
             "test_split": f"last {args.test_ratio:.0%} (heldout)",

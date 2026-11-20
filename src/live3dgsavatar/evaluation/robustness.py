@@ -32,8 +32,13 @@ import numpy as np
 
 from .views import ViewSpec
 
-__all__ = ["RobustConfig", "robust_views", "robust_score", "summarise_holes",
+__all__ = ["HOLE_THRESHOLD", "RobustConfig", "robust_views", "robust_score", "summarise_holes",
            "summarise_coverage", "subsample", "alpha_deficit", "alpha_gradient"]
+
+
+#: 判定"洞"的 alpha 阈值。训练侧（robust/早停）与离线缺陷评估共用这一个常量，
+#: 并随报告记录（`provenance.hole_threshold`）——评审 C 指出它硬编码在三处。
+HOLE_THRESHOLD = 0.5
 
 
 @dataclass(frozen=True)

@@ -18,7 +18,8 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from ..core.metrics import Accum, max_abs_diff, psnr, psnr_masked, ssim
+from ..core.metrics import (Accum, max_abs_diff, psnr, psnr_masked,
+                            sharpness, ssim)
 
 __all__ = ["EvaluationReport", "summarize_quality", "summarize_no_reference",
            "frame_metrics", "lpips_score"]
@@ -131,11 +132,12 @@ def lpips_score(image: np.ndarray, ref_rgb: np.ndarray) -> float | None:
 
 
 def _mean_gradient(image: np.ndarray, mask: np.ndarray) -> float:
-    """掩码内的平均梯度（0–255 尺度）；越小越糊。"""
-    grey = np.asarray(image, dtype=np.float32).mean(axis=-1)
-    gy, gx = np.gradient(grey)
-    mag = np.hypot(gx, gy)
-    return float(mag[np.asarray(mask, bool)].mean())
+    """掩码内的平均梯度（0–255 尺度）；越小越糊。
+
+    唯一实现在 `core.metrics.sharpness`，这里只做空掩码兜底。
+    """
+    value = sharpness(image, mask)
+    return 0.0 if value is None else value
 
 
 def summarize_no_reference(images: dict[int, np.ndarray],
@@ -161,7 +163,8 @@ def summarize_no_reference(images: dict[int, np.ndarray],
 
         grey = rgb.mean(axis=-1)
         gy, gx = np.gradient(grey)
-        sharp.add(float(np.hypot(gx, gy)[mask].mean()) * 255.0)
+        value = sharpness(rgb.astype(np.uint8), mask)
+        sharp.add(0.0 if value is None else value)
         fg.add(float(mask.mean()))
 
         px = rgb[mask]
