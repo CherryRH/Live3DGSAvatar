@@ -53,7 +53,13 @@ def parse_args(argv=None):
     p.add_argument("--syncfix-model", type=Path,
                    default=Path("/home/test/Projects/SyncFix/models/paper"))
     p.add_argument("--ref-size", type=int, default=3)
+    # SyncFix 的 inference 会先把 refs 截断到 ref_size，再按 batch 切片：
+    # 如果一次喂 N 张、n_per_pass < N，只有第一个 batch 有参考图。所以这里
+    # 按 batch 分组、每组单独调用一次，保证每组都带参考。
+    p.add_argument("--syncfix-batch", type=int, default=4)
     p.add_argument("--sharpen", type=float, default=0.35)
+    p.add_argument("--no-matte", action="store_true",
+                   help="跳过 BiRefNet 抠图（默认做，输出 RGBA）")
     p.add_argument("--dry-run", action="store_true")
     return p.parse_args(argv)
 
@@ -177,33 +183,82 @@ def main(argv=None) -> int:
         print(f"  参考图 : {copied} 张 -> {refs_dir}")
         print(f"  输出   : {views_dir}")
 
-        # ---- SyncFix 修复 + unsharp ----
+        # ---- SyncFix 修复：按 batch 分组，每组都带参考图 ----
         import subprocess
-        subprocess.run([
-            sys.executable, str(REPO_ROOT / "scripts" / "syncfix_label.py"),
-            "--defects", str(out), "--out", str(out / "syncfix"),
-            "--repo", str(args.syncfix_repo),
-            "--python", str(args.syncfix_python),
-            "--model", str(args.syncfix_model),
-            "--ref-size", str(args.ref_size),
-        ], check=True)
+        fixes = []
+        group = max(1, int(args.syncfix_batch))
+        labels = sorted(p.stem for p in views_dir.glob("*.png"))
+        for gi in range(0, len(labels), group):
+            grp = labels[gi:gi + group]
+            gdir = out / f"_g{gi // group}"
+            (gdir / "views").mkdir(parents=True, exist_ok=True)
+            (gdir / "refs").mkdir(parents=True, exist_ok=True)
+            for lab in grp:
+                shutil.copyfile(views_dir / f"{lab}.png",
+                                gdir / "views" / f"{lab}.png")
+            for ref in refs_dir.glob("*.png"):
+                shutil.copyfile(ref, gdir / "refs" / ref.name)
+            subprocess.run([
+                sys.executable, str(REPO_ROOT / "scripts" / "syncfix_label.py"),
+                "--defects", str(gdir), "--out", str(gdir / "fix"),
+                "--repo", str(args.syncfix_repo),
+                "--python", str(args.syncfix_python),
+                "--model", str(args.syncfix_model),
+                "--ref-size", str(args.ref_size),
+                "--n-per-pass", str(min(group, 4)),
+            ], check=True)
+            fixes.extend(sorted((gdir / "fix").glob("*.png")))
+        if not fixes:
+            raise SystemExit("[error] SyncFix 没有产出图片")
+
+        # ---- 抠图：SyncFix 输出是黑底 RGB，转成 RGBA（alpha=人像）----
+        if args.no_matte:
+            rgb_dir = out / "syncfix"
+            rgb_dir.mkdir(parents=True, exist_ok=True)
+            for p in fixes:
+                shutil.copyfile(p, rgb_dir / p.name)
+            final_src = rgb_dir
+            alpha_dir = None
+        else:
+            rgb_dir = out / "syncfix"
+            rgb_dir.mkdir(parents=True, exist_ok=True)
+            for p in fixes:
+                shutil.copyfile(p, rgb_dir / p.name)
+            alpha_dir = out / "matte"
+            subprocess.run([
+                sys.executable, str(REPO_ROOT / "scripts" / "matte_birefnet.py"),
+                "--input", str(rgb_dir), "--out", str(alpha_dir),
+                "--force",
+            ], check=True)
+            final_src = alpha_dir
+
+        # ---- unsharp + 输出到 --out-dir（有 alpha 就保留）----
         final = args.out_dir or (out / "final")
         final.mkdir(parents=True, exist_ok=True)
         from PIL import ImageFilter
         n = 0
-        for p in sorted((out / "syncfix").glob("*.png")):
-            im = Image.open(p).convert("RGB")
+        for p in sorted(final_src.glob("*.png")):
+            im = Image.open(p)
+            alpha = im.getchannel("A") if im.mode == "RGBA" else None
+            rgb = im.convert("RGB")
             if args.sharpen > 0:
-                arr = np.asarray(im, np.float32)
-                blur = np.asarray(im.filter(ImageFilter.GaussianBlur(radius=1.0)),
+                arr = np.asarray(rgb, np.float32)
+                blur = np.asarray(rgb.filter(ImageFilter.GaussianBlur(radius=1.0)),
                                   np.float32)
-                im = Image.fromarray(np.clip(arr + args.sharpen * (arr - blur),
-                                             0, 255).astype(np.uint8))
-            im.save(final / p.name)
+                rgb = Image.fromarray(np.clip(arr + args.sharpen * (arr - blur),
+                                              0, 255).astype(np.uint8))
+            if alpha is not None:
+                out_im = rgb.convert("RGBA")
+                out_im.putalpha(alpha)
+                # alpha 外的 RGB 置 0，与数据集约定一致
+                a = np.array(out_im, dtype=np.uint8, copy=True)
+                a[a[..., 3] <= 127, :3] = 0
+                out_im = Image.fromarray(a)
+            else:
+                out_im = rgb
+            out_im.save(final / p.name)
             n += 1
-        print(f"  修复图 : {n} 张 -> {final}")
-        if n == 0:
-            raise SystemExit("[error] SyncFix 没有产出图片")
+        print(f"  修复图 : {n} 张（matte={'off' if args.no_matte else 'on'}）-> {final}")
     return 0
 
 

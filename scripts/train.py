@@ -160,8 +160,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="硬表面阶段：切向尺度上限（米）")
     p.add_argument("--surface-outside-weight", type=float, default=None,
                    help="硬表面阶段：FLAME 表面外 alpha 归零权重")
+    p.add_argument("--alpha-weight", type=float, default=None,
+                   help="alpha 直接监督权重：向 GT 前景 mask 回归（0=关）")
     p.add_argument("--alpha-sat-weight", type=float, default=None,
                    help="加密阶段：FLAME 表面内 alpha 欠饱和的惩罚权重（0=关）")
+    p.add_argument("--alpha-sat-erode", type=int, default=None,
+                   help="alpha 饱和只约束轮廓内部（腐蚀像素数，默认 3）")
     p.add_argument("--alpha-sat-target", type=float, default=None,
                    help="alpha 饱和目标（默认 0.98）")
     p.add_argument("--surface-bg-weight", type=float, default=None,
@@ -362,12 +366,18 @@ def main(argv: list[str] | None = None) -> int:
     surface_bg = float(
         args.surface_bg_weight if args.surface_bg_weight is not None
         else cfg.get("train.pipeline.hard_surface.bg_weight", 1.0))
+    alpha_weight = float(
+        args.alpha_weight if args.alpha_weight is not None
+        else cfg.get("train.pipeline.alpha_weight", 0.0))
     alpha_sat = float(
         args.alpha_sat_weight if args.alpha_sat_weight is not None
         else cfg.get("train.pipeline.alpha_saturation.weight", 0.0))
     alpha_sat_target = float(
         args.alpha_sat_target if args.alpha_sat_target is not None
         else cfg.get("train.pipeline.alpha_saturation.target", 0.98))
+    alpha_sat_erode = int(
+        args.alpha_sat_erode if args.alpha_sat_erode is not None
+        else cfg.get("train.pipeline.alpha_saturation.erode", 3))
     if surface_every <= 0:
         raise SystemExit("[error] --surface-every 必须为正")
     if stage == "hard_surface":
@@ -722,6 +732,7 @@ def main(argv: list[str] | None = None) -> int:
     objective.surface_outside = surface_outside
     objective.surface_bg = surface_bg
     objective.alpha_sat = alpha_sat
+    objective.alpha = alpha_weight
     objective.ssim = ssim_weight
     objective.lpips = lpips_weight
     objective.lpips_from = lpips_from
@@ -750,8 +761,11 @@ def main(argv: list[str] | None = None) -> int:
         loss_terms.append(f"surface_outside {surface_outside:g}")
     if surface_bg > 0:
         loss_terms.append(f"surface_bg {surface_bg:g}")
+    if alpha_weight > 0:
+        loss_terms.append(f"alpha {alpha_weight:g}(对 GT mask)")
     if alpha_sat > 0:
-        loss_terms.append(f"alpha_sat {alpha_sat:g}(目标 {alpha_sat_target:g})")
+        loss_terms.append(f"alpha_sat {alpha_sat:g}(目标 {alpha_sat_target:g}，"
+                          f"内缩 {alpha_sat_erode}px)")
     if ssim_weight > 0:
         loss_terms.append(f"ssim {ssim_weight:g}")
     if lpips_weight > 0:
@@ -859,10 +873,17 @@ def main(argv: list[str] | None = None) -> int:
                                cam, bg, target_image=batch.image.to(device),
                                build_graph=True)
             if alpha_sat > 0:
-                # 表面内 alpha 欠饱和：防止"半透明、透出背面"
+                # 表面内 alpha 欠饱和：防止"半透明、透出背面"。
+                # 只约束**轮廓内部**（腐蚀几像素）：轮廓上的高斯同时承担头发/
+                # 边缘覆盖，强行压成实心会在外面留黑片。
                 surf = torch.cat(
                     [_surface_mask(batch, i).to(device)
                      for i in range(int(mesh_verts.shape[0]))], dim=0)
+                k = int(alpha_sat_erode) * 2 + 1
+                if k > 1:
+                    inner = -torch.nn.functional.max_pool2d(
+                        -surf.float(), k, stride=1, padding=k // 2)
+                    surf = inner > 0.5
                 deficit = (alpha_sat_target - out.alpha).clamp_min(0.0)
                 out.alpha_sat_loss = ((deficit * surf).sum()
                                       / surf.sum().clamp_min(1))

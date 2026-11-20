@@ -164,6 +164,7 @@ run "${PY_RUN[@]}" scripts/train.py \
   --repair-per-batch "$REPAIR" \
   --batch-size "$BATCH" --iterations "$STEPS" \
   --blend-start "$BLEND" --hard-xyz-lr "$XYZ_LR" --patience "$PATIENCE" \
+  --alpha-weight "${DENS_ALPHA_WEIGHT:-${CFG_ALPHA_WEIGHT:-0.2}}" \
   --ssim-weight "$SSIM" --lpips-weight "$LPIPS" --lpips-from "$LPIPS_FROM" \
   --densify --densify-every "$EVERY" --densify-count "$COUNT" \
   --densify-max "$MAX_GAUSS" --densify-prune-opacity "$PRUNE_OP" \

@@ -55,10 +55,14 @@ train:
     # 两段更新的参数（ParameterPlan.rgba_avatar_defaults）：
     #   xyz 5e-5 / opacity 0.25 / scaling 0.025 / rotation 0.005 / f_dc 0.0125
     #   stage2 额外训练 xyz_b / rotation_b / f_dc_b / weight_module。
+    # 加密阶段：alpha 直接向 GT 前景 mask 回归（治"半透明 + 轮廓外黑色薄雾"）
+    alpha_weight: 0.2
     # 加密阶段：FLAME 表面内 alpha 欠饱和惩罚（防"半透明、透出背面"）
     alpha_saturation:
       weight: 0.03
       target: 0.98
+      # 只约束轮廓内部（腐蚀像素）：避免把轮廓上的高斯压成外溢黑片
+      erode: 3
 
     densify:
       # ---- stage1 硬表面初始化（静态；形变基关闭）----
