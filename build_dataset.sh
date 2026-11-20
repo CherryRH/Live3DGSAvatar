@@ -100,6 +100,13 @@ if [[ -n "$VIDEO" ]]; then
   conda run -n "$MAIN_ENV" --no-capture-output \
     python scripts/build_dataset.py "${BUILD_ARGS[@]}"
 
+  # 保留 RDF 原始跟踪结果（x/verts/identity）：烘焙后没法再驱动新 pose，
+  # 留着才能在之后合成"没有的角度"。
+  if [[ -f "$STAGE/render_inputs.npz" ]]; then
+    cp -f "$STAGE/render_inputs.npz" "$REPO_ROOT/datasets/$NAME/render_inputs.rdf.npz"
+    info "保留 RDF 跟踪结果：datasets/$NAME/render_inputs.rdf.npz"
+  fi
+
   # 保留原始裁图，方便与 images/ 对照；不留在 datasets 里避免混淆训练输入
   mkdir -p "$REPO_ROOT/datasets/$NAME/input"
   cp -a "$STAGE/input/." "$REPO_ROOT/datasets/$NAME/input/"

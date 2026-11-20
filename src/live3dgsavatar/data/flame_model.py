@@ -87,7 +87,13 @@ class FlameModel:
 
     def __init__(self, flame_dir: Path, dtype: torch.dtype = torch.float64) -> None:
         self._flame_dir = Path(flame_dir)
+        # FLAME2020 叫 generic_model.pkl，FLAME2023 叫 flame2023.pkl；
+        # 两者拓扑一致（5023 顶点），补牙流程完全相同。
         geom = Path(flame_dir) / "generic_model.pkl"
+        if not geom.exists():
+            alt = Path(flame_dir) / "flame2023.pkl"
+            if alt.exists():
+                geom = alt
         if not geom.exists():
             raise FileNotFoundError(f"缺少 FLAME 模型：{geom}")
         with open(geom, "rb") as fh:

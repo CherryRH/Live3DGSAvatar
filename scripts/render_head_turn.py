@@ -1,13 +1,9 @@
 #!/usr/bin/env python
-"""按 **FLAME 头姿** 合成"转头"视角并渲染（GT 语义，不是相机绕转）。
+"""按 **RDF 的 identity + pose** 驱动 FLAME，渲染"转头"视角（不依赖 checkpoint）。
 
-为什么要这个：数据集里的"大角度"是**头转、肩/胸不动**；而 `orbit_w2c`
-是绕头心转相机，会把胸口一起转走（与 GT 差 ~12 dB）。这里改成：
-
-1. 从 `checkpoint/` 取一帧的 FLAME 参数（形状/表情/下颌/眼球/眼睑/头姿/平移）；
-2. 把头姿绕颈关节转 `Δyaw`（`R_new = R_y(Δ) @ R_head`，平移按颈关节补偿）；
-3. FLAME 前向重建网格，再映射回**数据集坐标**（用该帧的刚体拟合 `Rf, tf`）；
-4. 同步更新 `blend_weight` 的头姿段 `[100:106]` 与平移段 `[126:129]`，渲染。
+GT 的"大角度"是头转、肩/胸不动；`orbit_w2c` 是绕头心转相机，会把胸口一起
+转走。这里用我们自己的 RDF 跟踪结果（`render_inputs.rdf.npz` 的 `identity`
+与 `x`）驱动 FLAME2023，只改头姿，再映射回数据集坐标渲染。
 
 用法::
 
@@ -30,26 +26,24 @@ import live3dgsavatar  # noqa: F401,E402
 
 
 def parse_args(argv=None):
-    p = argparse.ArgumentParser(description="FLAME 头姿合成视角 + 渲染")
+    p = argparse.ArgumentParser(description="RDF 头姿驱动 + 渲染")
     p.add_argument("--subject", default=None)
     p.add_argument("--work-name", default=None)
     p.add_argument("--dataset", default=None)
     p.add_argument("--base-frame", type=int, default=None,
-                   help="用哪一帧的形状/表情作底（默认训练段最正脸的帧）")
-    p.add_argument("--yaws", required=True, help="逗号分隔的相对 yaw（度），如 40,60,80")
-    p.add_argument("--flame-dir", type=Path, default=Path("data/FLAME2020"))
+                   help="以哪一帧的表情/身份为底（默认训练段最正脸的帧）")
+    p.add_argument("--yaws", required=True, help="相对 yaw（度），如 40,60,80")
+    p.add_argument("--flame-dir", type=Path, default=Path("data/FLAME2023"))
     p.add_argument("--out", type=Path, required=True)
     return p.parse_args(argv)
 
 
 def _kabsch(A: torch.Tensor, B: torch.Tensor):
-    """求 R,t 使 R·A + t ≈ B（用于 loader 空间 -> 数据集空间）。"""
     ca, cb = A.mean(0), B.mean(0)
     H = (A - ca).T @ (B - cb)
     U, _, Vt = torch.linalg.svd(H)
     d = torch.sign(torch.linalg.det(Vt.T @ U.T))
-    D = torch.diag(torch.tensor([1.0, 1.0, d]))
-    R = Vt.T @ D @ U.T
+    R = Vt.T @ torch.diag(torch.tensor([1.0, 1.0, d])) @ U.T
     return R, cb - R @ ca
 
 
@@ -63,13 +57,12 @@ def main(argv=None) -> int:
     from live3dgsavatar.core.io import load_ply
     from live3dgsavatar.core.render import SimpleRasterizer, render_frame
     from live3dgsavatar.core.types import Camera, Mesh
-    from live3dgsavatar.data.checkpoint_loader import (CheckpointDataset,
-                                                       _matrix_from_rot6d,
-                                                       _rot6d_from_matrix)
     from live3dgsavatar.data.datasets import resolve_dataset_dir
     from live3dgsavatar.data.flame_model import FlameModel
     from live3dgsavatar.data.pose import head_yaw
     from live3dgsavatar.data.scene import load_scene
+    from live3dgsavatar.tracking.param_map import (matrix_to_rot6d, rotvec_to_matrix,
+                                                   split_pose)
 
     cfg = load_config()
     subject = args.subject or str(cfg.get("subject") or "")
@@ -80,20 +73,44 @@ def main(argv=None) -> int:
     if work:
         cfg.set("work_name", work)
     data = resolve_dataset_dir(cfg, args.dataset or subject)
-    scene = load_scene(cfg, frames=1, data_dir=data)
-    ds = CheckpointDataset(data, dtype=torch.float64)
-    flame = FlameModel(args.flame_dir, dtype=torch.float64)
-    with np.load(data / "render_inputs.npz", allow_pickle=True) as z:
-        M = torch.from_numpy(z["mesh"].copy()).float()
-        W = torch.from_numpy(z["blend_weight"].copy()).float()
+    rdf_path = data / "render_inputs.rdf.npz"
+    if not rdf_path.is_file():
+        raise SystemExit(
+            f"[error] 缺少 {rdf_path}（RDF 的 identity/pose）。\n"
+            "        先跑 scripts/rdf_dump.py（realdenseface 环境）并保留结果。")
+    with np.load(rdf_path, allow_pickle=True) as d:
+        x = torch.from_numpy(np.asarray(d["x"], dtype=np.float32))
+        identity = torch.from_numpy(
+            np.asarray(d["identity"], dtype=np.float32)).reshape(-1)
+    with np.load(data / "render_inputs.npz", allow_pickle=True) as d:
+        M = torch.from_numpy(d["mesh"].copy()).float()
+        W = torch.from_numpy(d["blend_weight"].copy()).float()
     n = M.shape[0]
+    if x.shape[0] != n:
+        raise SystemExit(f"[error] RDF 帧数 {x.shape[0]} 与数据集 {n} 不一致")
     held = int(round(n * float(cfg.get("train.pipeline.test_ratio", 0.3))))
     yaw = np.abs(head_yaw(W.numpy()))
     base = int(args.base_frame) if args.base_frame is not None else int(
         np.argmin(yaw[: n - held]))
+
+    scene = load_scene(cfg, frames=1, data_dir=data)
+    flame = FlameModel(args.flame_dir, dtype=torch.float64)
+    pose = split_pose(x[base:base + 1])
+    jaw = rotvec_to_matrix(pose["jaw"]).double()
+    eyes = torch.stack([rotvec_to_matrix(pose["eye_l"]),
+                        rotvec_to_matrix(pose["eye_r"])], dim=1).double()
+    head0 = (rotvec_to_matrix(pose["global"]) @
+             rotvec_to_matrix(pose["neck"])).double()
+
+    def build(head_m: torch.Tensor) -> torch.Tensor:
+        v = flame.forward(identity[None].double(), x[base:base + 1, :100].double(),
+                          head_m[None], jaw, eyes, None)
+        return v[0].float()
+
+    # 刚体映射：FLAME 空间 -> 数据集空间（用底帧估一次）
+    Rf, tf = _kabsch(build(head0), M[base])
+
     ply = Path(str(cfg.get("paths.models_dir"))) / subject / work / "model.ply"
-    if not ply.is_file():
-        raise SystemExit(f"[error] 找不到模型：{ply}")
     avatar = load_ply(ply, config=AvatarConfig.from_yaml(ply.parent / "config.yaml"),
                       device="cuda")
     rasterizer = SimpleRasterizer()
@@ -101,30 +118,16 @@ def main(argv=None) -> int:
         K=scene.K, R=scene.R, T=scene.T,
         width=scene.width, height=scene.height).to("cuda")
 
-    # loader 空间 -> 数据集空间的刚体映射（用底帧估一次）
-    v0, _ = ds.mesh_and_weight(base, flame)
-    Rf, tf = _kabsch(v0.float(), M[base])
-
     args.out.mkdir(parents=True, exist_ok=True)
     for deg in [float(v) for v in str(args.yaws).split(",") if str(v).strip()]:
-        p = ds._load_params(base)
-        Rd = torch.from_numpy(
-            rotation_y(deg)[:3, :3].numpy().astype(np.float64)) @ p.global_rot
-        jaw = _matrix_from_rot6d(
-            _rot6d_from_matrix(_matrix_from_rot6d(p.jaw.reshape(1, 6))[0]
-                               ).reshape(1, 6))
-        eyes = _matrix_from_rot6d(
-            _rot6d_from_matrix(_matrix_from_rot6d(p.eyes.reshape(2, 6))
-                               ).reshape(2, 6))
-        neck_j = flame.joints(p.shape[None], p.expression[None])[0][1]
-        transl = Rd @ neck_j - neck_j + p.global_transl
-        v = flame.forward(p.shape[None], p.expression[None], Rd[None],
-                          jaw[None], eyes[None], p.eyelids[None])[0] + transl
-        verts = ((Rf @ v.float().T).T + tf).unsqueeze(0).cuda()
+        head_m = (torch.from_numpy(rotation_y(deg)[:3, :3].numpy().astype(np.float64))
+                  @ head0)
+        verts = ((Rf @ build(head_m).T).T + tf).unsqueeze(0).to("cuda")
         weight = W[base:base + 1].clone()
         weight[0, 100:106] = torch.from_numpy(
-            _rot6d_from_matrix(Rd.float()).numpy()).float()
-        weight[0, 126:129] = transl.float()
+            matrix_to_rot6d(head_m.float()).numpy()).float()
+        weight[0, 106:112] = torch.from_numpy(
+            matrix_to_rot6d(jaw.float()).numpy()).float()
         mesh = Mesh(verts=verts, faces=scene.faces.to("cuda"),
                     uvs=scene.uvs.to("cuda"), uv_faces=scene.uv_faces.to("cuda"))
         with torch.no_grad():
