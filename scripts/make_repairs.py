@@ -125,9 +125,11 @@ def main(argv=None) -> int:
 
     # 头转（pose 驱动）：语义与 GT 一致；没有 RDF 跟踪结果时退回相机绕转
     driver = None
-    if (data_dir / "rdf_tracking.npz").is_file():
+    try:
         from live3dgsavatar.tracking.pose_drive import PoseDriver
         driver = PoseDriver(data_dir, device=device)
+    except Exception as exc:
+        print(f"  视角   : 相机绕转（pose 驱动不可用：{exc}）")
         cam_fixed = Camera.from_intrinsics_extrinsics(
             K=scene.K, R=scene.R, T=scene.T,
             width=scene.width, height=scene.height).to(device)

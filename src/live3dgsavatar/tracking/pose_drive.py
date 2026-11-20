@@ -1,17 +1,23 @@
 #!/usr/bin/env python
-"""按 **RDF 的 identity + pose** 驱动 FLAME：把任意帧的头"转"到目标角度。
+"""把任意帧的头"转"到目标角度：**直接对烘焙 mesh 做绕颈关节的蒙皮旋转**。
 
 为什么不是相机绕转：数据集里的"大角度"是**头转、肩/胸不动**。绕头心转相机
 会把胸口一起转走（与 GT 差约 12 dB），并在颈/胸边界教出错误的"背景"目标。
-这里的语义与生产驱动完全一致：相机不动，只改 FLAME 的头姿。
 
-数据来源（都是我们自己 RDF 跟踪的产物）::
+为什么不是"重算 FLAME 再配准"：烘焙数据走的是 `teeth(rdf.verts)`，而重算
+FLAME + Kabsch 只能贴到 ~3 mm（p99 1–2 cm），`turn(idx, 0)` 都不是恒等。
+这里改成**纯几何**做法，闭环天然成立：
 
-    datasets/<obj>/rdf_tracking.npz   x(T,118) + identity(300)
-    datasets/<obj>/render_inputs.npz   mesh(T,5083,3) + blend_weight(T,129)
+    v' = v + w_h · (D·(v − J) + J − v)
 
-`FLAME 空间 -> 数据集空间` 的刚体映射用底帧估一次（Kabsch），之后每个目标角度
-只做一次 FLAME 前向 + 刚体变换。
+- `w_h` 是每个顶点的头骨权重（`1 − root 权重`，来自 FLAME 的 LBS 权重；
+  下颌/眼球是颈的子节点，一起转），
+- `J` 是颈关节在**数据集坐标**里的位置（用 RDF 的 identity/pose 经一次刚体
+  映射得到；没有 RDF 时退回"过渡带顶点的质心"），
+- `D` 是目标相对当前头姿的**世界系增量旋转**。
+
+`D = I` 时 `v' = v` 严格成立，所以 `turn(idx, 0)` 与烘焙 mesh 逐位一致；
+`w_h = 0` 的胸/肩顶点也保持不动。
 """
 from __future__ import annotations
 
@@ -22,6 +28,7 @@ import numpy as np
 import torch
 
 from ..data.flame_model import FlameModel
+from ..data.pose import rot6d_to_matrix
 from .param_map import matrix_to_rot6d, rotvec_to_matrix, split_pose
 
 #: 数据集里有第二套 RDF 资产时优先用（跟踪就是 2023 做的）
@@ -55,30 +62,42 @@ class PoseDriver:
         from .tracked import RDF_TRACKING_FILE
 
         self.data_dir = Path(data_dir)
-        rdf = self.data_dir / RDF_TRACKING_FILE
-        if not rdf.is_file():
-            raise FileNotFoundError(f"缺少 RDF 跟踪结果：{rdf}")
         baked = self.data_dir / "render_inputs.npz"
         if not baked.is_file():
             raise FileNotFoundError(f"缺少烘焙数据：{baked}")
-        with np.load(rdf, allow_pickle=True) as d:
-            self.x = torch.from_numpy(np.asarray(d["x"], dtype=np.float32))
-            self.identity = torch.from_numpy(
-                np.asarray(d["identity"], dtype=np.float32)).reshape(-1)
         with np.load(baked, allow_pickle=True) as d:
             self.mesh = torch.from_numpy(d["mesh"].copy()).float()
             self.weight = torch.from_numpy(d["blend_weight"].copy()).float()
-        if self.x.shape[0] != self.mesh.shape[0]:
-            raise ValueError(
-                f"RDF 帧数 {self.x.shape[0]} 与数据 {self.mesh.shape[0]} 不一致")
         self.device = torch.device(device)
+
+        # FLAME 只用来拿 LBS 权重（拓扑）与（可选的）颈关节位置，不参与顶点重建。
         flame_dir = Path(flame_dir) if flame_dir else DEFAULT_FLAME_DIR
         if not (flame_dir / "generic_model.pkl").is_file() and not (
                 flame_dir / "flame2023.pkl").is_file():
             flame_dir = Path("data/FLAME2020")
         self.flame = FlameModel(flame_dir, dtype=torch.float64)
+        # 头骨权重：FLAME 的 5 个关节里 0 是 root（胸/颈根），其余（neck/jaw/eyes）
+        # 都随头转；牙齿的权重在 FlameModel 里已经补好。
+        lbs = self.flame.lbs_weights.float()
+        self.head_weight = (1.0 - lbs[:, 0]).clamp(0.0, 1.0)
+        if int(self.mesh.shape[1]) != int(self.head_weight.shape[0]):
+            raise ValueError(
+                f"mesh 顶点数 {self.mesh.shape[1]} 与 FLAME 拓扑 "
+                f"{self.head_weight.shape[0]} 不一致，无法做蒙皮转头")
+
+        self.rdf_path = self.data_dir / RDF_TRACKING_FILE
+        self._x = self._identity = None
+        if self.rdf_path.is_file():
+            with np.load(self.rdf_path, allow_pickle=True) as d:
+                self._x = torch.from_numpy(
+                    np.asarray(d["x"], dtype=np.float32))
+                self._identity = torch.from_numpy(
+                    np.asarray(d["identity"], dtype=np.float32)).reshape(-1)
+            if self._x.shape[0] != self.mesh.shape[0]:
+                self._x = self._identity = None   # 帧数对不上就退回几何兜底
+
+        self._joint: dict[int, torch.Tensor] = {}
         self._cache: dict[tuple[int, float, float], TurnedFrame] = {}
-        self._rigid: dict[int, tuple[torch.Tensor, torch.Tensor]] = {}
 
     # ------------------------------------------------------------ 基础 --
 
@@ -95,34 +114,62 @@ class PoseDriver:
         return int(np.argmin(yaw[:n]))
 
     def head_matrix(self, idx: int) -> torch.Tensor:
-        p = split_pose(self.x[idx:idx + 1])
-        return (rotvec_to_matrix(p["global"]) @ rotvec_to_matrix(p["neck"]))[0]
+        """该帧的头姿（烘焙驱动里的 `[100:106]` rot6d，与训练同一口径）。"""
+        return torch.from_numpy(
+            rot6d_to_matrix(self.weight[idx:idx + 1, 100:106].numpy())[0]).float()
 
-    def _build(self, idx: int, head: torch.Tensor) -> torch.Tensor:
-        p = split_pose(self.x[idx:idx + 1])
-        jaw = rotvec_to_matrix(p["jaw"]).double()
-        eyes = torch.stack([rotvec_to_matrix(p["eye_l"]),
-                            rotvec_to_matrix(p["eye_r"])], dim=1).double()
-        v = self.flame.forward(
-            self.identity[None].double(), self.x[idx:idx + 1, :100].double(),
-            head.double()[None], jaw, eyes, None)
-        return v[0].float()
+    # ------------------------------------------------------------ 颈关节 --
 
-    def rigid_map(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
-        """该帧的 `FLAME 空间 -> 数据集空间` 刚体映射（按帧缓存）。"""
-        hit = self._rigid.get(int(idx))
-        if hit is None:
-            hit = _kabsch(self._build(idx, self.head_matrix(idx)), self.mesh[idx])
-            if len(self._rigid) > 4096:
-                self._rigid.clear()
-            self._rigid[int(idx)] = hit
-        return hit
+    def joint(self, idx: int) -> torch.Tensor:
+        """颈关节在数据集坐标里的位置（按帧缓存）。"""
+        hit = self._joint.get(int(idx))
+        if hit is not None:
+            return hit
+        J = None
+        if self._x is not None:
+            J = self._joint_from_rdf(int(idx))
+        if J is None:
+            J = self._joint_from_weights(int(idx))
+        self._joint[int(idx)] = J
+        return J
+
+    def _joint_from_rdf(self, idx: int) -> torch.Tensor | None:
+        """用 RDF 的 identity/exp 算颈关节，再用刚体映射落到数据集坐标。"""
+        try:
+            p = split_pose(self._x[idx:idx + 1])
+            neck_j = self.flame.joints(
+                self._identity[None], self._x[idx:idx + 1, :100])[0][1]
+            head = (rotvec_to_matrix(p["global"])
+                    @ rotvec_to_matrix(p["neck"]))[0]
+            jaw = rotvec_to_matrix(p["jaw"]).double()
+            eyes = torch.stack([rotvec_to_matrix(p["eye_l"]),
+                                rotvec_to_matrix(p["eye_r"])], dim=1).double()
+            v = self.flame.forward(
+                self._identity[None].double(),
+                self._x[idx:idx + 1, :100].double(), head.double()[None],
+                jaw, eyes, None)[0].float()
+            R, t = _kabsch(v, self.mesh[idx])
+            return (R @ neck_j.float() + t).float()
+        except Exception:
+            return None
+
+    def _joint_from_weights(self, idx: int) -> torch.Tensor:
+        """兜底：取"头/胸权重各半"的过渡带质心当关节锚点。"""
+        w = self.head_weight
+        band = (w > 0.35) & (w < 0.65)
+        if bool(band.any()):
+            return self.mesh[idx][band].mean(dim=0)
+        return self.mesh[idx].mean(dim=0)
 
     # ------------------------------------------------------------ 转头 --
 
     def turn(self, idx: int, dyaw: float = 0.0, dpitch: float = 0.0,
              Rf: torch.Tensor | None = None,
              tf: torch.Tensor | None = None) -> TurnedFrame:
+        """把第 `idx` 帧的头转 `(dyaw, dpitch)`。
+
+        `Rf/tf` 仅为兼容旧调用保留，已不使用（不再做 FLAME 重建）。
+        """
         key = (int(idx), round(float(dyaw), 2), round(float(dpitch), 2))
         hit = self._cache.get(key)
         if hit is not None:
@@ -130,17 +177,22 @@ class PoseDriver:
 
         from ..core.camera import rotation_x, rotation_y
 
-        R = ((rotation_x(float(dpitch)) @ rotation_y(float(dyaw)))[:3, :3]
+        D = ((rotation_x(float(dpitch)) @ rotation_y(float(dyaw)))[:3, :3]
              .double())
-        head = R @ self.head_matrix(idx).double()
-        if Rf is None or tf is None:
-            Rf, tf = self.rigid_map(idx)
-        verts = ((Rf @ self._build(idx, head).T).T + tf).float()
-        weight = self.weight[idx].clone()
-        weight[100:106] = torch.from_numpy(
-            matrix_to_rot6d(head.float()).numpy()).float()
-        out = TurnedFrame(mesh=verts.to(self.device), weight=weight.to(self.device),
-                          head=head.float())
+        v = self.mesh[int(idx)].double()
+        w = self.head_weight.double().unsqueeze(1)
+        weight = self.weight[int(idx)].clone()
+        if bool(torch.allclose(D, torch.eye(3, dtype=D.dtype))):
+            verts = v                                   # 恒等：逐位不动
+            head = self.head_matrix(int(idx))
+        else:
+            J = self.joint(int(idx)).double()
+            verts = v + w * ((D @ (v - J).T).T + J - v)
+            head = (D @ self.head_matrix(int(idx)).double()).float()
+            weight[100:106] = torch.from_numpy(
+                matrix_to_rot6d(head.float()).numpy()).float()
+        out = TurnedFrame(mesh=verts.float().to(self.device),
+                          weight=weight.to(self.device), head=head.float())
         if len(self._cache) > 512:
             self._cache.clear()
         self._cache[key] = out

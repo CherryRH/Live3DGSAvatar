@@ -545,7 +545,7 @@ def render_showcase(args, scene, avatar, rasterizer, bg,
     # 有 RDF 跟踪结果就按"头转"渲染（与 GT 语义一致），否则退回相机绕转
     driver = None
     data_dir = getattr(args, "data", None)
-    if data_dir is not None and (Path(data_dir) / "rdf_tracking.npz").is_file():
+    if data_dir is not None:
         from live3dgsavatar.tracking.pose_drive import PoseDriver
         try:
             driver = PoseDriver(Path(data_dir))

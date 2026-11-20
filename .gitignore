@@ -42,3 +42,6 @@ datasets/*
 
 # 临时交付/归档目录
 /tmp/
+
+# 报告目录
+report/*

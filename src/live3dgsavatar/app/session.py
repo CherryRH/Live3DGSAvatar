@@ -582,9 +582,6 @@ class Session:
             return None
         if self._pose_driver is not None and self._pose_driver_dir == dirp:
             return self._pose_driver
-        if not (Path(dirp) / "rdf_tracking.npz").is_file():
-            self._pose_driver, self._pose_driver_dir = None, Path(dirp)
-            return None
         try:
             from ..tracking.pose_drive import PoseDriver
             self._pose_driver = PoseDriver(Path(dirp))

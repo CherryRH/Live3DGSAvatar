@@ -571,12 +571,11 @@ def main(argv: list[str] | None = None) -> int:
 
     # 头转（pose 驱动）需要 RDF 的 identity/pose；没有就退回相机绕转
     pose_driver = None
-    if (data_dir / "rdf_tracking.npz").is_file():
-        try:
-            from live3dgsavatar.tracking.pose_drive import PoseDriver
-            pose_driver = PoseDriver(data_dir, device="cpu")
-        except Exception as exc:  # 资产缺失等：不阻断训练
-            print(f"  提示   : pose 驱动不可用（{exc}），退回相机绕转")
+    try:
+        from live3dgsavatar.tracking.pose_drive import PoseDriver
+        pose_driver = PoseDriver(data_dir, device="cpu")
+    except Exception as exc:  # 资产/拓扑不匹配等：不阻断训练
+        print(f"  提示   : pose 驱动不可用（{exc}），退回相机绕转")
 
     camera = Camera.from_intrinsics_extrinsics(
         K=scene.K, R=scene.R, T=scene.T,
