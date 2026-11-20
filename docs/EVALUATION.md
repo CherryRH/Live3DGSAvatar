@@ -98,9 +98,9 @@ python scripts/render_test.py --subject bala --dataset bala \
     --frame-mode heldout --frames -1
 ```
 
-单模型时产物仍是 `compare.mp4`（原图 | 渲染）和 `showcase.mp4`（单模型）。
+单模型时产物是 `compare.mp4`（原图 | 渲染）和 `showcase.png`（固定视角拼图）。
 多模型时默认落在 `<主版本>_multi/`，`compare.mp4` 为“原图 + N 个渲染”横排，
-`showcase.mp4` 为 N 个模型同角度横排；`report.json` 的 `models` 记录每个版本
+`showcase.png` 为固定视角拼图；`report.json` 的 `models` 记录每个版本
 各自的 PSNR/SSIM/LPIPS/性能，顶层 `quality`/`perf` 仍保留主版本，兼容旧读取方。
 
 `eval.sh` 默认用 `--frame-mode heldout --frames -1`：取训练末尾

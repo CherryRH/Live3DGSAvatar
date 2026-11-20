@@ -1,9 +1,8 @@
 #!/usr/bin/env python
 """一次性生成修复图：按固定 yaw 渲染当前模型 -> SyncFix -> unsharp -> 输出目录。
 
-与 `find_defects.py` 的区别：**不选缺陷**。stage3 的输入模型已经在大角度上
-明显好于基础模型，欠的是"没见过的角度"，所以按固定间隔（如 5°）逐个视角
-渲染、修复、加入监督即可。
+按固定间隔（如 5°）逐个视角渲染、修复，供加密管线做**初始化**监督。
+视角是"头转"（`tracking.pose_drive`），不是绕头心转相机。
 
 产物（syncfix_label 需要的 defects 目录结构）::
 
@@ -30,7 +29,7 @@ import live3dgsavatar  # noqa: F401,E402
 
 
 def parse_args(argv=None):
-    p = argparse.ArgumentParser(description="stage3 固定 yaw 视图渲染")
+    p = argparse.ArgumentParser(description="按固定头姿渲染 + SyncFix 生成修复图")
     p.add_argument("--subject", default=None)
     p.add_argument("--work-name", default=None,
                    help="要渲染的模型版本名（models/<subject>/<work-name>）")
