@@ -104,7 +104,7 @@ run() {
 
 eval_after() {
   (( RUN_EVAL )) || return 0
-  bash eval.sh --subject "$SUBJECT" --work-name "$1" --no-lpips
+  bash eval.sh --subject "$SUBJECT" --work-name "$1"
 }
 
 echo "=============================================================="
@@ -177,5 +177,5 @@ run "${PY_RUN[@]}" scripts/train.py \
   --densify-split-jitter "$JITTER" "${FORCE_FLAG[@]}"
 
 info "全部完成：$MODELS/$NAME"
-echo "         评测：bash eval.sh --subject $SUBJECT --work-name $NAME --no-lpips"
+echo "         评测：bash eval.sh --subject $SUBJECT --work-name $NAME"
 eval_after "$NAME"

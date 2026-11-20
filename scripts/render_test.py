@@ -275,6 +275,54 @@ def _finalize(args: argparse.Namespace, cfg: Config) -> argparse.Namespace:
 
 # --------------------------------------------------------------- 指标 --
 # 口径与 GUI/在线更新一致：图像度量来自 `core.metrics`，
+#: 指标口径版本：口径一变就必须改这个串（报告里可追溯）。
+METRIC_VERSION = "2026-11-20.pose-headturn"
+
+
+def _provenance(models: list[dict]) -> dict:
+    """报告溯源：commit / 模型哈希 / 口径版本 / mask 与阈值定义。"""
+    import hashlib
+    import subprocess
+
+    def _git(*args: str):
+        try:
+            out = subprocess.run(["git", *args], capture_output=True,
+                                 text=True, timeout=5)
+            return out.stdout.strip() if out.returncode == 0 else None
+        except Exception:
+            return None
+
+    files: dict[str, dict] = {}
+    for m in models:
+        path = Path(m["model_path"])
+        digest = None
+        try:
+            h = hashlib.sha256()
+            with path.open("rb") as fh:
+                for chunk in iter(lambda: fh.read(1 << 20), b""):
+                    h.update(chunk)
+            digest = h.hexdigest()[:16]
+        except OSError:
+            pass
+        files[m["work_name"]] = {"path": str(path), "sha256": digest}
+    try:
+        import lpips as _lpips
+        lpips_version = getattr(_lpips, "__version__", None)
+    except Exception:
+        lpips_version = None
+    return {
+        "git_commit": _git("rev-parse", "HEAD"),
+        "git_dirty": bool(_git("status", "--porcelain")),
+        "model_files": files,
+        "metric_version": METRIC_VERSION,
+        "mask": "数据集人像 alpha>127（masked PSNR/SSIM）",
+        "hole_threshold": 0.5,
+        "alpha_deficit": "mean(1-alpha) over FLAME surface (robust score)",
+        "lpips": {"backbone": "alex", "version": lpips_version},
+        "sharpness": "mask 内梯度均值（渲染 / GT）",
+    }
+
+
 # 聚合与报告结构来自 `evaluation.protocol`。
 
 from live3dgsavatar.core.metrics import psnr, psnr_masked  # noqa: E402
@@ -417,6 +465,14 @@ def render_core(args, scene, frames: list[int], out_dir: Path,
         "peak_memory_mib": torch.cuda.max_memory_allocated() / 2**20,
         "batch_size": args.batch_size,
         "num_gaussian": int(avatar.num_gaussians),
+        # 报告里写**实际加载**的结构，而不是 CLI 默认值（评审 A4）
+        "structure": {
+            "tex_size": int(avatar.config.tex_size),
+            "num_basis_in": int(avatar.config.num_basis_in),
+            "num_basis_blend": int(avatar.config.num_basis_blend),
+            "mlp_hidden": list(avatar.config.mlp_hidden or ()),
+            "use_weight_proj": bool(avatar.config.use_weight_proj),
+        },
     }
     if args.profile:
         perf["stages_ms"] = {k: float(np.mean(v)) for k, v in stages.items() if v}
@@ -639,7 +695,8 @@ def _evaluate_images(images: dict[int, np.ndarray], gt, args):
         img = images.get(i)
         if img is None or img.shape != ref_rgb.shape:
             continue
-        m = frame_metrics(img, ref_rgb, ref_mask)
+        m = frame_metrics(img, ref_rgb, ref_mask,
+                          with_lpips=not args.no_lpips)
         if m.get("lpips") is not None:
             lpips_acc.append(float(m["lpips"]))
         per_frame[i] = {"frame": int(i), **m}
@@ -768,12 +825,23 @@ def main() -> int:
         "model_path": primary["model_path"],
         "model_config": primary["model_config"],
         "models": model_params,
-        "model_structure": {
-            "tex_size": args.tex_size,
-            "num_basis_in": args.num_basis_in,
-            "num_basis_blend": args.num_basis_blend,
-            "mlp_hidden": args.mlp_hidden,
-            "use_weight_proj": args.use_weight_proj,
+        # 实际加载的结构（每个模型一份），CLI 默认值不再冒充
+        "model_structure": primary["perf"].get("structure", {}),
+        "model_structure_per_model": [
+            {"work_name": m["work_name"],
+             "num_gaussian": m["perf"].get("num_gaussian"),
+             **m["perf"].get("structure", {})} for m in models],
+        # 溯源：报告必须能落回具体 commit / 文件 / 口径版本（评审 A3/A4/C）
+        "provenance": _provenance(models),
+        # 评测口径：留出集同时用于选模型和报数，必须写明（评审 A1）
+        "evaluation": {
+            "test_split": f"last {args.test_ratio:.0%} (heldout)",
+            "selection_split": (f"last {args.test_ratio:.0%} (same frames; "
+                                "early-stop / model_best)"),
+            "selection_metric": "robust = PSNR - 10*alpha_deficit "
+                                "(±20/30/40deg head-turn views)",
+            "note": "选模型与报数共用同一留出集：绝对值偏乐观，"
+                    "配置间比较请用同一选择规则与同一指标版本",
         },
         "dataset_dir": str(args.data),
         "gt_dir": str(args.gt_dir),

@@ -68,10 +68,15 @@ def summarize_quality(images: dict[int, np.ndarray],
 
 
 def frame_metrics(image: np.ndarray, ref_rgb: np.ndarray,
-                  ref_mask: np.ndarray | None) -> dict:
+                  ref_mask: np.ndarray | None, *,
+                  with_lpips: bool = True) -> dict:
     """单帧的 PSNR / SSIM / LPIPS；算不出的项为 `None`。
 
     视频叠加、报告与逐帧对比都走这一个函数，避免各处口径漂移。
+
+    Args:
+        with_lpips: 关掉时不计算 LPIPS（`--no-lpips` 会传 False），
+            对应字段为 None，报告里的 `params.render.lpips` 也写 false。
     """
     if image.shape != ref_rgb.shape:
         return {"psnr": None, "ssim": None, "lpips": None}
@@ -82,8 +87,8 @@ def frame_metrics(image: np.ndarray, ref_rgb: np.ndarray,
         "psnr": round(float(value), 2),
         "ssim": (lambda v: round(float(v), 4) if v is not None else None)(
             ssim(image, ref_rgb, ref_mask)),
-        "lpips": (lambda v: round(float(v), 4) if v is not None else None)(
-            lpips_score(image, ref_rgb)),
+        "lpips": ((lambda v: round(float(v), 4) if v is not None else None)(
+            lpips_score(image, ref_rgb)) if with_lpips else None),
     }
 
 

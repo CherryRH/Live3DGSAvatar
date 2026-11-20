@@ -118,3 +118,33 @@ python scripts/render_test.py --subject crh_1 --dataset crh_1 \
 - `rgb_from_sh_dc` / `sh_dc_from_rgb`。
 
 用于分析容量、死高斯和面覆盖，不进入训练/推理主路径。
+
+## 评测口径与严谨性（2026-11-20 评审 A1）
+
+**统一留出集**：末尾 30%（`train.pipeline.test_ratio`）既是验证集也是最终报告集，
+不另切第三份。这是本项目的固定约定，换来的是所有配置都在**同一批帧**上比较。
+
+**必须知道的代价**：`model_best` 是在这个 30% 上按 robust 分数挑出来的，所以报告
+是"best-of-N on test"，绝对值偏乐观。bala `densify` 实测：10 次验证的 robust 在
+27.22–28.50 之间（跨度 1.3 dB），被选中的最好值恰好也是最后一个 checkpoint
+（`model_004999.ply` 与 `model_005000.ply` 字节相同）。也就是说本行没有发生
+"选出来比最后一步更好"的情况；但不能假设别的行也如此。
+
+**报告字段**（`report.json`）：
+
+- `params.model_structure` / `model_structure_per_model`：**实际加载**的结构与
+  高斯数（不再写 CLI 默认值）；
+- `params.evaluation`：`test_split`、`selection_split`、`selection_metric`，
+  明确"选模型与报数共用同一留出集"；
+- `params.provenance`：git commit + dirty、模型文件 sha256、`metric_version`、
+  mask 定义、孔洞阈值、LPIPS backbone/版本。
+
+**可比性规则**：
+
+1. 只有 `metric_version` 相同的数字才能并排比较（2026-11-20 起 robust/展示图从
+   "相机绕转"改为"FLAME 头转"，口径变了）；
+2. 同一张表里所有行必须用同一选择规则（同一 robust 定义、同一 `min_delta`）与
+   同一训练步数/LPIPS 启用点；消融尤其要注意（3000 步 + LPIPS@2000 与 5000 步 +
+   LPIPS@3500 不可混排）；
+3. `--no-lpips` 现在**真的**跳过 LPIPS（此前只改 warning，报告里 `lpips: false`
+   却仍有数值）。
