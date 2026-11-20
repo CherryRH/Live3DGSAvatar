@@ -78,6 +78,9 @@ class TrainReport:
     last_parts: dict[str, float] = field(default_factory=dict)
     best_metric: float | None = None
     best_iteration: int | None = None
+    #: 是否真的落盘过 best 模型（`best_metric` 只反映落盘的那一份，
+    #: 不再用"history 最大值"冒充 —— 评审 B3）
+    best_saved: bool = False
     stopped_early: bool = False
 
     @property
@@ -177,16 +180,18 @@ class Trainer:
         self._emit("on_start")
 
         t0 = time.perf_counter()
-        iteration = 0
+        executed = 0
         try:
             for iteration in range(self.iterations):
                 if self._stop:
                     break
                 parts = self.step(iteration)
+                executed += 1
                 self._emit("on_step", iteration, parts)
         finally:
-            # `iteration` 是最后一次进入循环的值，实际执行了 iteration+1 步
-            self.report.iterations = iteration + 1 if self.iterations > 0 else 0
+            # 只记**真正跑过**的步数：早停时 for 变量会先 +1 再 break，
+            # 用 `iteration + 1` 会多算一步（评审 B4）。
+            self.report.iterations = executed
             self.report.seconds = time.perf_counter() - t0
             self._emit("on_end")
             close = getattr(self.source, "close", None)
@@ -314,13 +319,15 @@ class ValidationHook:
             elif improved:
                 trainer.report.best_metric = self.early_stop.best
                 trainer.report.best_iteration = iteration
+                trainer.report.best_saved = True
                 self.best_iteration = iteration
                 if self.on_improve is not None:
                     self.on_improve(iteration, float(self.early_stop.best))
 
     def on_end(self, trainer: "Trainer") -> None:
-        if self.best is not None:
-            trainer.report.best_metric = self.best
+        # 不再把 best_metric 改成 history 的最大值：那可能不是落盘的 checkpoint
+        # （评审 B3）。没触发过 on_improve 时保持 None + best_saved=False。
+        return None
 
     @property
     def best(self) -> float | None:

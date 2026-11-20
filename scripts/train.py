@@ -427,6 +427,10 @@ def main(argv: list[str] | None = None) -> int:
         def random_indices(self, n):
             return self.real.random_indices(n)
 
+        def iter_batches(self, batch_size):
+            """透传真实帧批次（逐面统计只用真实帧，修复帧没有对应 GT）。"""
+            return self.real.iter_batches(batch_size)
+
         def set_sample_weights(self, weights):
             """透传给真实帧源：修复帧按固定配额混入，不受权重影响。"""
             self.real.set_sample_weights(weights)
@@ -545,7 +549,6 @@ def main(argv: list[str] | None = None) -> int:
                                            summarise_holes)
     from live3dgsavatar.core.types import Camera, Mesh
     from live3dgsavatar.data.scene import load_scene
-    from live3dgsavatar.core.render.frontface import frontface_gaussians
     from live3dgsavatar.training.geometry import hard_surface_terms
     from live3dgsavatar.training.objectives import Objective
     from live3dgsavatar.training.plans import ParameterPlan
@@ -823,6 +826,14 @@ def main(argv: list[str] | None = None) -> int:
             surface_cache[key] = s
         return s
 
+    from live3dgsavatar.training.forward import ForwardOptions, forward_avatar
+    hard_forward = ForwardOptions(build_graph=True, frontface=True,
+                                  clamp_max_scale=surface_max_scale)
+    base_forward = ForwardOptions(build_graph=True)
+    hard_eval = ForwardOptions(frontface=True,
+                               clamp_max_scale=surface_max_scale)
+    base_eval = ForwardOptions()
+
     def render_fn(mesh_verts, weight, batch, iteration):
         mesh = Mesh(verts=mesh_verts.to(device), faces=scene.faces.to(device),
                     uvs=scene.uvs.to(device), uv_faces=scene.uv_faces.to(device))
@@ -833,13 +844,12 @@ def main(argv: list[str] | None = None) -> int:
             cam = camera
         bg = torch.zeros(batch.image.shape[0], 3, 1, 1, device=device)
         if stage == "hard_surface":
-            gs = avatar.deform(mesh, None if weight is None else weight.to(device))
-            # 硬上限：切向大尺度高斯直接压到 cap，避免 mask 外出现大块彩斑。
-            gs.scaling = gs.scaling.clamp(max=surface_max_scale)
-            gs = frontface_gaussians(gs, cam, mesh, avatar.binding_face_id)
-            out = render_gaussians(
-                gs, rasterizer, cam, bg,
-                target_image=batch.image.to(device), build_graph=True)
+            res = forward_avatar(
+                avatar, rasterizer, mesh,
+                None if weight is None else weight.to(device), cam, bg,
+                options=hard_forward, target_image=batch.image.to(device))
+            out = res.out
+            gs = res.gaussians
             terms = hard_surface_terms(
                 gs, mesh, avatar.binding_face_id, avatar.binding_face_bary,
                 max_scale=surface_max_scale)
@@ -861,10 +871,10 @@ def main(argv: list[str] | None = None) -> int:
                  for i in range(int(mesh_verts.shape[0]))], dim=0)
             out.loss_mask = surface & batch.mask.to(device).bool()
         else:
-            out = render_frame(avatar, rasterizer, mesh,
-                               None if weight is None else weight.to(device),
-                               cam, bg, target_image=batch.image.to(device),
-                               build_graph=True)
+            out = forward_avatar(
+                avatar, rasterizer, mesh,
+                None if weight is None else weight.to(device), cam, bg,
+                options=base_forward, target_image=batch.image.to(device)).out
         if nv_enabled and (int(iteration) + 1) % int(nv_every) == 0:
             from live3dgsavatar.training.losses import (outside_alpha_loss,
                                                        surface_bg_alpha_loss,
@@ -875,7 +885,10 @@ def main(argv: list[str] | None = None) -> int:
                 # 与 GT 同语义：相机不动，头转
                 turned = pose_driver.turn(int(batch.indices[i]), yaw, 0.0)
                 verts_nv = turned.mesh.unsqueeze(0).to(device)
-                weight_nv = turned.weight.unsqueeze(0).to(device)
+                # ⚠️ warm-up 期间主路径不传 weight，这里也必须一致，
+                #    否则形变基会在 blend_start 之前被偷偷训练（评审 B2）。
+                weight_nv = (None if weight is None
+                             else turned.weight.unsqueeze(0).to(device))
                 cam_nv = Camera(K=scene.K,
                                 w2c=w2c_data.unsqueeze(0).to(device),
                                 width=scene.width,
@@ -900,9 +913,10 @@ def main(argv: list[str] | None = None) -> int:
                     supported_nv = (surface_nv
                                     & supported_face[ids_nv.clamp(min=0)]
                                     & surface_nv)
-            out_nv = render_frame(
+            out_nv = forward_avatar(
                 avatar, rasterizer, mesh_nv, weight_nv, cam_nv,
-                torch.zeros(1, 3, 1, 1, device=device), build_graph=True)
+                torch.zeros(1, 3, 1, 1, device=device),
+                options=base_forward).out
             if nv_hole > 0 and supported_nv is not None:
                 out.nv_hole_loss = alpha_hole_loss(
                     out_nv.alpha, supported_nv.unsqueeze(0).unsqueeze(0))
@@ -960,8 +974,11 @@ def main(argv: list[str] | None = None) -> int:
             mesh = Mesh(verts=batch.mesh.to(device), faces=scene.faces.to(device),
                         uvs=scene.uvs.to(device), uv_faces=scene.uv_faces.to(device))
             bg = torch.zeros(batch.image.shape[0], 3, 1, 1, device=device)
-            out = render_frame(avatar, rasterizer, mesh,
-                               batch.blend_weight.to(device), camera, bg)
+            out = forward_avatar(
+                avatar, rasterizer, mesh, batch.blend_weight.to(device),
+                camera, bg,
+                options=(hard_eval if stage == "hard_surface"
+                         else base_eval)).out
             pred, tgt, mask = out.color, batch.image.to(device), batch.mask.to(device)
             mse = (((pred - tgt) ** 2) * mask).sum() / (mask.sum() * 3).clamp(min=1)
             total += float(10.0 * torch.log10(1.0 / mse.clamp(min=1e-10))) * len(batch)
@@ -1102,6 +1119,14 @@ def main(argv: list[str] | None = None) -> int:
     early_metric_name = (args.early_metric or
                          ("robust" if robust_cfg is not None else
                           ("psnr_surface" if stage == "hard_surface" else "psnr")))
+    # 指标必须真的会被算出来，否则 ValidationHook 永远不 update，
+    # 跑满预算却没有 best 模型（评审 B6）。
+    if early_metric_name == "robust" and robust_cfg is None:
+        raise SystemExit(
+            "[error] --early-metric robust 需要新视角验证（别加 --no-robust-eval）")
+    if early_metric_name == "psnr_surface" and stage != "hard_surface":
+        raise SystemExit(
+            "[error] --early-metric psnr_surface 只适用于 --stage hard_surface")
 
     def save_best(iteration: int, metric: float) -> None:
         """验证指标刷新最好成绩时存一份 —— 后训变差也能拿回好的那份。"""

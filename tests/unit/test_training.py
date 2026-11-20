@@ -388,8 +388,8 @@ def test_validation_hook_does_not_stop_before_start_after() -> None:
                        start_after=5),))
     report = t.run()
     assert report.stopped_early is True
-    # start_after=5 之前不允许停；iteration=5 请求停止，循环在第 7 步退出
-    assert report.iterations == 7
+    # start_after=5 之前不允许停；iteration=5 请求停止，实际只跑了 6 步
+    assert report.iterations == 6
     assert report.best_metric == pytest.approx(1.0)
 
 
@@ -935,3 +935,26 @@ def test_target_image_rejects_wrong_resolution_or_batch() -> None:
         _normalize_target_image(torch.rand(2, 3, 8, 8), cam, batch_size=1)
     with pytest.raises(ValueError, match="形状"):
         _normalize_target_image(torch.rand(3, 8, 8), cam, batch_size=1)
+
+
+def test_best_metric_is_the_saved_checkpoint() -> None:
+    """`best_metric` 必须是**落盘那一刻**的分数，而不是 history 最大值（B3）。"""
+    values = iter([1.0, 3.0, 2.0, 2.0])
+    saved: list[tuple[int, float]] = []
+
+    def evaluate(_source):
+        return {"psnr": next(values, 2.0)}
+
+    def on_improve(iteration: int, metric: float) -> None:
+        saved.append((iteration, metric))
+
+    t = _trainer(iterations=4, hooks=(
+        ValidationHook(source=_FakeSource(), evaluate=evaluate, every=1,
+                       early_stop=EarlyStopping(patience=99, min_delta=0.0),
+                       on_improve=on_improve),))
+    report = t.run()
+    assert saved and saved[-1][1] == pytest.approx(3.0)
+    assert report.best_metric == pytest.approx(3.0)
+    assert report.best_iteration == 1
+    assert report.best_saved is True
+    assert report.iterations == 4
