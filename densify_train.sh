@@ -78,6 +78,8 @@ S1_SPILL="${DENS_S1_SPILL:-}"
 S1_EXTRA=()
 [[ -n "$S1_SPILL" ]] && S1_EXTRA+=(--surface-spill-weight "$S1_SPILL")
 S2_EXTRA=()
+# 消融：新视角 spill（base 阶段的边缘/漂浮抑制）
+[[ -n "${DENS_NV_SPILL:-}" ]] && S2_EXTRA+=(--nv-spill-weight "$DENS_NV_SPILL")
 LPIPS="${DENS_LPIPS_WEIGHT:-${CFG_DENSIFY_LPIPS_WEIGHT:-0.01}}"
 LPIPS_FROM="${DENS_LPIPS_FROM:-${CFG_DENSIFY_LPIPS_FROM:-3000}}"
 XYZ_LR="${DENS_XYZ_LR:-${CFG_DENSIFY_XYZ_LR:-0.0002}}"
