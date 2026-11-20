@@ -64,7 +64,8 @@
 
 `robustness.py`：
 
-- `RobustConfig`：验证视角（默认 ±20/30/40°）、帧数、缺口权重；
+- `HOLE_THRESHOLD`：判定"洞"的 alpha 阈值（训练、离线缺陷评估、报告共用）；
+- `RobustConfig`：验证视角（默认 ±20/30/40°，头转）、帧数、缺口权重；
 - `robust_views(cfg)`：构造验证视角；
 - `alpha_deficit` / `alpha_gradient`：孔洞/边缘缺口；
 - `robust_score(psnr_frontal, hole, weight)`：`PSNR − λ·缺口`；
@@ -74,7 +75,9 @@
 
 `protocol.py`：
 
-- `frame_metrics(image, ref_rgb, ref_mask)`：单帧 PSNR/SSIM/LPIPS/锐度；
+- `frame_metrics(image, ref_rgb, ref_mask, with_lpips=...)`：单帧 PSNR/SSIM/LPIPS/锐度；
+- 口径：PSNR 在 mask 内；SSIM 把 mask 外**置 0** 后再滤波（与背景色无关）；
+  LPIPS 是 full-image；锐度统一用 `core.metrics.sharpness`（mask 内平均梯度）；
 - `summarize_quality`：汇总 PSNR（全图/mask）、SSIM、LPIPS、锐度；
 - `lpips_score`：可选依赖；不可用时返回 None；
 - `EvaluationReport`：`has_reference` / `to_dict`；
@@ -82,16 +85,16 @@
 
 `render_test.py` 和 GUI 的对比图都调用同一套函数，避免指标口径分叉。
 
-`showcase` 的 yaw/pitch 是**绝对头姿**：渲染时用 `R_target @ R_head.T`
-抵消基帧自身头姿。默认基帧从本次评测帧里取头姿最接近正脸的一帧，
-也可用 `--showcase-frame` 指定；`--showcase-frame` 会写进报告的
-`params.render.showcase_frame`。
+`showcase` 的 yaw/pitch 是**头转**（不是绕头心转相机）：有 RDF/烘焙数据时
+由 `tracking/pose_drive.py` 把基帧的头绕颈关节转过去，相机不动；只有网格拓扑
+对不上时才退回相机绕转。默认基帧从本次评测帧里取头姿最接近正脸的一帧，
+也可用 `--showcase-frame` 指定；会写进报告的 `params.render.showcase_frame`。
 
 多版本对比用 `--work-names`：
 
 ```bash
-python scripts/render_test.py --subject crh_1 --dataset crh_1 \
-    --work-names base base_post_r2 wk1116_mask_r2 wk1116_none_none \
+python scripts/render_test.py --subject bala --dataset bala \
+    --work-names base densify \
     --frame-mode heldout --frames -1
 ```
 

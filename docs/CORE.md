@@ -136,7 +136,7 @@ mesh + blend_weight
 
 - `face_id_map`：面 id 图，用于覆盖统计与孔洞；
 - `normal_map` / `vertex_normals`：法线图，支持 OpenGL/其他约定；
-- `detect_flip`：判断光栅化 y 方向；`find_defects` 把结果写入 `selected.json`。
+- `detect_flip`：判断光栅化 y 方向；`make_repairs.py` 用同一套光栅化生成修复图。
 
 ## 5. PLY
 

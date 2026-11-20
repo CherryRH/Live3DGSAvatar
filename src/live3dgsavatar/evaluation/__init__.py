@@ -25,7 +25,8 @@ from .defects import (DefectMap, alpha_hole_ratio,  # noqa: F401
 from .expressions import (ExpressionSpec, axis_extremes,  # noqa: F401
                           cluster, cluster_frames, expression_matrix,
                           load_expressions, load_named, merge_specs)
-from .robustness import (RobustConfig, alpha_deficit,  # noqa: F401
+from .robustness import (HOLE_THRESHOLD, RobustConfig,  # noqa: F401
+                         alpha_deficit,
                          alpha_gradient, robust_score, robust_views,
                          subsample, summarise_coverage, summarise_holes)
 from .selection import Candidate, CoverageResult, greedy_cover  # noqa: F401

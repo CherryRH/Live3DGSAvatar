@@ -7,7 +7,7 @@
   → build_dataset：RDF 跟踪 → FLAME 网格、blend_weight、相机
   → datasets/<对象>/render_inputs.npz + images/ + input/
   → train：GaussianAvatar 参数（model.ply）
-  → post_train：选角、修复标签、微调（可选）
+  → densify_train：硬表面初始化 → 统一集合加密（+ 初始化修复图）
   → eval：留出集指标 + compare/showcase
   → app：浏览器预览、实时驱动、在线更新
 ```
@@ -78,10 +78,11 @@ src/live3dgsavatar/
 |---|---|
 | `build_dataset.sh` | 跟踪、烘焙数据集 |
 | `train.sh` / `scripts/train.py` | 基础训练 |
-| `post_train.sh` / `scripts/iterative_repair.py` | 后训练（`post_train.sh` 是唯一用户入口） |
+| `densify_train.sh` | 硬表面初始化 → 加密（两段式） |
 | `eval.sh` / `scripts/render_test.py` | 留出集评测 |
 | `run_gui.sh` / `app/server.py` | GUI 与推流 |
 | `run_tracking.sh` / `scripts/rdf_bridge.py` | 实时追踪服务 |
+| `scripts/make_repairs.py` | 用 SyncFix 生成初始化修复图（`densify_train.sh` 的前置） |
 | `scripts/online_update.py` | 在线外观更新 |
 
 ## 5. 核心接口
@@ -95,6 +96,7 @@ save_ply(avatar, path)
 load_scene(cfg, frames=...) -> Scene
 ManifestSource(...).batch(indices) -> Batch
 Trainer(source, plan, objective, render_fn).run() -> TrainReport
+forward_avatar(avatar, rasterizer, mesh, weight, camera, bg, options=...) -> ForwardResult
 ```
 
 训练与推理的唯一模型接口是 `model.ply` 和 `[B, D]` 驱动参数。

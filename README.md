@@ -1,7 +1,7 @@
 # Live3DGSAvatar
 
 面向视频通话的 3DGS 头部重建：从单目视频 / RDF 跟踪结果训练可驱动高斯头像，
-支持后训练修复、留出集评测、浏览器预览和实时驱动。
+支持加密、留出集评测、浏览器预览和实时驱动。
 
 | 模块 | 职责 |
 |---|---|
@@ -16,17 +16,20 @@
 
 ## 训练方法
 
-**表示**：每个模型绑定 FLAME 网格与 UV 拓扑，高斯存在 UV texel 上，固定
-约 6 万个点。每帧由 129 维驱动参数生成切空间变换，再绑定回世界空间；
-高斯属性包括位置、旋转、尺度、不透明度和 SH DC 颜色。
+**表示**：每个模型绑定 FLAME 网格与 UV 拓扑，高斯存在 UV texel 上（数量随
+tex 分辨率变化，默认几万级）。每帧由 129 维驱动参数生成切空间变换，再绑定回
+世界空间；高斯属性包括位置、旋转、尺度、不透明度和 SH DC 颜色。
 
 **基础训练**：真实帧重建 L1，可加 SSIM/LPIPS；每 4 步采一个 ±10–50° 新视角，
 对 FLAME 表面外扩 12 px 的半透明外溢（薄雾）做监督，减少侧面和边缘漂浮。
-验证使用正脸 PSNR 与大角度缺口的加权指标，平台期早停。
+验证用 PSNR 与覆盖缺口合成的鲁棒指标，平台期早停。
 
-**后训练**：先在真实数据中选缺陷视角，再由 SyncFix 对多视图做整图联合修复；
-修复帧与真实帧混合微调，真实帧占主导。按角度圈逐轮外扩，默认保留容差内的
-最后一轮，避免小角度留出集误判大角度效果。
+**加密**：先做硬表面初始化（贴 FLAME 面、只求干净覆盖），再把壳合并成统一集合
+做一次训练，由残差驱动的分裂/剪枝补外观与细节。初始化阶段可混入 SyncFix 生成的
+**修复图**，只在没有真实数据的大角度上补一次，之后不再迭代外扩。
+
+**大角度语义**：数据集里的"转头"是头动、肩胸不动。修复图、showcase、验证和
+前端视角都按**头转**渲染（驱动 FLAME 头姿），而不是绕头心转相机。
 
 ## 环境
 
@@ -41,8 +44,13 @@ conda activate live3dgs
 bash build_dataset.sh <图像目录> --name <对象>
 bash build_dataset.sh --video videos/<对象> --name <对象>   # 从视频直接构建
 bash train.sh --subject <对象> --work-name base
+# 加密前先生成初始化修复图（SyncFix 路径见 configs/local.yaml）
+python scripts/make_repairs.py --subject <对象> --work-name base \
+  --yaws="-90,...,-40,40,...,90" \
+  --out output/repairs_base_5deg --out-dir datasets/<对象>/repair/repairs \
+  --repair-root datasets/<对象>/repair
 bash densify_train.sh --subject <对象>
-bash eval.sh --subject <对象> --work-name base
+bash eval.sh --subject <对象> --work-name densify
 # 多版本对比：原图 + N 个渲染并排，showcase 为 N 图并列
 bash eval.sh --subject <对象> --work-name base -- \
   --work-names base <版本2> <版本3> <版本4>
@@ -56,11 +64,10 @@ bash run_gui.sh --subject <对象> --work-name base
 | `setup_env.sh` | 创建 conda 环境、编译本地 CUDA 扩展 | `live3dgs` 环境 |
 | `build_dataset.sh` | 跟踪、对齐并烘焙训练数据 | `datasets/<对象>/` |
 | `train.sh` | 基础训练 | `models/<对象>/<版本>/` |
-| `densify_train.sh` | 硬表面初始化 → 加密 → 短程微调 | `models/<对象>/densify*/` |
-| `eval.sh` | 留出集渲染评测（支持 `--work-names` 多版本） | `output/render_test/.../report.json`、`compare.mp4`、`showcase.mp4` |
-| `run_gui.sh` | 浏览器预览与实时驱动 | `http://localhost:8000` |
+| `densify_train.sh` | 硬表面初始化 → 加密（两段式） | `models/<对象>/<版本>/` |
+| `eval.sh` | 留出集渲染评测（支持 `--work-names` 多版本） | `output/render_test/.../report.json`、`compare.mp4`、`showcase.png` |
+| `run_gui.sh` | 浏览器预览与实时驱动 | 本地 Web 页面 |
 | `run_tracking.sh` | 启动 RDF 实时追踪服务 | 追踪 sidecar |
-| `scripts/online_update.py` | 用少量观测做在线外观更新 | `output/online_update/` |
 
 常用参数：
 
@@ -69,7 +76,7 @@ bash run_gui.sh --subject <对象> --work-name base
 bash train.sh --subject <对象> --work-name <版本> --no-spill
 bash train.sh --subject <对象> --work-name <版本> -- --iterations 8000
 
-# 加密管线（硬表面 -> 加密 -> stage3 微调）
+# 加密管线（硬表面 -> 统一集合加密）
 bash densify_train.sh --subject <对象> --hard-only     # 只到硬表面
 bash densify_train.sh --subject <对象>                 # 全流程
 
@@ -83,21 +90,19 @@ bash eval.sh --subject <对象> --work-name <版本> --base-work <基线版本>
 ```text
 output/
   train/<对象>/<版本>/          训练 checkpoint、报告、结构快照
-  post/<对象>/<前缀>/           后训练报告；rN/ 每轮选角，cum/ 累计标签
-  render_test/<对象>/<版本>/      评测报告/对比视频/展示视频
-  defects/<对象>/<版本>/          独立缺陷选角
-  compare_defects/<对象>/<版本>/  修复前后对比报告
-  analyze/<对象>/<版本>/          解剖与消融
+  render_test/<对象>/<版本>/      评测报告/对比视频/展示图
+  compare_defects/<对象>/<版本>/  与基线的缺陷对比
+  analyze/<对象>/<版本>/          解剖与统计
   online_update/<实验名>/        在线更新状态与对比图
+  repairs_base_5deg/              修复图生成的中间产物（可删）
   cache/                          可重建缓存（FLAME 拓扑等）
 models/<对象>/<版本>/            最终 model.ply + config.yaml + report.json
 ```
 
-评测其它数据集时，上述 `render_test`/`defects`/`compare_defects`/`analyze`
-路径末尾追加 `/<数据集>`，避免不同数据集覆盖；多版本评测默认落在
-`render_test/<对象>/<主版本>_multi/`。最终模型只保留在 `models/`；
-`output/train/` 只留 checkpoint，`output/post/` 只留报告与标签，避免 60 MB 级
-PLY 多份并存。同名目录/版本默认拒绝覆盖，确认重跑需显式 `--force`。
+评测其它数据集时，上述路径末尾追加 `/<数据集>`，避免不同数据集覆盖；多版本
+评测默认落在 `render_test/<对象>/<主版本>_multi/`。最终模型只保留在 `models/`，
+`output/train/` 只留 checkpoint。同名目录/版本默认拒绝覆盖，确认重跑需显式
+`--force`。
 
 ## 配置
 

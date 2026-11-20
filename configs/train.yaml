@@ -169,34 +169,6 @@ train:
       # 早停指标里"面外溢出"的权重；0 = 不计（保持旧行为）
       robust_spill_weight: 0.0
 
-    # 后训练（SyncFix 迭代修复）：在基础模型上选缺陷视角、做全图多视图
-    # 修复，再用真实帧与修复标签短训，按角度圈逐步外扩。
-    #
-    # post_train.sh 直接读这里（scripts/show_config.py --shell-post）；
-    # 改这里即可，不用再同步脚本。临时覆盖用 POST_* 环境变量。
-    post_train:
-      top_n: 2
-      # auto：按数据集训练段的 |yaw|/|pitch| p90 作为覆盖边缘，再向外扩；
-      # 也可以写死 "20,10;30,20;..."。角度都是相对头部的绝对值。
-      rings: "auto"
-      steps: 100
-      # 训练 batch = real_per_batch + refined_per_batch
-      refined_per_batch: 2
-      real_per_batch: 6
-      # SyncFix 是独立仓库/环境；路径留空，由 configs/local.yaml 或环境变量给出。
-      # 运行时按需检测这些路径，不再维护 syncfix_ready 开关。
-      syncfix_repo: ""
-      syncfix_python: syncfix
-      syncfix_model: ""
-      # 一次联合修复 4 张；参考图也给 4 张（find_defects 会取 4 个不同基帧）
-      syncfix_n_per_pass: 4
-      syncfix_ref_size: 4
-      # 下降容差：最后一轮比当前最佳低不超过该值就保留最后一轮，
-      # 超过才回退到最佳并停止。小角度留出集测不到大角度变化。
-      quality_tol: 0.01
-      psnr_weight: 0.002
-      lr_xyz: 1e-5
-
   # 在线更新（热更新）：通话开始时用一小段观测微调外观。
   # 见 docs/TRAINING.md。
   online_update:

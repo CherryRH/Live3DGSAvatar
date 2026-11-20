@@ -13,7 +13,9 @@ run_tracking.sh（realdenseface）
   → 参数 + 顶点
 ```
 
-本项目不加载 RDF 的 FLAME2023；顶点由追踪服务算好再发回。
+实时驱动路径不加载 FLAME2023：顶点由追踪服务算好再发回。离线要合成"头转"
+视角时，`tracking/pose_drive.py` 会加载 FLAME2023 —— 它需要每个顶点的
+LBS 权重来把烘焙网格绕颈关节转出去。
 
 ## 2. 二进制协议
 

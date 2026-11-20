@@ -97,24 +97,6 @@ LIVE3DGS_OUTPUT_DIR
 | `yaws` | `±10…±50` | 候选角度 |
 | `robust_spill_weight` | `0.0` | 验证指标中的外溢权重 |
 
-### 后训练 `train.pipeline.post_train`
-
-| 字段 | 默认 | 说明 |
-|---|---|---|
-| `top_n` | `2` | 每圈选几个缺陷视角；SyncFix 会取 `max(top_n, n_per_pass)` |
-| `rings` | `auto` | 角度圈；`auto` 按训练段 p90 外扩，也可写 `"20,10;..."` |
-| `steps` | `100` | 每轮微调步数 |
-| `real_per_batch` | `6` | 训练 batch 真实帧 |
-| `refined_per_batch` | `2` | 训练 batch 修复帧 |
-| `quality_tol` | `0.01` | 最后一轮相对最佳允许下降 |
-| `psnr_weight` | `0.002` | 质量分中的 PSNR 权重 |
-| `lr_xyz` | `1e-5` | 位置学习率，0 固定 |
-| `syncfix_repo` | 空 | SyncFix 仓库（建议写在 `local.yaml`）|
-| `syncfix_python` | `syncfix` | 运行环境名 |
-| `syncfix_model` | 空 | 权重目录（建议写在 `local.yaml`）|
-| `syncfix_n_per_pass` | `4` | 一次联合修复视图数 |
-| `syncfix_ref_size` | `4` | 参考图数量 |
-
 ### 在线更新 `train.online_update`
 
 | 字段 | 默认 | 说明 |
@@ -137,4 +119,3 @@ LIVE3DGS_OUTPUT_DIR
 | `LIVE3DGS_MODELS_DIR` | 覆盖模型根目录 |
 | `LIVE3DGS_SUBJECT` / `LIVE3DGS_WORK_NAME` | 覆盖当前对象/版本 |
 | `LIVE3DGS_DEVICE` | 覆盖运行设备 |
-| `POST_*` | 临时覆盖 `post_train` 参数 |
