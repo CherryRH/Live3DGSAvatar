@@ -55,6 +55,11 @@ train:
     # 两段更新的参数（ParameterPlan.rgba_avatar_defaults）：
     #   xyz 5e-5 / opacity 0.25 / scaling 0.025 / rotation 0.005 / f_dc 0.0125
     #   stage2 额外训练 xyz_b / rotation_b / f_dc_b / weight_module。
+    # 选模型/早停：PSNR + 50·SSIM + 50·(1−LPIPS)（感知项在抽样帧上算）
+    selection:
+      ssim: 50.0
+      lpips: 50.0
+      perceptual_frames: 240
     # 加密阶段：alpha 直接向 GT 前景 mask 回归（治"半透明 + 轮廓外黑色薄雾"）
     alpha_weight: 0.2
     densify:
@@ -107,7 +112,8 @@ train:
       # 实测 4000 步：copy 29.22/0.8647，subdivide 28.95/0.8651 —— 没用，默认 copy。
       split_mode: copy
       split_scale: 0.7
-      # 加密过程中 PSNR 会因新高斯抖动，早停耐心放宽
+      # 选模型用组合分（PSNR+SSIM+LPIPS）。耐心不能太小：评估只抽 240 帧，
+      # 组合分仍会抖——patience 2 会在 4500 步提前停、比跑到 6500 损失约 0.3 dB。
       patience: 4
     iterations: 50000
     batch_size: 10

@@ -114,7 +114,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="认为'有提升'的最小 dB 幅度")
     p.add_argument("--prefetch-workers", type=int, default=None,
                    help="后台预取线程数；0 表示不预取")
-    p.add_argument("--early-metric", choices=("psnr", "psnr_surface", "robust"),
+    p.add_argument("--early-metric",
+                   choices=("psnr", "psnr_surface", "robust", "score"),
                    default=None,
                    help="早停指标；psnr=mask 内 PSNR，psnr_surface=FLAME 表面内 PSNR"
                         "（硬表面阶段默认），robust=大角度综合分")
@@ -281,6 +282,11 @@ def main(argv: list[str] | None = None) -> int:
     lr_scale = float(args.lr_scale)
     if lr_scale <= 0:
         raise SystemExit(f"[error] --lr-scale 必须为正，实际 {args.lr_scale}")
+
+    sel_cfg = cfg.get("train.pipeline.selection", {}) or {}
+    sel_ssim_weight = float(sel_cfg.get("ssim", 50.0))
+    sel_lpips_weight = float(sel_cfg.get("lpips", 50.0))
+    sel_percept_frames = int(sel_cfg.get("perceptual_frames", 240))
 
     def _nv(key, default):
         return cfg.get(f"train.pipeline.novel_view.{key}", default)
@@ -623,8 +629,9 @@ def main(argv: list[str] | None = None) -> int:
         for pth in labels:
             info = parse_view_label(pth.stem)
             yaw = float(info["yaw"])
+            pitch = float(info["pitch"]) if info.get("pitch") is not None else 0.0
             if driver is not None:
-                turned = driver.turn(base_idx, yaw)
+                turned = driver.turn(base_idx, yaw, pitch)
                 mesh_t = turned.mesh.unsqueeze(0)
                 weight_t = turned.weight.unsqueeze(0)
                 view = w2c_data
@@ -957,8 +964,15 @@ def main(argv: list[str] | None = None) -> int:
         内核路径（实测在第 2000 步验证时触发过 CUDA illegal memory access）。
         所以评测单独走一条纯推理路径。
         """
+        from live3dgsavatar.core.metrics import ssim as _ssim
+        from live3dgsavatar.evaluation.protocol import lpips_score as _lpips
+
         total, n = 0.0, 0
         surf_psnr, surf_hole = 0.0, 0.0
+        # 感知项只在抽样子集上算（全量太慢），PSNR 仍是全量。
+        perc_budget = int(sel_percept_frames)
+        perc_seen = 0
+        ssim_sum, lpips_sum, perc_n = 0.0, 0.0, 0
         try:
             batches = list(source.iter_batches(max(1, batch_size)))
             if eval_frames is not None and eval_frames > 0 and batches:
@@ -984,6 +998,22 @@ def main(argv: list[str] | None = None) -> int:
             mse = (((pred - tgt) ** 2) * mask).sum() / (mask.sum() * 3).clamp(min=1)
             total += float(10.0 * torch.log10(1.0 / mse.clamp(min=1e-10))) * len(batch)
             n += len(batch)
+            if perc_seen < perc_budget:
+                img_np = (pred.clamp(0, 1).permute(0, 2, 3, 1).cpu().numpy()
+                          * 255.0).astype(np.uint8)
+                tgt_np = (tgt.clamp(0, 1).permute(0, 2, 3, 1).cpu().numpy()
+                          * 255.0).astype(np.uint8)
+                msk_np = mask[:, 0].cpu().numpy().astype(bool)
+                for j in range(int(img_np.shape[0])):
+                    if perc_seen >= perc_budget:
+                        break
+                    v = _ssim(img_np[j], tgt_np[j], msk_np[j])
+                    l = _lpips(img_np[j], tgt_np[j])
+                    if v is not None and l is not None:
+                        ssim_sum += float(v)
+                        lpips_sum += float(l)
+                        perc_n += 1
+                    perc_seen += 1
             if stage == "hard_surface":
                 # 硬表面只负责 FLAME 表面那一片：mask 内 PSNR 会被头发/衣服
                 # 拖住，不能反映"壳做得好不好"。这里按表面 mask 单独统计，
@@ -998,6 +1028,13 @@ def main(argv: list[str] | None = None) -> int:
                 surf_hole += float(
                     (out.alpha < HOLE_THRESHOLD)[surf].float().mean()) * len(batch)
         metrics = {"psnr": total / max(1, n)}
+        if perc_n:
+            metrics["ssim"] = ssim_sum / perc_n
+            metrics["lpips"] = lpips_sum / perc_n
+            # 选模型/早停用：PSNR + w_s·SSIM + w_l·(1−LPIPS)
+            metrics["score"] = (metrics["psnr"]
+                                + float(sel_ssim_weight) * metrics["ssim"]
+                                + float(sel_lpips_weight) * (1.0 - metrics["lpips"]))
         if stage == "hard_surface":
             metrics["psnr_surface"] = surf_psnr / max(1, n)
             metrics["surface_hole"] = surf_hole / max(1, n)
@@ -1123,8 +1160,7 @@ def main(argv: list[str] | None = None) -> int:
               flush=True)
 
     early_metric_name = (args.early_metric or
-                         ("robust" if robust_cfg is not None else
-                          ("psnr_surface" if stage == "hard_surface" else "psnr")))
+                         ("psnr_surface" if stage == "hard_surface" else "score"))
     # 指标必须真的会被算出来，否则 ValidationHook 永远不 update，
     # 跑满预算却没有 best 模型（评审 B6）。
     if early_metric_name == "robust" and robust_cfg is None:
@@ -1133,6 +1169,9 @@ def main(argv: list[str] | None = None) -> int:
     if early_metric_name == "psnr_surface" and stage != "hard_surface":
         raise SystemExit(
             "[error] --early-metric psnr_surface 只适用于 --stage hard_surface")
+    if early_metric_name == "score" and stage == "hard_surface":
+        raise SystemExit(
+            "[error] --early-metric score 只适用于 base 阶段")
 
     def save_best(iteration: int, metric: float) -> None:
         """验证指标刷新最好成绩时存一份 —— 后训变差也能拿回好的那份。"""
@@ -1142,7 +1181,13 @@ def main(argv: list[str] | None = None) -> int:
         shown_psnr = (last_eval.get("psnr_surface", last_eval.get("psnr", float("nan")))
                       if stage == "hard_surface"
                       else last_eval.get("psnr", float("nan")))
-        if robust_cfg is not None:
+        if early_metric_name == "score":
+            print(f"  [best] 第 {iteration} 步 score {metric:.2f}"
+                  f"（PSNR {last_eval.get('psnr', float('nan')):.2f}，"
+                  f"SSIM {last_eval.get('ssim', float('nan')):.4f}，"
+                  f"LPIPS {last_eval.get('lpips', float('nan')):.4f}）"
+                  f" → model_best.ply（累计 {secs:.1f}s）", flush=True)
+        elif robust_cfg is not None:
             print(f"  [best] 第 {iteration} 步 robust {metric:.2f}"
                   f"（PSNR {shown_psnr:.2f}，"
                   f"缺口 {last_eval.get('deficit_mean', float('nan')):.3f}，"

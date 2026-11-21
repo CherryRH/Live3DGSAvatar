@@ -37,7 +37,9 @@ def parse_args(argv=None):
                    help="直接给 model.ply；给定时忽略 --work-name")
     p.add_argument("--dataset", default=None)
     p.add_argument("--yaws", required=True,
-                   help="逗号分隔的绝对 yaw（度），如 45,-45,50,-50")
+                   help="逗号分隔的相对 yaw（度），如 45,-45；只做 pitch 时给 0")
+    p.add_argument("--pitches", default="0",
+                   help="逗号分隔的相对 pitch（度），如 -30,...,30；与 yaws 做叉积")
     p.add_argument("--base-frame", default="auto",
                    help="基帧：auto=训练段里 |yaw| 最小的帧；或给帧号")
     p.add_argument("--refs", type=Path, default=None,
@@ -94,6 +96,7 @@ def main(argv=None) -> int:
         raise SystemExit(f"[error] 找不到模型：{ply}")
 
     yaws = [float(v) for v in str(args.yaws).split(",") if str(v).strip()]
+    pitches = [float(v) for v in str(args.pitches).split(",") if str(v).strip()]
     if not yaws:
         raise SystemExit("[error] --yaws 为空")
 
@@ -123,19 +126,16 @@ def main(argv=None) -> int:
     rasterizer = SimpleRasterizer()
 
     # 头转（pose 驱动）：语义与 GT 一致；没有 RDF 跟踪结果时退回相机绕转
-    driver = None
+    cam_fixed = Camera.from_intrinsics_extrinsics(
+        K=scene.K, R=scene.R, T=scene.T,
+        width=scene.width, height=scene.height).to(device)
     try:
         from live3dgsavatar.tracking.pose_drive import PoseDriver
         driver = PoseDriver(data_dir, device=device)
-    except Exception as exc:
-        print(f"  视角   : 相机绕转（pose 驱动不可用：{exc}）")
-        cam_fixed = Camera.from_intrinsics_extrinsics(
-            K=scene.K, R=scene.R, T=scene.T,
-            width=scene.width, height=scene.height).to(device)
         print("  视角   : FLAME 头姿驱动（头转、胸不动）")
-    else:
-        cam_fixed = None
-        print("  视角   : 相机绕转（缺少 rdf_tracking.npz，建议先补 RDF 跟踪）")
+    except Exception as exc:
+        driver = None
+        print(f"  视角   : 相机绕转（pose 驱动不可用：{exc}）")
 
     w2c = torch.eye(4, dtype=torch.float32)
     w2c[:3, :3] = torch.as_tensor(scene.R).detach().cpu()
@@ -157,14 +157,18 @@ def main(argv=None) -> int:
 
     bg = torch.zeros(1, 3, 1, 1, device=device)
     labels: list[str] = []
-    for yaw in yaws:
-        label = f"yaw{yaw:+.0f}_pitch+0_roll+0_frame{base_idx:05d}"
+    # 只做"十字"：yaw 扇 + pitch 扇，而不是 yaw×pitch 全网格
+    # （全网格会让 22×12 张里大部分是重复的斜向角，SyncFix 成本翻倍）。
+    views = [(y, 0.0) for y in yaws]
+    views += [(0.0, p) for p in pitches if abs(p) > 1e-9]
+    for yaw, pitch in views:
+        label = f"yaw{yaw:+.0f}_pitch{pitch:+.0f}_roll+0_frame{base_idx:05d}"
         labels.append(label)
         if args.dry_run:
             print(f"  [dry-run] {label}")
             continue
         if driver is not None:
-            turned = driver.turn(base_idx, yaw)
+            turned = driver.turn(base_idx, yaw, pitch)
             cam = cam_fixed
             verts = turned.mesh.unsqueeze(0)
             weight = turned.weight.unsqueeze(0)
@@ -181,7 +185,7 @@ def main(argv=None) -> int:
         img = (res.color[0].clamp(0, 1).permute(1, 2, 0).cpu().numpy() * 255.0
                ).astype(np.uint8)
         Image.fromarray(img).save(views_dir / f"{label}.png")
-        print(f"  {label}  (yaw {yaw:+.1f}°)")
+        print(f"  {label}  (yaw {yaw:+.1f}°, pitch {pitch:+.1f}°)")
 
     # 参考图：优先用真实的正面/侧面照；没有就退回基帧原图
     if not args.dry_run:
@@ -301,7 +305,7 @@ def main(argv=None) -> int:
                     shutil.copyfile(p, dst)
             (root / "manifest.json").write_text(json.dumps({
                 "subject": subject, "base_frame": base_idx, "yaws": yaws,
-                "pitch": 0,
+                "pitches": pitches,
                 "source": "SyncFix (batched, refs per batch) + BiRefNet alpha",
                 "files": {"views": "views/", "repairs": "repairs/",
                           "masks": "masks/", "refs": "refs/"},
