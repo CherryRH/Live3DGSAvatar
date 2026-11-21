@@ -100,7 +100,9 @@ def _auto_angles(data_dir, train_end: int, step: float = 5.0,
     return yaw_pos + yaw_neg, pitch_pos + pitch_neg
 
 
-def _clean_alpha(alpha: np.ndarray) -> np.ndarray:
+def _clean_alpha(alpha: np.ndarray,
+                 prior: np.ndarray | None = None,
+                 dilate: int = 9) -> np.ndarray:
     """清理抠图：只保留最大连通域、填内洞、闭运算补 1–2 px 缺口。
 
     BiRefNet 在头转视角上偶尔会把模型的漂浮高斯（比如脖子右下方的一小块）
@@ -112,6 +114,20 @@ def _clean_alpha(alpha: np.ndarray) -> np.ndarray:
     if alpha.ndim != 2:
         return alpha
     m = alpha > 127
+    if prior is not None and prior.shape == m.shape:
+        # 渲染 alpha（膨胀几像素）是"这个视角真实存在的内容"的硬约束：
+        # BiRefNet 偶尔会把纯黑背景沿脖子连成一片，最大连通域删不掉它。
+        from scipy import ndimage as _nd
+        pm = prior > 127
+        # 先清一遍渲染 alpha：漂浮高斯在 alpha 里也是小连通域，不能让它
+        # 通过"膨胀"又长回来
+        lab, n = _nd.label(pm)
+        if n > 1:
+            sizes = _nd.sum(pm, lab, range(1, n + 1))
+            pm = lab == (int(np.argmax(sizes)) + 1)
+        pm = _nd.binary_fill_holes(pm)
+        allow = _nd.binary_dilation(pm, iterations=int(dilate))
+        m = m & allow
     lab, n = ndimage.label(m)
     if n > 1:
         sizes = ndimage.sum(m, lab, range(1, n + 1))
@@ -212,11 +228,12 @@ def main(argv=None) -> int:
 
     out = args.out
     views_dir = out / "views"
+    alpha_dir = out / "render_alpha"
     refs_dir = out / "refs"
     if not args.dry_run:
         views_dir.mkdir(parents=True, exist_ok=True)
         refs_dir.mkdir(parents=True, exist_ok=True)
-        for stale in views_dir.glob("*.png"):
+        for stale in list(views_dir.glob("*.png")) + list(alpha_dir.glob("*.png")):
             stale.unlink()
 
     bg = torch.zeros(1, 3, 1, 1, device=device)
@@ -249,6 +266,11 @@ def main(argv=None) -> int:
         img = (res.color[0].clamp(0, 1).permute(1, 2, 0).cpu().numpy() * 255.0
                ).astype(np.uint8)
         Image.fromarray(img).save(views_dir / f"{label}.png")
+        # 渲染 alpha 作为抠图先验：修复图只能保留"渲染里真的有的东西"，
+        # 避免 BiRefNet 把背景/漂浮高斯误判成前景（B 站里那块黑斑就是这么来的）。
+        amask = (res.alpha[0, 0] > 0.1).cpu().numpy().astype(np.uint8) * 255
+        alpha_dir.mkdir(parents=True, exist_ok=True)
+        Image.fromarray(amask).save(alpha_dir / f"{label}.png")
         print(f"  {label}  (yaw {yaw:+.1f}°, pitch {pitch:+.1f}°)")
 
     # 参考图：优先用真实的正面/侧面照；没有就退回基帧原图
@@ -338,8 +360,12 @@ def main(argv=None) -> int:
                 rgb = Image.fromarray(np.clip(arr + args.sharpen * (arr - blur),
                                               0, 255).astype(np.uint8))
             if alpha is not None:
+                prior_path = alpha_dir / f"{p.stem}.png"
+                prior = (np.asarray(Image.open(prior_path)) if prior_path.is_file()
+                         else None)
                 alpha = Image.fromarray(
-                    _clean_alpha(np.asarray(alpha, np.uint8)[..., None][..., 0]))
+                    _clean_alpha(np.asarray(alpha, np.uint8)[..., None][..., 0],
+                                 prior=prior))
                 out_im = rgb.convert("RGBA")
                 out_im.putalpha(alpha)
                 # alpha 外的 RGB 置 0，与数据集约定一致
@@ -372,7 +398,10 @@ def main(argv=None) -> int:
                     im = Image.open(p)
                     if im.mode == "RGBA":
                         a = np.asarray(im.getchannel("A"))
-                        Image.fromarray(_clean_alpha(a)).save(
+                        prior_path = alpha_dir / f"{p.stem}.png"
+                        prior = (np.asarray(Image.open(prior_path))
+                                 if prior_path.is_file() else None)
+                        Image.fromarray(_clean_alpha(a, prior=prior)).save(
                             root / "masks" / p.name)
             for p in final.glob("*.png"):
                 dst = root / "repairs" / p.name
