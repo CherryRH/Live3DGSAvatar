@@ -55,6 +55,9 @@ train:
     # 两段更新的参数（ParameterPlan.rgba_avatar_defaults）：
     #   xyz 5e-5 / opacity 0.25 / scaling 0.025 / rotation 0.005 / f_dc 0.0125
     #   stage2 额外训练 xyz_b / rotation_b / f_dc_b / weight_module。
+    # 轮廓带 RGB 加权（P0 实测无收益，默认关；保留开关做后续实验）
+    edge_boost: 1.0
+    edge_band: 5
     # 选模型/早停：PSNR + 50·SSIM + 50·(1−LPIPS)（感知项在抽样帧上算）
     selection:
       ssim: 50.0

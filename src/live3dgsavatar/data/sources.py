@@ -66,6 +66,8 @@ class Batch:
     weight: torch.Tensor | None = None
     #: 逐像素监督权重 `[B,1,H,W]`（缺陷加权微调用）
     weight_map: torch.Tensor | None = None
+    #: alpha 监督目标 `[B,1,H,W]`（可膨胀 1px 补偿 GT 硬切带来的轮廓内缩）
+    alpha_target: torch.Tensor | None = None
     #: 逐样本相机（缺省表示用数据集相机广播）：内参与 world→camera
     K: torch.Tensor | None = None
     w2c: torch.Tensor | None = None
@@ -79,6 +81,37 @@ class Batch:
     def rgb(self) -> torch.Tensor:
         """前景已合成到背景上的 RGB（数据源已做，这里只是语义别名）。"""
         return self.image
+
+
+def _dilate_mask(mask: torch.Tensor, k: int) -> torch.Tensor:
+    """二值掩码向外膨胀 `k` 像素（alpha 监督目标用）。
+
+    GT 的 alpha 是硬切（>127），真实剪影在 0.5px 之外还有一圈半透明过渡；
+    直接拿硬掩码当 alpha 目标会把渲染的 alpha 压小，边缘自然缺一层。
+    """
+    if k <= 0:
+        return mask
+    from torch.nn.functional import max_pool2d
+
+    m = mask.to(torch.float32)
+    return max_pool2d(m, 2 * int(k) + 1, stride=1, padding=int(k)) > 0.5
+
+
+def _edge_weight_map(mask: torch.Tensor, band: int,
+                     boost: float) -> torch.Tensor:
+    """轮廓带权重：`1 + (boost-1)` 落在掩码边界 ±band 像素内。
+
+    误差热图显示 PSNR 的大头在剪影那几像素（内部 |err|≈4，边界≈16）。
+    这里只**加权**、不改掩码，所以不会引入"背景当前景"的问题。
+    """
+    from torch.nn.functional import max_pool2d
+
+    m = mask.to(torch.float32)
+    k = 2 * int(band) + 1
+    dil = max_pool2d(m, k, stride=1, padding=int(band))
+    ero = -max_pool2d(-m, k, stride=1, padding=int(band))
+    edge = (dil - ero).clamp(0.0, 1.0)
+    return 1.0 + (float(boost) - 1.0) * edge
 
 
 class ManifestSource:
@@ -106,11 +139,18 @@ class ManifestSource:
                  use_cache: bool = True,
                  preload: bool = True,
                  exclude: set[int] | None = None,
-                 max_frames: int | None = None) -> None:
+                 max_frames: int | None = None,
+                 edge_boost: float = 1.0,
+                 edge_band: int = 5,
+                 mask_dilate: int = 1) -> None:
         if split not in ("train", "test", "all"):
             raise ValueError(f"split 只能是 train/test/all，实际 {split!r}")
         self.root = Path(data_dir)
         self.split = split
+        # 轮廓带加权：P0 实验（边缘误差是 PSNR 的大头）
+        self.edge_boost = float(edge_boost)
+        self.edge_band = int(edge_band)
+        self.mask_dilate = int(mask_dilate)
         self.device = device
         self.background = torch.tensor(background, dtype=torch.float32)
         self._cache: dict[int, tuple[torch.Tensor, torch.Tensor]] = {}
@@ -246,12 +286,18 @@ class ManifestSource:
 
     def batch(self, indices: list[int]) -> Batch:
         items = [self.sample(i) for i in indices]
+        mask = torch.stack([s.mask for s in items])
+        weight_map = None
+        if self.edge_boost > 1.0 and self.edge_band > 0:
+            weight_map = _edge_weight_map(mask, self.edge_band, self.edge_boost)
         return Batch(
             mesh=torch.stack([s.mesh for s in items]),
             blend_weight=torch.stack([s.blend_weight for s in items]),
             image=torch.stack([s.image for s in items]),
-            mask=torch.stack([s.mask for s in items]),
+            mask=mask,
             indices=torch.tensor(indices, dtype=torch.long),
+            weight_map=weight_map,
+            alpha_target=_dilate_mask(mask, self.mask_dilate),
         )
 
     # ------------------------------------------------------------ 迭代 --
