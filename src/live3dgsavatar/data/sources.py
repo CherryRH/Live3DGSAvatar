@@ -69,6 +69,8 @@ class Batch:
     #: 逐样本相机（缺省表示用数据集相机广播）：内参与 world→camera
     K: torch.Tensor | None = None
     w2c: torch.Tensor | None = None
+    #: 本批使用的背景色 `[B,3,1,1]`（随机背景时每批重采样；None = 黑底）
+    bg: torch.Tensor | None = None
     #: 逐帧 FLAME surface mask（硬表面混合修复帧训练用）
     surface: torch.Tensor | None = None
 
@@ -106,12 +108,16 @@ class ManifestSource:
                  use_cache: bool = True,
                  preload: bool = True,
                  exclude: set[int] | None = None,
-                 max_frames: int | None = None) -> None:
+                 max_frames: int | None = None,
+                 random_bg: bool = False) -> None:
         if split not in ("train", "test", "all"):
             raise ValueError(f"split 只能是 train/test/all，实际 {split!r}")
         self.root = Path(data_dir)
         self.split = split
         self.device = device
+        #: 随机背景（RGBAvatar 的 `random_bg_color`）：每批换一个背景色，
+        #: 避免模型把"背景恒为黑"当成捷径。
+        self.random_bg = bool(random_bg)
         self.background = torch.tensor(background, dtype=torch.float32)
         self._cache: dict[int, tuple[torch.Tensor, torch.Tensor]] = {}
         self._cache_limit = int(image_cache)
@@ -247,12 +253,19 @@ class ManifestSource:
     def batch(self, indices: list[int]) -> Batch:
         items = [self.sample(i) for i in indices]
         mask = torch.stack([s.mask for s in items])
+        image = torch.stack([s.image for s in items])
+        bg = None
+        if self.random_bg:
+            color = torch.rand(3, dtype=image.dtype, device=image.device)
+            image = torch.where(mask, image, color.view(3, 1, 1))
+            bg = color.view(1, 3, 1, 1).expand(int(mask.shape[0]), -1, -1, -1)
         return Batch(
             mesh=torch.stack([s.mesh for s in items]),
             blend_weight=torch.stack([s.blend_weight for s in items]),
-            image=torch.stack([s.image for s in items]),
+            image=image,
             mask=mask,
             indices=torch.tensor(indices, dtype=torch.long),
+            bg=bg,
         )
 
     # ------------------------------------------------------------ 迭代 --

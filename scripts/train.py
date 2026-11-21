@@ -101,6 +101,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="LPIPS 项权重（默认 0；建议 >=20000 步再开 0.01–0.03）")
     p.add_argument("--lpips-from", type=int, default=None,
                    help="第几步开始启用 LPIPS（默认取配置）")
+    p.add_argument("--random-bg", action="store_true",
+                   help="每批随机背景色（RGBAvatar 的 random_bg_color）")
     p.add_argument("--train-split", choices=("train", "all"), default=None,
                    help="训练帧来源：train=前 70%%（默认）；all=全数据集"
                         "（仅用于对齐后训练口径的诊断，会让留出集指标虚高）")
@@ -450,7 +452,8 @@ def main(argv: list[str] | None = None) -> int:
     train_src = ManifestSource(data_dir, split=train_split, test_ratio=test_ratio,
                                device="cpu", seed=args.seed,
                                max_frames=(None if max_frames is None
-                                           else int(max_frames)))
+                                           else int(max_frames)),
+                               random_bg=bool(args.random_bg))
     val_src = ManifestSource(data_dir, split="test", test_ratio=test_ratio,
                              device="cpu")
 
@@ -850,7 +853,10 @@ def main(argv: list[str] | None = None) -> int:
                          width=scene.width, height=scene.height).to(device)
         else:
             cam = camera
-        bg = torch.zeros(batch.image.shape[0], 3, 1, 1, device=device)
+        if getattr(batch, "bg", None) is not None:
+            bg = batch.bg.to(device)
+        else:
+            bg = torch.zeros(batch.image.shape[0], 3, 1, 1, device=device)
         if stage == "hard_surface":
             res = forward_avatar(
                 avatar, rasterizer, mesh,
