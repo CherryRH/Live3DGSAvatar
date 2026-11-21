@@ -63,6 +63,8 @@ def parse_args(argv=None):
     # 按 batch 分组、每组单独调用一次，保证每组都带参考。
     p.add_argument("--syncfix-batch", type=int, default=4)
     p.add_argument("--sharpen", type=float, default=0.35)
+    p.add_argument("--drop-dark-blobs", action="store_true",
+                   help="额外清掉下半张图的大块近黑区域（默认关；一般靠渲染 alpha 先验就够）")
     p.add_argument("--no-matte", action="store_true",
                    help="跳过 BiRefNet 抠图（默认做，输出 RGBA）")
     p.add_argument("--dry-run", action="store_true")
@@ -138,6 +140,32 @@ def _clean_alpha(alpha: np.ndarray,
     out = np.zeros_like(alpha)
     out[m] = 255
     return out
+
+
+def _drop_background(rgb: np.ndarray, alpha: np.ndarray,
+                     thresh: int = 8) -> np.ndarray:
+    """把"纯背景色"的像素从 alpha 里去掉。
+
+    SyncFix 的输出背景是纯黑（RGB=0），而 BiRefNet 在低头等异常姿态下会把
+    脖子旁边的背景也判成前景。头发/胡须再暗也远高于 8，所以按"三通道都 ≤8"
+    判背景既稳又不会伤到真实暗部。
+    """
+    from scipy import ndimage
+
+    m = np.asarray(alpha, np.uint8).copy()
+    bg = np.asarray(rgb).max(axis=-1) <= int(thresh)
+    if not bool(bg.any()):
+        return m
+    # 只去掉"与图像边界连通"的纯背景；被皮肤包住的纯黑小点是修复器伪影，
+    # 直接抠掉会在脸上打洞，留给后面的形态学清理。
+    lab, n = ndimage.label(bg)
+    edge = np.concatenate([lab[0, :], lab[-1, :], lab[:, 0], lab[:, -1]])
+    touching = set(int(v) for v in np.unique(edge) if v != 0)
+    if not touching:
+        return m
+    outside = np.isin(lab, list(touching))
+    m[outside & (m > 127)] = 0
+    return m
 
 
 def _drop_dark_blobs(rgb: np.ndarray, alpha: np.ndarray,
@@ -356,19 +384,19 @@ def main(argv=None) -> int:
             for p in fixes:
                 shutil.copyfile(p, rgb_dir / p.name)
             final_src = rgb_dir
-            alpha_dir = None
+            matte_dir = None
         else:
             rgb_dir = out / "syncfix"
             rgb_dir.mkdir(parents=True, exist_ok=True)
             for p in fixes:
                 shutil.copyfile(p, rgb_dir / p.name)
-            alpha_dir = out / "matte"
+            matte_dir = out / "matte"
             subprocess.run([
                 sys.executable, str(REPO_ROOT / "scripts" / "matte_birefnet.py"),
-                "--input", str(rgb_dir), "--out", str(alpha_dir),
+                "--input", str(rgb_dir), "--out", str(matte_dir),
                 "--force",
             ], check=True)
-            final_src = alpha_dir
+            final_src = matte_dir
 
         # ---- unsharp + 输出到 --out-dir（有 alpha 就保留）----
         final = args.out_dir or (out / "final")
@@ -392,9 +420,12 @@ def main(argv=None) -> int:
                 alpha = Image.fromarray(
                     _clean_alpha(np.asarray(alpha, np.uint8)[..., None][..., 0],
                                  prior=prior))
-                alpha = Image.fromarray(_drop_dark_blobs(
-                    np.asarray(rgb, np.uint8),
-                    np.asarray(alpha, np.uint8)))
+                alpha = Image.fromarray(_drop_background(
+                    np.asarray(rgb, np.uint8), np.asarray(alpha, np.uint8)))
+                if args.drop_dark_blobs:
+                    alpha = Image.fromarray(_drop_dark_blobs(
+                        np.asarray(rgb, np.uint8),
+                        np.asarray(alpha, np.uint8)))
                 out_im = rgb.convert("RGBA")
                 out_im.putalpha(alpha)
                 # alpha 外的 RGB 置 0，与数据集约定一致
