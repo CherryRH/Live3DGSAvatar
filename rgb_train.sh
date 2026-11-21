@@ -8,8 +8,7 @@
 #
 # 与 train.sh 的差别（有意为之）：
 #   - 初始化：各向同性球（configs/model_rgb.yaml），不是贴面圆片
-#   - 损失：纯 L1（对齐原仓库 lambda_ssim 0.0），无 LPIPS、无 nv_spill、无 alpha
-#   - 背景：每批随机色（对齐原仓库 random_bg_color）
+#   - 损失：L1 + SSIM 0.2，无 LPIPS、无 nv_spill、无 alpha（黑底固定）
 #   - 数据：只用真实帧，没有修复图
 #   - 训练：固定步数（不按组合分早停），**不做加密**（保持 UV 初始化的
 #     60,353 个高斯，纯 RGBAvatar 重建口径）
@@ -39,8 +38,7 @@ info "RGBAvatar 基线：$SUBJECT/$WORK（各向同性球、L1+SSIM、无 spill/
   --subject "$SUBJECT" --work-name "$WORK" --stage base \
   --model-config configs/model_rgb.yaml \
   --iterations 7000 --batch-size 8 --blend-start 0 \
-  --ssim-weight 0 --lpips-weight 0 --alpha-weight 0 \
-  --random-bg \
+  --ssim-weight 0.2 --lpips-weight 0 --alpha-weight 0 \
   --nv-spill-weight 0 --nv-hole-weight 0 \
   --patience 9999 --min-delta 0.0 \
   --force "${PASSTHRU[@]}"
