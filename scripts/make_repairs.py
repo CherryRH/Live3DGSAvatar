@@ -36,6 +36,10 @@ def parse_args(argv=None):
     p.add_argument("--model", type=Path, default=None,
                    help="直接给 model.ply；给定时忽略 --work-name")
     p.add_argument("--dataset", default=None)
+    p.add_argument("--dry-run", action="store_true",
+                   help="只打印角度与标签，不渲染/不修复")
+    p.add_argument("--auto-yaw-only", action="store_true",
+                   help="配合 --auto：只排 yaw 扇，不做 pitch（默认建议）")
     p.add_argument("--auto", action="store_true",
                    help="按训练段四个方向的 p90 自动排角度（推荐）；给了就忽略 --yaws/--pitches")
     p.add_argument("--yaws", default="",
@@ -97,34 +101,17 @@ def _auto_angles(data_dir, train_end: int, step: float = 5.0,
     return yaw_pos + yaw_neg, pitch_pos + pitch_neg
 
 
-def _clean_alpha(alpha: np.ndarray,
-                 prior: np.ndarray | None = None,
-                 dilate: int = 9) -> np.ndarray:
+def _clean_alpha(alpha: np.ndarray) -> np.ndarray:
     """清理抠图：只保留最大连通域、填内洞、闭运算补 1–2 px 缺口。
 
-    BiRefNet 在头转视角上偶尔会把模型的漂浮高斯（比如脖子右下方的一小块）
-    也判成前景，或者把颏下/颈侧咬掉一小片。直接用会污染修复图的 mask，
-    进而污染训练。
+    BiRefNet 在头转视角上偶尔会漏判一小块（脖子侧、发梢），直接用会污染
+    修复图的 mask，进而污染训练。
     """
     from scipy import ndimage
 
     if alpha.ndim != 2:
         return alpha
     m = alpha > 127
-    if prior is not None and prior.shape == m.shape:
-        # 渲染 alpha（膨胀几像素）是"这个视角真实存在的内容"的硬约束：
-        # BiRefNet 偶尔会把纯黑背景沿脖子连成一片，最大连通域删不掉它。
-        from scipy import ndimage as _nd
-        pm = prior > 127
-        # 先清一遍渲染 alpha：漂浮高斯在 alpha 里也是小连通域，不能让它
-        # 通过"膨胀"又长回来
-        lab, n = _nd.label(pm)
-        if n > 1:
-            sizes = _nd.sum(pm, lab, range(1, n + 1))
-            pm = lab == (int(np.argmax(sizes)) + 1)
-        pm = _nd.binary_fill_holes(pm)
-        allow = _nd.binary_dilation(pm, iterations=int(dilate))
-        m = m & allow
     lab, n = ndimage.label(m)
     if n > 1:
         sizes = ndimage.sum(m, lab, range(1, n + 1))
@@ -135,29 +122,6 @@ def _clean_alpha(alpha: np.ndarray,
     out = np.zeros_like(alpha)
     out[m] = 255
     return out
-
-
-def _drop_lower_black(rgb: np.ndarray, alpha: np.ndarray,
-                      thresh: int = 8, y0: float = 0.45) -> np.ndarray:
-    """去掉"整块都落在下半张图"的纯黑区域。
-
-    base 模型在 pitch 视角会把颏下/胸口的未监督区域渲染成纯黑，SyncFix 不一定
-    修掉，抠图会把它当成人。这些块整体都在 y>0.45H；头发即使很暗也从上半张图
-    开始，因此不会被误删。
-    """
-    from scipy import ndimage
-
-    m = np.asarray(alpha, np.uint8).copy()
-    black = (m > 127) & (np.asarray(rgb).max(axis=-1) <= int(thresh))
-    if not bool(black.any()):
-        return m
-    lab, n = ndimage.label(black)
-    for i in range(1, n + 1):
-        comp = lab == i
-        ys = np.where(comp.any(axis=1))[0]
-        if ys.size and ys.min() >= y0 * m.shape[0]:
-            m[comp] = 0
-    return m
 
 
 def main(argv=None) -> int:
@@ -207,6 +171,8 @@ def main(argv=None) -> int:
     print(f"  基帧   : {base_idx:05d}（|yaw| {yaw_all[base_idx]:.1f}°）")
     if args.auto:
         yaws, pitches = _auto_angles(data_dir, train_end)
+        if args.auto_yaw_only:
+            pitches = []
         print(f"  角度   : auto  yaw {yaws}  pitch {pitches}")
     else:
         yaws = [float(v) for v in str(args.yaws).split(",") if str(v).strip()]
@@ -372,15 +338,8 @@ def main(argv=None) -> int:
                                   np.float32)
                 rgb = Image.fromarray(np.clip(arr + args.sharpen * (arr - blur),
                                               0, 255).astype(np.uint8))
-            alpha_path = alpha_dir / f"{p.stem}.png"
-            if not alpha_path.is_file():
-                raise SystemExit(f"[error] 缺少渲染 alpha：{alpha_path}")
-            prior = np.asarray(Image.open(alpha_path), np.uint8)
-            alpha = Image.fromarray(_drop_lower_black(
-                np.asarray(rgb, np.uint8),
-                _clean_alpha(
-                    np.asarray(Image.open(p).getchannel("A"), np.uint8),
-                    prior=prior)))
+            alpha = Image.fromarray(_clean_alpha(
+                np.asarray(Image.open(p).getchannel("A"), np.uint8)))
             out_im = rgb.convert("RGBA")
             out_im.putalpha(alpha)
             # alpha 外的 RGB 置 0，与数据集约定一致
@@ -389,7 +348,7 @@ def main(argv=None) -> int:
             out_im = Image.fromarray(a)
             out_im.save(final / p.name)
             n += 1
-        print(f"  修复图 : {n} 张（mask=渲染 alpha）-> {final}")
+        print(f"  修复图 : {n} 张（mask=BiRefNet 抠图）-> {final}")
 
         if args.repair_root is not None:
             root = Path(args.repair_root)
