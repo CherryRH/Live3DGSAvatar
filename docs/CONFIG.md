@@ -83,6 +83,18 @@ LIVE3DGS_OUTPUT_DIR
 | `robust_eval` | `true` | 大角度验证 + 缺口惩罚 |
 | `robust_eval_frames` | `24` | 大角度验证帧数 |
 | `robust_eval_weight` | `10.0` | 缺口折算 dB 权重 |
+| `alpha_weight` | `0.2` | alpha 向 GT 前景 mask 回归的权重 |
+
+### 选模型/早停 `train.pipeline.selection`
+
+| 字段 | 默认 | 说明 |
+|---|---|---|
+| `ssim` | `50.0` | 组合分里 SSIM 的权重 |
+| `lpips` | `50.0` | 组合分里 (1−LPIPS) 的权重 |
+| `perceptual_frames` | `240` | SSIM/LPIPS 的抽样帧数（全量太慢） |
+
+组合分 `score = PSNR + ssim·SSIM + lpips·(1−LPIPS)` 只在 base 阶段作为
+`--early-metric` 的默认值；hard_surface 用 `psnr_surface`。
 
 ### 新视角监督 `train.pipeline.novel_view`
 

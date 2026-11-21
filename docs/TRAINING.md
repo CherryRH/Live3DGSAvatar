@@ -32,6 +32,8 @@ report = trainer.run()
 
 - `Hook.on_start/on_step/on_end`；
 - `ValidationHook` 每隔 `every` 步评估；`start_after` 之前不累积"无提升"；
+  base 阶段的指标是**组合分** `PSNR + 50·SSIM + 50·(1−LPIPS)`（SSIM/LPIPS 在
+  240 帧抽样上算），hard_surface 用 `psnr_surface`；
   指标只认**落盘那一刻**的分数（`best_metric` + `best_saved`），不再用历史最大值；
 - `TrainReport.iterations` 是**实际执行**的步数（早停不会多算一步）；
 - 训练不依赖 `data/` 或 `app/`，输入是 batch 协议。
@@ -117,9 +119,10 @@ bash densify_train.sh --subject <对象> --hard-only
 头姿渲染 → SyncFix 修复 → BiRefNet 抠图** 生成，只在初始化阶段用一次：
 
 ```bash
+# 按训练段 yaw 两个方向的 p90 自动排角度（只做 yaw 扇，不做 pitch）
 python scripts/make_repairs.py --subject <对象> --work-name base \
-    --yaws="-90,-85,...,-40,40,...,90" \
-    --out output/repairs_base_5deg --out-dir datasets/<对象>/repair/repairs \
+    --auto --auto-yaw-only \
+    --out output/repairs_yaw --out-dir datasets/<对象>/repair/repairs \
     --repair-root datasets/<对象>/repair
 ```
 

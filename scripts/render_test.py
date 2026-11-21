@@ -128,6 +128,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="产物根目录（默认 output/render_test/<对象>/<版本>/；数据集不同时追加 /<数据集>）")
     p.add_argument("--save-images", action="store_true",
                    help="额外落盘渲染 PNG（默认只出对比视频；多模型时按版本分子目录）")
+    p.add_argument("--large-angle", dest="large_angle", action="store_true",
+                   default=True, help="额外算大角度指标（默认开，±45° 头转）")
+    p.add_argument("--no-large-angle", dest="large_angle", action="store_false",
+                   help="关闭大角度指标")
+    p.add_argument("--large-angle-yaws", default="45,-45",
+                   help="大角度指标用的 yaw（逗号分隔，默认 45,-45）")
     p.add_argument("--showcase", dest="showcase", action="store_true",
                    default=True,
                    help="额外输出大角度展示视频（默认开）：yaw 0→40→-40→0，"
@@ -365,6 +371,74 @@ def _frontal_frame(scene, frames: list[int]) -> int:
     return int(frames[int(np.argmin(yaw + pitch))])
 
 
+def _large_angle_metrics(avatar, scene, args) -> dict | None:
+    """大角度质量：头转 ±45°，在**没有 GT** 的情况下量化几何/锐度/薄雾。
+
+    这些量与留出集 PSNR 互补：留出集几乎全是正脸，看不出大角度退化。
+    """
+    import numpy as np
+    import torch
+
+    try:
+        from live3dgsavatar.core.render import render_frame
+        from live3dgsavatar.core.render.faceid import face_id_map
+        from live3dgsavatar.core.types import Camera, Mesh
+        from live3dgsavatar.tracking.pose_drive import PoseDriver
+        import nvdiffrast.torch as dr
+
+        driver = PoseDriver(Path(args.data), device="cpu")
+        glctx = dr.RasterizeCudaContext()
+        camera = Camera.from_intrinsics_extrinsics(
+            K=scene.K, R=scene.R, T=scene.T,
+            width=scene.width, height=scene.height).to("cuda")
+    except Exception:
+        return None
+    n = driver.frames
+    held = int(round(n * float(args.test_ratio)))
+    base = driver.base_index(train_only=n - held)
+    yaws = [float(v) for v in str(args.large_angle_yaws).split(",")
+            if str(v).strip()]
+    out: dict[str, dict] = {}
+    ref_sharp = None
+    for yaw in [0.0] + yaws:
+        turned = driver.turn(base, yaw, 0.0)
+        mesh = Mesh(verts=turned.mesh.unsqueeze(0).cuda(),
+                    faces=scene.faces, uvs=scene.uvs, uv_faces=scene.uv_faces)
+        with torch.no_grad():
+            res = render_frame(avatar, avatar_rasterizer[0], mesh,
+                               turned.weight.unsqueeze(0).cuda(), camera,
+                               torch.zeros(1, 3, 1, 1, device="cuda"))
+            ids = face_id_map(turned.mesh.unsqueeze(0).cuda(), scene.faces,
+                              camera, glctx, flip_y=False)
+        ids = ids[0] if ids.ndim == 3 else ids
+        surf = (ids >= 0).cpu().numpy()
+        alpha = res.alpha[0, 0].cpu().numpy()
+        color = res.color[0].clamp(0, 1).permute(1, 2, 0).cpu().numpy()
+        white = color + (1.0 - alpha[..., None])
+        filled = alpha > 0.5
+        gy, gx = np.gradient(color.mean(-1))
+        sharp = (float(np.hypot(gx, gy)[surf].mean()) * 255.0
+                 if surf.any() else 0.0)
+        if yaw == 0.0:
+            ref_sharp = sharp
+        out[f"{yaw:+.0f}"] = {
+            "coverage": (float((alpha[surf] > 0.5).mean())
+                         if surf.any() else 0.0),
+            "hole": (float((alpha[surf] < 0.5).mean()) if surf.any() else 0.0),
+            "outside": float((filled & ~surf).sum()) / max(1, int(filled.sum())),
+            "haze": float(((alpha > 0.05) & (alpha < 0.9)
+                           & (white.mean(-1) < 0.9)).mean()),
+            "sharp": sharp,
+            "sharp_rel": (sharp / ref_sharp) if ref_sharp else None,
+            "area": int(filled.sum()),
+        }
+    return out
+
+
+# 单模型渲染共用一个光栅化器（大角度指标复用）
+avatar_rasterizer: list = [None]
+
+
 def render_core(args, scene, frames: list[int], out_dir: Path,
                 share_dir: Path | None = None, *, ply: Path | None = None,
                 draw_angle: bool = True):
@@ -487,6 +561,15 @@ def render_core(args, scene, frames: list[int], out_dir: Path,
 
     print(f"  [render] {total_frames}/{total_frames} 完成", flush=True)
     _fps = 1000.0 / np.asarray(per_frame_ms, dtype=np.float64).clip(min=1e-6)
+    if args.large_angle:
+        avatar_rasterizer[0] = rasterizer
+        try:
+            perf_large = _large_angle_metrics(avatar, scene, args)
+        except Exception as exc:                       # noqa: BLE001
+            print(f"      [warn] 大角度指标跳过：{type(exc).__name__}: {exc}")
+            perf_large = None
+    else:
+        perf_large = None
     perf = {
         "haze": (float(np.median(haze_vals)) if haze_vals else None),
         "mean_ms_per_frame": float(np.mean(per_frame_ms)),
@@ -496,6 +579,7 @@ def render_core(args, scene, frames: list[int], out_dir: Path,
         "fps_median": float(np.median(_fps)),
         "fps_std": float(np.std(_fps)),
         "timing_note": "单次渲染遍历；warmup=1 帧；fps_std 是帧间离散度",
+        "large_angle": perf_large,
         "peak_memory_mib": torch.cuda.max_memory_allocated() / 2**20,
         "batch_size": args.batch_size,
         "num_gaussian": int(avatar.num_gaussians),

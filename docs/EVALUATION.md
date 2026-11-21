@@ -107,6 +107,23 @@ python scripts/render_test.py --subject bala --dataset bala \
 `train.pipeline.test_ratio`（默认 0.3）对应的留出集，而不是训练段开头。
 `render_test.py` 本身默认仍是 `head`，便于快速冒烟和逐帧排查。
 
+### 大角度指标（`perf.large_angle`，默认 ±45°）
+
+留出集几乎全是正脸（bala p50 yaw 0.9°），PSNR 看不出大角度退化。`render_test.py`
+默认再按 **±45° 头转**（相机不动、由 `pose_drive` 转基帧）渲染两张，记录：
+
+| 字段 | 含义 |
+|---|---|
+| `coverage` / `hole` | FLAME 表面内 alpha>0.5 / <0.5 的比例（几何覆盖与空洞） |
+| `outside` | 实心像素落在 FLAME 表面外的比例（头发/肩/漂浮，需配合目视） |
+| `haze` | 白底上半透明暗像素占比（轮廓薄雾） |
+| `sharp` / `sharp_rel` | 表面内平均梯度，及相对正脸的比值（细节保留率） |
+| `area` | 剪影面积（跨角度稳定性） |
+
+关闭用 `--no-large-angle`，换角度用 `--large-angle-yaws "45,-45"`。
+报告里同时有 `"+0"` 作为参照。需要**身份一致性**时用独立脚本
+`scripts/large_angle_metrics.py`（ArcFace 余弦 vs 正脸，只在同角度跨模型比较）。
+
 `report.json` 的 `params` 记录完整复现信息：命令、模型路径/结构、数据集路径、
 取帧模式与实际帧号、背景/批大小/视频参数、完整解析后配置、Python/torch/CUDA
 与 GPU。`quality` 仍只放指标，便于对比脚本只读指标。
@@ -127,11 +144,11 @@ python scripts/render_test.py --subject bala --dataset bala \
 **统一留出集**：末尾 30%（`train.pipeline.test_ratio`）既是验证集也是最终报告集，
 不另切第三份。这是本项目的固定约定，换来的是所有配置都在**同一批帧**上比较。
 
-**必须知道的代价**：`model_best` 是在这个 30% 上按 robust 分数挑出来的，所以报告
-是"best-of-N on test"，绝对值偏乐观。bala `densify` 实测：10 次验证的 robust 在
-27.22–28.50 之间（跨度 1.3 dB），被选中的最好值恰好也是最后一个 checkpoint
-（`model_004999.ply` 与 `model_005000.ply` 字节相同）。也就是说本行没有发生
-"选出来比最后一步更好"的情况；但不能假设别的行也如此。
+**必须知道的代价**：`model_best` 是在这个 30% 上按**组合分**挑出来的
+（`score = PSNR + 50·SSIM + 50·(1−LPIPS)`，SSIM/LPIPS 抽 240 帧），所以报告是
+"best-of-N on test"，绝对值偏乐观。选中的 checkpoint 常在中段（如 5499 步），
+而末段 checkpoint 的 PSNR 可能更低、LPIPS 更高——跨行比较请统一用同一套
+选择规则与同一 `metric_version`。
 
 **报告字段**（`report.json`）：
 

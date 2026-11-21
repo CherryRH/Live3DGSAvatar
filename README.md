@@ -65,7 +65,7 @@ bash run_gui.sh --subject <对象> --work-name base
 | `build_dataset.sh` | 跟踪、对齐并烘焙训练数据 | `datasets/<对象>/` |
 | `train.sh` | 基础训练 | `models/<对象>/<版本>/` |
 | `densify_train.sh` | 硬表面初始化 → 加密（两段式） | `models/<对象>/<版本>/` |
-| `eval.sh` | 留出集渲染评测（支持 `--work-names` 多版本） | `output/render_test/.../report.json`、`compare.mp4`、`showcase.png` |
+| `eval.sh` | 留出集渲染评测 + ±45° 大角度指标（支持 `--work-names` 多版本） | `output/render_test/.../report.json`、`compare.mp4`、`showcase.png` |
 | `run_gui.sh` | 浏览器预览与实时驱动 | 本地 Web 页面 |
 | `run_tracking.sh` | 启动 RDF 实时追踪服务 | 追踪 sidecar |
 
