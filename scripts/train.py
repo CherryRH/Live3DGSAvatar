@@ -159,10 +159,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="硬表面阶段：切向尺度上限（米）")
     p.add_argument("--surface-outside-weight", type=float, default=None,
                    help="硬表面阶段：FLAME 表面外 alpha 归零权重")
-    p.add_argument("--edge-boost", type=float, default=None,
-                   help="轮廓带 L1 加权（>1 启用；P0 实验）")
-    p.add_argument("--edge-band", type=int, default=None,
-                   help="轮廓带宽度（像素，默认 5）")
     p.add_argument("--alpha-weight", type=float, default=None,
                    help="alpha 直接监督权重：向 GT 前景 mask 回归（0=关）")
     p.add_argument("--surface-bg-weight", type=float, default=None,
@@ -286,11 +282,6 @@ def main(argv: list[str] | None = None) -> int:
     lr_scale = float(args.lr_scale)
     if lr_scale <= 0:
         raise SystemExit(f"[error] --lr-scale 必须为正，实际 {args.lr_scale}")
-
-    edge_boost = float(args.edge_boost if args.edge_boost is not None
-                       else cfg.get("train.pipeline.edge_boost", 1.0))
-    edge_band = int(args.edge_band if args.edge_band is not None
-                    else cfg.get("train.pipeline.edge_band", 5))
 
     sel_cfg = cfg.get("train.pipeline.selection", {}) or {}
     sel_ssim_weight = float(sel_cfg.get("ssim", 50.0))
@@ -459,8 +450,7 @@ def main(argv: list[str] | None = None) -> int:
     train_src = ManifestSource(data_dir, split=train_split, test_ratio=test_ratio,
                                device="cpu", seed=args.seed,
                                max_frames=(None if max_frames is None
-                                           else int(max_frames)),
-                               edge_boost=edge_boost, edge_band=edge_band)
+                                           else int(max_frames)))
     val_src = ManifestSource(data_dir, split="test", test_ratio=test_ratio,
                              device="cpu")
 
@@ -778,8 +768,6 @@ def main(argv: list[str] | None = None) -> int:
         loss_terms.append(f"surface_outside {surface_outside:g}")
     if surface_bg > 0:
         loss_terms.append(f"surface_bg {surface_bg:g}")
-    if edge_boost > 1.0:
-        loss_terms.append(f"边缘带 ×{edge_boost:g}（±{edge_band}px）")
     if alpha_weight > 0:
         loss_terms.append(f"alpha {alpha_weight:g}(对 GT mask)")
     if ssim_weight > 0:
@@ -895,8 +883,6 @@ def main(argv: list[str] | None = None) -> int:
                 avatar, rasterizer, mesh,
                 None if weight is None else weight.to(device), cam, bg,
                 options=base_forward, target_image=batch.image.to(device)).out
-            if getattr(batch, "alpha_target", None) is not None:
-                out.target_alpha = batch.alpha_target.to(device)
         if nv_enabled and (int(iteration) + 1) % int(nv_every) == 0:
             from live3dgsavatar.training.losses import (outside_alpha_loss,
                                                        surface_bg_alpha_loss,
