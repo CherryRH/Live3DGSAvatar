@@ -140,6 +140,32 @@ def _clean_alpha(alpha: np.ndarray,
     return out
 
 
+def _drop_dark_blobs(rgb: np.ndarray, alpha: np.ndarray,
+                     min_area: int = 1200, y_ratio: float = 0.7,
+                     luma: float = 35.0) -> np.ndarray:
+    """去掉"下半张图里的大块近黑区域"——典型是模型在低头视角把后脑/漂浮
+    渲染到了脖子以下，SyncFix 也没修掉，最后被抠图当成前景。"""
+    from scipy import ndimage
+
+    m = alpha > 127
+    dark = m & (np.asarray(rgb, np.float64).mean(axis=-1) < luma)
+    lab, n = ndimage.label(dark)
+    if n == 0:
+        return alpha
+    out = alpha.copy()
+    h = alpha.shape[0]
+    for i in range(1, n + 1):
+        comp = lab == i
+        area = int(comp.sum())
+        if area < min_area:
+            continue
+        ys = np.where(comp.any(axis=1))[0]
+        if ys.mean() < y_ratio * h:
+            continue
+        out[comp] = 0
+    return out
+
+
 def main(argv=None) -> int:
     args = parse_args(argv)
     import torch
@@ -366,6 +392,9 @@ def main(argv=None) -> int:
                 alpha = Image.fromarray(
                     _clean_alpha(np.asarray(alpha, np.uint8)[..., None][..., 0],
                                  prior=prior))
+                alpha = Image.fromarray(_drop_dark_blobs(
+                    np.asarray(rgb, np.uint8),
+                    np.asarray(alpha, np.uint8)))
                 out_im = rgb.convert("RGBA")
                 out_im.putalpha(alpha)
                 # alpha 外的 RGB 置 0，与数据集约定一致
@@ -393,16 +422,12 @@ def main(argv=None) -> int:
                 shutil.copyfile(p, root / "views" / p.name)
             for p in refs_dir.glob("*.png"):
                 shutil.copyfile(p, root / "refs" / p.name)
-            if alpha_dir is not None:
-                for p in alpha_dir.glob("*.png"):
-                    im = Image.open(p)
-                    if im.mode == "RGBA":
-                        a = np.asarray(im.getchannel("A"))
-                        prior_path = alpha_dir / f"{p.stem}.png"
-                        prior = (np.asarray(Image.open(prior_path))
-                                 if prior_path.is_file() else None)
-                        Image.fromarray(_clean_alpha(a, prior=prior)).save(
-                            root / "masks" / p.name)
+            # masks/ 直接取最终 RGBA 的 alpha（已做渲染先验 + 去暗块），
+            # 保证 masks/ 与 repairs/ 完全一致
+            for p in final.glob("*.png"):
+                im = Image.open(p)
+                if im.mode == "RGBA":
+                    im.getchannel("A").save(root / "masks" / p.name)
             for p in final.glob("*.png"):
                 dst = root / "repairs" / p.name
                 if p.resolve() != dst.resolve():   # --out-dir 可能就是 root/repairs
