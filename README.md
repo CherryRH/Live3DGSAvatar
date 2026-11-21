@@ -46,8 +46,8 @@ bash build_dataset.sh --video videos/<对象> --name <对象>   # 从视频直�
 bash train.sh --subject <对象> --work-name base
 # 加密前先生成初始化修复图（SyncFix 路径见 configs/local.yaml）
 python scripts/make_repairs.py --subject <对象> --work-name base \
-  --yaws="-90,...,-40,40,...,90" \
-  --out output/repairs_base_5deg --out-dir datasets/<对象>/repair/repairs \
+  --auto --auto-yaw-only \
+  --out output/repairs_yaw --out-dir datasets/<对象>/repair/repairs \
   --repair-root datasets/<对象>/repair
 bash densify_train.sh --subject <对象>
 bash eval.sh --subject <对象> --work-name densify
