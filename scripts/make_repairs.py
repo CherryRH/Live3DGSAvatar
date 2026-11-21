@@ -36,7 +36,9 @@ def parse_args(argv=None):
     p.add_argument("--model", type=Path, default=None,
                    help="直接给 model.ply；给定时忽略 --work-name")
     p.add_argument("--dataset", default=None)
-    p.add_argument("--yaws", required=True,
+    p.add_argument("--auto", action="store_true",
+                   help="按训练段四个方向的 p90 自动排角度（推荐）；给了就忽略 --yaws/--pitches")
+    p.add_argument("--yaws", default="",
                    help="逗号分隔的相对 yaw（度），如 45,-45；只做 pitch 时给 0")
     p.add_argument("--pitches", default="0",
                    help="逗号分隔的相对 pitch（度），如 -30,...,30；与 yaws 做叉积")
@@ -67,6 +69,61 @@ def parse_args(argv=None):
     return p.parse_args(argv)
 
 
+def _auto_angles(data_dir, train_end: int, step: float = 5.0,
+                 max_yaw: float = 90.0, max_pitch: float = 45.0):
+    """按训练段四个方向的 p90 往外排修复角度。
+
+    修复图是为了补**数据里没有**的角度，所以每一侧都从该侧 p90 往外走
+    （而不是对称地从固定值开始）；这样不会和 GT 已有的角度重复，也避免
+    在数据本来就稀疏的一侧"过度覆盖"。
+    """
+    import numpy as _np
+
+    from live3dgsavatar.data.pose import head_pitch, head_yaw
+
+    with np.load(Path(data_dir) / "render_inputs.npz", allow_pickle=True) as d:
+        w = np.asarray(d["blend_weight"][:max(1, int(train_end))], dtype=np.float32)
+    yaw = head_yaw(w)
+    pitch = head_pitch(w)
+
+    def _side(values, positive: bool, top: float) -> list[float]:
+        v = values if positive else -values
+        v = v[v > 0]
+        p90 = float(_np.percentile(v, 90)) if v.size else 0.0
+        start = float(_np.ceil(p90 / step) * step + step)
+        return [float(s) for s in _np.arange(start, top + 1e-6, step)]
+
+    yaw_pos = _side(yaw, True, max_yaw)
+    yaw_neg = [-v for v in _side(yaw, False, max_yaw)]
+    pitch_pos = _side(pitch, True, max_pitch)
+    pitch_neg = [-v for v in _side(pitch, False, max_pitch)]
+    return yaw_pos + yaw_neg, pitch_pos + pitch_neg
+
+
+def _clean_alpha(alpha: np.ndarray) -> np.ndarray:
+    """清理抠图：只保留最大连通域、填内洞、闭运算补 1–2 px 缺口。
+
+    BiRefNet 在头转视角上偶尔会把模型的漂浮高斯（比如脖子右下方的一小块）
+    也判成前景，或者把颏下/颈侧咬掉一小片。直接用会污染修复图的 mask，
+    进而污染训练。
+    """
+    from scipy import ndimage
+
+    if alpha.ndim != 2:
+        return alpha
+    m = alpha > 127
+    lab, n = ndimage.label(m)
+    if n > 1:
+        sizes = ndimage.sum(m, lab, range(1, n + 1))
+        m = lab == (int(np.argmax(sizes)) + 1)
+    m = ndimage.binary_fill_holes(m)
+    m = ndimage.binary_closing(m, iterations=1)
+    m = ndimage.binary_fill_holes(m)
+    out = np.zeros_like(alpha)
+    out[m] = 255
+    return out
+
+
 def main(argv=None) -> int:
     args = parse_args(argv)
     import torch
@@ -95,10 +152,7 @@ def main(argv=None) -> int:
     if not Path(ply).is_file():
         raise SystemExit(f"[error] 找不到模型：{ply}")
 
-    yaws = [float(v) for v in str(args.yaws).split(",") if str(v).strip()]
-    pitches = [float(v) for v in str(args.pitches).split(",") if str(v).strip()]
-    if not yaws:
-        raise SystemExit("[error] --yaws 为空")
+    # 角度在读到数据后再确定（--auto 需要训练段的 p90）
 
     with np.load(data_dir / "render_inputs.npz", allow_pickle=True) as d:
         meshes = torch.from_numpy(d["mesh"].copy()).float()
@@ -115,6 +169,16 @@ def main(argv=None) -> int:
     print(f"  数据集 : {data_dir}（{total} 帧，训练段 {train_end}）")
     print(f"  模型   : {ply}")
     print(f"  基帧   : {base_idx:05d}（|yaw| {yaw_all[base_idx]:.1f}°）")
+    if args.auto:
+        yaws, pitches = _auto_angles(data_dir, train_end)
+        print(f"  角度   : auto  yaw {yaws}  pitch {pitches}")
+    else:
+        yaws = [float(v) for v in str(args.yaws).split(",") if str(v).strip()]
+        pitches = [float(v) for v in str(args.pitches).split(",")
+                   if str(v).strip()]
+    if not yaws:
+        raise SystemExit("[error] --yaws 为空")
+
 
     device = "cuda"
     if not torch.cuda.is_available():
@@ -274,6 +338,8 @@ def main(argv=None) -> int:
                 rgb = Image.fromarray(np.clip(arr + args.sharpen * (arr - blur),
                                               0, 255).astype(np.uint8))
             if alpha is not None:
+                alpha = Image.fromarray(
+                    _clean_alpha(np.asarray(alpha, np.uint8)[..., None][..., 0]))
                 out_im = rgb.convert("RGBA")
                 out_im.putalpha(alpha)
                 # alpha 外的 RGB 置 0，与数据集约定一致
@@ -290,6 +356,13 @@ def main(argv=None) -> int:
             root = Path(args.repair_root)
             for sub in ("views", "refs", "masks", "repairs"):
                 (root / sub).mkdir(parents=True, exist_ok=True)
+            # 先清掉上一轮的标签，避免角度改了之后留下孤儿文件。
+            # ⚠️ `repairs/` 可能就是 --out-dir，不能整个删掉；只删不在本次集合里的。
+            cur = {q.stem for q in views_dir.glob("*.png")}
+            for sub in ("views", "masks", "repairs"):
+                for stale in (root / sub).glob("*.png"):
+                    if stale.stem not in cur:
+                        stale.unlink()
             for p in views_dir.glob("*.png"):
                 shutil.copyfile(p, root / "views" / p.name)
             for p in refs_dir.glob("*.png"):
@@ -298,7 +371,9 @@ def main(argv=None) -> int:
                 for p in alpha_dir.glob("*.png"):
                     im = Image.open(p)
                     if im.mode == "RGBA":
-                        im.getchannel("A").save(root / "masks" / p.name)
+                        a = np.asarray(im.getchannel("A"))
+                        Image.fromarray(_clean_alpha(a)).save(
+                            root / "masks" / p.name)
             for p in final.glob("*.png"):
                 dst = root / "repairs" / p.name
                 if p.resolve() != dst.resolve():   # --out-dir 可能就是 root/repairs
