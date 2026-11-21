@@ -63,11 +63,6 @@ def parse_args(argv=None):
     # 按 batch 分组、每组单独调用一次，保证每组都带参考。
     p.add_argument("--syncfix-batch", type=int, default=4)
     p.add_argument("--sharpen", type=float, default=0.35)
-    p.add_argument("--drop-dark-blobs", action="store_true",
-                   help="额外清掉下半张图的大块近黑区域（默认关；一般靠渲染 alpha 先验就够）")
-    p.add_argument("--no-matte", action="store_true",
-                   help="跳过 BiRefNet 抠图（默认做，输出 RGBA）")
-    p.add_argument("--dry-run", action="store_true")
     return p.parse_args(argv)
 
 
@@ -142,56 +137,27 @@ def _clean_alpha(alpha: np.ndarray,
     return out
 
 
-def _drop_background(rgb: np.ndarray, alpha: np.ndarray,
-                     thresh: int = 8) -> np.ndarray:
-    """把"纯背景色"的像素从 alpha 里去掉。
+def _drop_lower_black(rgb: np.ndarray, alpha: np.ndarray,
+                      thresh: int = 8, y0: float = 0.45) -> np.ndarray:
+    """去掉"整块都落在下半张图"的纯黑区域。
 
-    SyncFix 的输出背景是纯黑（RGB=0），而 BiRefNet 在低头等异常姿态下会把
-    脖子旁边的背景也判成前景。头发/胡须再暗也远高于 8，所以按"三通道都 ≤8"
-    判背景既稳又不会伤到真实暗部。
+    base 模型在 pitch 视角会把颏下/胸口的未监督区域渲染成纯黑，SyncFix 不一定
+    修掉，抠图会把它当成人。这些块整体都在 y>0.45H；头发即使很暗也从上半张图
+    开始，因此不会被误删。
     """
     from scipy import ndimage
 
     m = np.asarray(alpha, np.uint8).copy()
-    bg = np.asarray(rgb).max(axis=-1) <= int(thresh)
-    if not bool(bg.any()):
+    black = (m > 127) & (np.asarray(rgb).max(axis=-1) <= int(thresh))
+    if not bool(black.any()):
         return m
-    # 只去掉"与图像边界连通"的纯背景；被皮肤包住的纯黑小点是修复器伪影，
-    # 直接抠掉会在脸上打洞，留给后面的形态学清理。
-    lab, n = ndimage.label(bg)
-    edge = np.concatenate([lab[0, :], lab[-1, :], lab[:, 0], lab[:, -1]])
-    touching = set(int(v) for v in np.unique(edge) if v != 0)
-    if not touching:
-        return m
-    outside = np.isin(lab, list(touching))
-    m[outside & (m > 127)] = 0
-    return m
-
-
-def _drop_dark_blobs(rgb: np.ndarray, alpha: np.ndarray,
-                     min_area: int = 1200, y_ratio: float = 0.7,
-                     luma: float = 35.0) -> np.ndarray:
-    """去掉"下半张图里的大块近黑区域"——典型是模型在低头视角把后脑/漂浮
-    渲染到了脖子以下，SyncFix 也没修掉，最后被抠图当成前景。"""
-    from scipy import ndimage
-
-    m = alpha > 127
-    dark = m & (np.asarray(rgb, np.float64).mean(axis=-1) < luma)
-    lab, n = ndimage.label(dark)
-    if n == 0:
-        return alpha
-    out = alpha.copy()
-    h = alpha.shape[0]
+    lab, n = ndimage.label(black)
     for i in range(1, n + 1):
         comp = lab == i
-        area = int(comp.sum())
-        if area < min_area:
-            continue
         ys = np.where(comp.any(axis=1))[0]
-        if ys.mean() < y_ratio * h:
-            continue
-        out[comp] = 0
-    return out
+        if ys.size and ys.min() >= y0 * m.shape[0]:
+            m[comp] = 0
+    return m
 
 
 def main(argv=None) -> int:
@@ -322,7 +288,8 @@ def main(argv=None) -> int:
         Image.fromarray(img).save(views_dir / f"{label}.png")
         # 渲染 alpha 作为抠图先验：修复图只能保留"渲染里真的有的东西"，
         # 避免 BiRefNet 把背景/漂浮高斯误判成前景（B 站里那块黑斑就是这么来的）。
-        amask = (res.alpha[0, 0] > 0.1).cpu().numpy().astype(np.uint8) * 255
+        amask = (res.alpha[0, 0].clamp(0, 1).cpu().numpy() * 255.0
+                 ).astype(np.uint8)
         alpha_dir.mkdir(parents=True, exist_ok=True)
         Image.fromarray(amask).save(alpha_dir / f"{label}.png")
         print(f"  {label}  (yaw {yaw:+.1f}°, pitch {pitch:+.1f}°)")
@@ -377,26 +344,20 @@ def main(argv=None) -> int:
         if not fixes:
             raise SystemExit("[error] SyncFix 没有产出图片")
 
-        # ---- 抠图：SyncFix 输出是黑底 RGB，转成 RGBA（alpha=人像）----
-        if args.no_matte:
-            rgb_dir = out / "syncfix"
-            rgb_dir.mkdir(parents=True, exist_ok=True)
-            for p in fixes:
-                shutil.copyfile(p, rgb_dir / p.name)
-            final_src = rgb_dir
-            matte_dir = None
-        else:
-            rgb_dir = out / "syncfix"
-            rgb_dir.mkdir(parents=True, exist_ok=True)
-            for p in fixes:
-                shutil.copyfile(p, rgb_dir / p.name)
-            matte_dir = out / "matte"
-            subprocess.run([
-                sys.executable, str(REPO_ROOT / "scripts" / "matte_birefnet.py"),
-                "--input", str(rgb_dir), "--out", str(matte_dir),
-                "--force",
-            ], check=True)
-            final_src = matte_dir
+        # ---- 掩码：BiRefNet ∩ 渲染 alpha ----
+        # BiRefNet 给的是"确实是人"的区域（不会把纯黑背景算进来）；
+        # 渲染 alpha 给的是"这个视角几何上真的存在的东西"（含头发、不含漂浮）。
+        # 两者求交、再按几何先验膨胀几像素，兼顾完整性与干净度。
+        rgb_dir = out / "syncfix"
+        rgb_dir.mkdir(parents=True, exist_ok=True)
+        for p in fixes:
+            shutil.copyfile(p, rgb_dir / p.name)
+        matte_dir = out / "matte"
+        subprocess.run([
+            sys.executable, str(REPO_ROOT / "scripts" / "matte_birefnet.py"),
+            "--input", str(rgb_dir), "--out", str(matte_dir), "--force",
+        ], check=True)
+        final_src = matte_dir
 
         # ---- unsharp + 输出到 --out-dir（有 alpha 就保留）----
         final = args.out_dir or (out / "final")
@@ -404,39 +365,31 @@ def main(argv=None) -> int:
         from PIL import ImageFilter
         n = 0
         for p in sorted(final_src.glob("*.png")):
-            im = Image.open(p)
-            alpha = im.getchannel("A") if im.mode == "RGBA" else None
-            rgb = im.convert("RGB")
+            rgb = Image.open(p).convert("RGB")
             if args.sharpen > 0:
                 arr = np.asarray(rgb, np.float32)
                 blur = np.asarray(rgb.filter(ImageFilter.GaussianBlur(radius=1.0)),
                                   np.float32)
                 rgb = Image.fromarray(np.clip(arr + args.sharpen * (arr - blur),
                                               0, 255).astype(np.uint8))
-            if alpha is not None:
-                prior_path = alpha_dir / f"{p.stem}.png"
-                prior = (np.asarray(Image.open(prior_path)) if prior_path.is_file()
-                         else None)
-                alpha = Image.fromarray(
-                    _clean_alpha(np.asarray(alpha, np.uint8)[..., None][..., 0],
-                                 prior=prior))
-                alpha = Image.fromarray(_drop_background(
-                    np.asarray(rgb, np.uint8), np.asarray(alpha, np.uint8)))
-                if args.drop_dark_blobs:
-                    alpha = Image.fromarray(_drop_dark_blobs(
-                        np.asarray(rgb, np.uint8),
-                        np.asarray(alpha, np.uint8)))
-                out_im = rgb.convert("RGBA")
-                out_im.putalpha(alpha)
-                # alpha 外的 RGB 置 0，与数据集约定一致
-                a = np.array(out_im, dtype=np.uint8, copy=True)
-                a[a[..., 3] <= 127, :3] = 0
-                out_im = Image.fromarray(a)
-            else:
-                out_im = rgb
+            alpha_path = alpha_dir / f"{p.stem}.png"
+            if not alpha_path.is_file():
+                raise SystemExit(f"[error] 缺少渲染 alpha：{alpha_path}")
+            prior = np.asarray(Image.open(alpha_path), np.uint8)
+            alpha = Image.fromarray(_drop_lower_black(
+                np.asarray(rgb, np.uint8),
+                _clean_alpha(
+                    np.asarray(Image.open(p).getchannel("A"), np.uint8),
+                    prior=prior)))
+            out_im = rgb.convert("RGBA")
+            out_im.putalpha(alpha)
+            # alpha 外的 RGB 置 0，与数据集约定一致
+            a = np.array(out_im, dtype=np.uint8, copy=True)
+            a[a[..., 3] <= 127, :3] = 0
+            out_im = Image.fromarray(a)
             out_im.save(final / p.name)
             n += 1
-        print(f"  修复图 : {n} 张（matte={'off' if args.no_matte else 'on'}）-> {final}")
+        print(f"  修复图 : {n} 张（mask=渲染 alpha）-> {final}")
 
         if args.repair_root is not None:
             root = Path(args.repair_root)
