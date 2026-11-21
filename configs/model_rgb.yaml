@@ -1,0 +1,11 @@
+# 纯 RGBAvatar 基线用的结构：**各向同性球初始化**（不启用盘状初始化）。
+# 其余与 configs/model.yaml 一致；颜色仍然只有 SH DC（本项目模型格式的限制）。
+model:
+  tex_size: 256
+  num_basis_in: 129
+  num_basis_blend: 20
+  mlp_hidden: [128, 128]
+  use_weight_proj: true
+  init_opacity: 0.5
+  init_scaling: 0.0008
+  sh_degree: 0
