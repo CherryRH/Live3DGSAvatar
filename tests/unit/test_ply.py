@@ -338,3 +338,46 @@ def test_split_unified_subdivide_replaces_parent_with_two_children() -> None:
     child = av.xyz.data[before:]
     assert torch.allclose((parent + child) / 2, old_xyz, atol=1e-6)
     assert not torch.allclose(parent, child)
+
+
+def test_split_prune_keeps_texel_mask_untouched() -> None:
+    """UV 绑定时 `valid_binding_mask` 是 texel 语义（长度 tex_size²），
+    split/prune 不能拿它当逐高斯 mask 去索引（会尺寸不匹配崩溃）。"""
+    from live3dgsavatar.core.avatar import AvatarConfig, GaussianAvatar
+    from live3dgsavatar.core.deform import Binding
+
+    n = 32
+    cfg = AvatarConfig(tex_size=8, num_basis_in=4, num_basis_blend=3,
+                       mlp_hidden=(4,), use_weight_proj=False)
+    binding = Binding(face_id=torch.zeros(n, dtype=torch.long),
+                      face_bary=torch.tensor([[0.5, 0.5, 0.0]]).repeat(n, 1),
+                      valid_mask=torch.ones(16, dtype=torch.bool))  # texel 数
+    avatar = GaussianAvatar(cfg, binding)
+    assert avatar._mask_per_gaussian is False
+    before = int(avatar.valid_binding_mask.numel())
+    avatar.split_unified(torch.arange(0, 8), jitter=0.5)
+    keep = torch.ones(int(avatar.num_gaussians), dtype=torch.bool)
+    avatar.prune_unified(keep)
+    assert int(avatar.num_gaussians) == n + 8
+    assert int(avatar.valid_binding_mask.numel()) == before
+
+
+def test_split_prune_grows_per_gaussian_mask() -> None:
+    """合并后的统一集合是"逐高斯 mask"，split/prune 必须让它跟着变。"""
+    from live3dgsavatar.core.avatar import AvatarConfig, GaussianAvatar
+    from live3dgsavatar.core.deform import Binding
+
+    n = 32
+    cfg = AvatarConfig(tex_size=8, num_basis_in=4, num_basis_blend=3,
+                       mlp_hidden=(4,), use_weight_proj=False)
+    binding = Binding(face_id=torch.zeros(n, dtype=torch.long),
+                      face_bary=torch.tensor([[0.5, 0.5, 0.0]]).repeat(n, 1),
+                      valid_mask=torch.ones(n, dtype=torch.bool))
+    avatar = GaussianAvatar(cfg, binding)
+    assert avatar._mask_per_gaussian is True
+    avatar.split_unified(torch.arange(0, 8), jitter=0.5)
+    assert int(avatar.valid_binding_mask.numel()) == n + 8
+    keep = torch.ones(int(avatar.num_gaussians), dtype=torch.bool)
+    keep[:4] = False
+    avatar.prune_unified(keep)
+    assert int(avatar.valid_binding_mask.numel()) == int(avatar.num_gaussians)

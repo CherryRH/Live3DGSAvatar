@@ -172,6 +172,12 @@ class GaussianAvatar(nn.Module):
         k = config.num_basis
         self.num_gaussians = n
         self.num_basis = k
+        # `valid_binding_mask` 有两种语义：
+        #   - UV 绑定：长度 tex_size²，是"哪些 texel 有效"（给 uv_texture 用）
+        #   - 合并后的统一集合：长度 == 高斯数，是"哪些高斯有效"
+        # 只有后者能跟着 split/prune 一起索引；前者保持不动。
+        self._mask_per_gaussian = (
+            int(self.valid_binding_mask.numel()) == int(self.num_gaussians))
 
         # 基态：位置为 0（真实位置由绑定面决定），颜色为 0（由 fast_forward 或训练填充）
         self.xyz = nn.Parameter(torch.zeros(n, 3))
@@ -359,8 +365,9 @@ class GaussianAvatar(nn.Module):
             opacity_all = self.opacity.data
         self.binding_face_id = cat(self.binding_face_id, self.binding_face_id[idx])
         self.binding_face_bary = cat(self.binding_face_bary, self.binding_face_bary[idx])
-        self.valid_binding_mask = cat(self.valid_binding_mask,
-                                      self.valid_binding_mask[idx])
+        if getattr(self, "_mask_per_gaussian", False):
+            self.valid_binding_mask = cat(self.valid_binding_mask,
+                                          self.valid_binding_mask[idx])
         self.xyz = nn.Parameter(cat(xyz_all, new_xyz))
         self.opacity = nn.Parameter(cat(opacity_all, new_opacity))
         self.scaling = nn.Parameter(cat(scaling_all, new_scaling))
@@ -386,7 +393,8 @@ class GaussianAvatar(nn.Module):
             raise RuntimeError("剪枝后模型为空")
         self.binding_face_id = self.binding_face_id[keep].clone()
         self.binding_face_bary = self.binding_face_bary[keep].clone()
-        self.valid_binding_mask = self.valid_binding_mask[keep].clone()
+        if getattr(self, "_mask_per_gaussian", False):
+            self.valid_binding_mask = self.valid_binding_mask[keep].clone()
         for name in ("xyz", "opacity", "scaling", "rotation", "color"):
             setattr(self, name, nn.Parameter(getattr(self, name).data[keep].clone()))
         self.xyz_b = nn.Parameter(self.xyz_b.data[:, keep].clone())

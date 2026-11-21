@@ -37,7 +37,7 @@ info "RGBAvatar 基线：$SUBJECT/$WORK（各向同性球、L1+SSIM、无 spill/
 "${PY_RUN[@]}" scripts/train.py \
   --subject "$SUBJECT" --work-name "$WORK" --stage base \
   --model-config configs/model_rgb.yaml \
-  --iterations 20000 --batch-size 8 --blend-start 0 \
+  --iterations 7000 --batch-size 8 --blend-start 0 \
   --ssim-weight 0.2 --lpips-weight 0 --alpha-weight 0 \
   --nv-spill-weight 0 --nv-hole-weight 0 \
   --patience 9999 --min-delta 0.0 \
