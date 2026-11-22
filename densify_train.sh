@@ -32,6 +32,7 @@ usage() { sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0; }
 SUBJECT=""
 NAME="densify"
 HARD_ONLY=0
+SKIP_STAGE1=0
 PLAN=0
 RUN_EVAL=0
 FORCE=0
@@ -41,6 +42,7 @@ while [[ $# -gt 0 ]]; do
     --subject)   SUBJECT="${2:-}"; shift 2 ;;
     --name)      NAME="${2:-}"; shift 2 ;;
     --hard-only) HARD_ONLY=1; shift ;;
+  --skip-stage1) SKIP_STAGE1=1; shift ;;
     --plan|--show-plan) PLAN=1; shift ;;
     --eval)      RUN_EVAL=1; shift ;;
     --force)     FORCE=1; shift ;;
@@ -87,6 +89,7 @@ EVERY="${DENS_EVERY:-${CFG_DENSIFY_EVERY:-300}}"
 COUNT="${DENS_COUNT:-${CFG_DENSIFY_COUNT:-600}}"
 MAX_GAUSS="${DENS_MAX:-${CFG_DENSIFY_MAX_GAUSSIANS:-160000}}"
 PRUNE_OP="${DENS_PRUNE_OPACITY:-${CFG_DENSIFY_PRUNE_OPACITY:-0.01}}"
+DENSIFY_ON="${DENS_DENSIFY:-1}"
 JITTER="${DENS_SPLIT_JITTER:-${CFG_DENSIFY_SPLIT_JITTER:-0.8}}"
 PATIENCE="${DENS_PATIENCE:-${CFG_DENSIFY_PATIENCE:-3}}"
 
@@ -123,6 +126,11 @@ echo "  产物           : $MODELS/{$HARD_WORK,$NAME}"
 echo "=============================================================="
 
 # ---------------------------------------------------------------- stage 1 --
+if (( SKIP_STAGE1 )); then
+  info "stage1：跳过（用未训练的 UV 初始化直接合并到统一集合）"
+  run "${PY_RUN[@]}" scripts/init_uv.py --subject "$SUBJECT" \
+    --out-dir "$MODELS/$HARD_WORK"
+else
 info "stage1：硬表面初始化（从 UV/FLAME 零初始化，只做表面覆盖与颜色）"
 run "${PY_RUN[@]}" scripts/train.py \
   --subject "$SUBJECT" --work-name "$HARD_WORK" --stage hard_surface \
@@ -137,6 +145,7 @@ run "${PY_RUN[@]}" scripts/train.py \
   die "stage1 没有产出 $MODELS/$HARD_WORK/model.ply"
 info "stage1 完成：硬表面初始化 $MODELS/$HARD_WORK"
 eval_after "$HARD_WORK"
+fi
 
 if (( HARD_ONLY )); then
   info "按要求停在硬表面初始化（--hard-only）"
@@ -174,9 +183,8 @@ run "${PY_RUN[@]}" scripts/train.py \
   --alpha-weight "${DENS_ALPHA_WEIGHT:-${CFG_ALPHA_WEIGHT:-0.2}}" \
   "${S2_EXTRA[@]}" \
   --ssim-weight "$SSIM" --lpips-weight "$LPIPS" --lpips-from "$LPIPS_FROM" \
-  --densify --densify-every "$EVERY" --densify-count "$COUNT" \
-  --densify-max "$MAX_GAUSS" --densify-prune-opacity "$PRUNE_OP" \
-  --densify-split-jitter "$JITTER" "${FORCE_FLAG[@]}"
+  $([[ "$DENSIFY_ON" == "1" ]] && echo "--densify --densify-every $EVERY --densify-count $COUNT --densify-max $MAX_GAUSS --densify-prune-opacity $PRUNE_OP --densify-split-jitter $JITTER") \
+  "${FORCE_FLAG[@]}"
 
 info "全部完成：$MODELS/$NAME"
 echo "         评测：bash eval.sh --subject $SUBJECT --work-name $NAME"
