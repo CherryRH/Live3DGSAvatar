@@ -52,6 +52,12 @@ def parse_args(argv=None):
                    help="基帧：auto=训练段里 |yaw| 最小的帧；或给帧号")
     p.add_argument("--refs", type=Path, default=None,
                    help="参考图目录（真实帧）；缺省用 datasets/<obj>/repair/refs")
+    p.add_argument("--refs-auto", type=int, default=2,
+                   help="额外从真实帧里挑 N 张中角度图当参考（默认 2；0 = 不做）")
+    p.add_argument("--view-bg", type=float, default=0.8,
+                   help="修复输入图的背景灰度 0–1（默认 0.8；用 0 变回黑底）")
+    p.add_argument("--no-inpaint", action="store_true",
+                   help="不修补 mask 内的纯黑洞（默认修补）")
     p.add_argument("--out", type=Path, required=True,
                    help="中间目录（views/ refs/ selected.json syncfix/）")
     p.add_argument("--repair-root", type=Path, default=None,
@@ -102,6 +108,24 @@ def _auto_angles(data_dir, train_end: int, step: float = 5.0,
     pitch_pos = _side(pitch, True, max_pitch)
     pitch_neg = [-v for v in _side(pitch, False, max_pitch)]
     return yaw_pos + yaw_neg, pitch_pos + pitch_neg
+
+
+def _fill_dark_holes(rgb: np.ndarray, alpha: np.ndarray,
+                     thresh: int = 12, radius: int = 4) -> np.ndarray:
+    """把 mask 内的纯黑块用周围颜色补上。
+
+    SyncFix 在极端视角会把某些区域留成纯黑（大角度后脑/发顶常见），BiRefNet
+    又把它判成前景，最终表现为"修复图上有个黑洞"。直接抠掉会在头上打洞，
+    所以按周围颜色修补更稳。
+    """
+    import cv2
+
+    m = np.asarray(alpha) > 127
+    dark = m & (np.asarray(rgb).max(axis=-1) <= int(thresh))
+    if not bool(dark.any()):
+        return np.asarray(rgb, np.uint8).copy()
+    return cv2.inpaint(np.ascontiguousarray(np.asarray(rgb, np.uint8)),
+                       dark.astype(np.uint8), int(radius), cv2.INPAINT_TELEA)
 
 
 def _clean_alpha(alpha: np.ndarray) -> np.ndarray:
@@ -226,7 +250,7 @@ def main(argv=None) -> int:
         for stale in list(views_dir.glob("*.png")) + list(alpha_dir.glob("*.png")):
             stale.unlink()
 
-    bg = torch.zeros(1, 3, 1, 1, device=device)
+    bg = torch.full((1, 3, 1, 1), float(args.view_bg), device=device)
     labels: list[str] = []
     # 只做"十字"：yaw 扇 + pitch 扇，而不是 yaw×pitch 全网格
     # （全网格会让 22×12 张里大部分是重复的斜向角，SyncFix 成本翻倍）。
@@ -272,11 +296,40 @@ def main(argv=None) -> int:
             for p in sorted(Path(refs_src).glob("*.png")):
                 shutil.copyfile(p, refs_dir / p.name)
                 copied += 1
+        if args.refs_auto > 0:
+            from live3dgsavatar.data.pose import head_yaw
+            yaw_all = np.abs(head_yaw(np.asarray(
+                np.load(data_dir / "render_inputs.npz",
+                        allow_pickle=True)["blend_weight"], dtype=np.float32)))
+            train_end = int(len(yaw_all) * (1.0 - 0.3))
+            targets = [0.0, 20.0, 35.0, 50.0]
+            picked = []
+            for target in targets:
+                if len(picked) >= int(args.refs_auto):
+                    break
+                cand = np.abs(yaw_all[:train_end] - target)
+                for idx in np.argsort(cand)[:8]:
+                    idx = int(idx)
+                    if idx == base_idx or idx in picked:
+                        continue
+                    picked.append(idx)
+                    break
+            for idx in picked:
+                arr = np.asarray(Image.open(data_dir / "images" / f"{idx:05d}.png")
+                                 .convert("RGBA"))
+                rgb = arr[..., :3].astype(np.float32)
+                fg = arr[..., 3] > 127
+                rgb[~fg] = float(args.view_bg) * 255.0
+                Image.fromarray(rgb.astype(np.uint8)).save(
+                    refs_dir / f"auto_{idx:05d}.png")
+                copied += 1
+            print(f"  参考图 : 追加 {len(picked)} 张真实帧 "
+                  f"{['%05d' % i for i in picked]}")
         if copied == 0:
             raw = np.asarray(Image.open(data_dir / "images" / f"{base_idx:05d}.png")
                              .convert("RGBA"))
             rgb = raw[..., :3].copy()
-            rgb[raw[..., 3] <= 127] = 0
+            rgb[raw[..., 3] <= 127] = float(args.view_bg) * 255.0
             Image.fromarray(rgb).save(refs_dir / f"{base_idx:05d}.png")
             copied = 1
         (out / "selected.json").write_text(json.dumps({
@@ -342,8 +395,12 @@ def main(argv=None) -> int:
                                   np.float32)
                 rgb = Image.fromarray(np.clip(arr + args.sharpen * (arr - blur),
                                               0, 255).astype(np.uint8))
-            alpha = Image.fromarray(_clean_alpha(
-                np.asarray(Image.open(p).getchannel("A"), np.uint8)))
+            alpha_np = _clean_alpha(
+                np.asarray(Image.open(p).getchannel("A"), np.uint8))
+            if not args.no_inpaint:
+                rgb = Image.fromarray(_fill_dark_holes(
+                    np.asarray(rgb, np.uint8), alpha_np))
+            alpha = Image.fromarray(alpha_np)
             out_im = rgb.convert("RGBA")
             out_im.putalpha(alpha)
             # alpha 外的 RGB 置 0，与数据集约定一致

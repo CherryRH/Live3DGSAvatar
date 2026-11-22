@@ -169,7 +169,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="硬表面初始化：额外混入的 SyncFix 修复图目录")
     p.add_argument("--repair-schedule", default=None,
                    choices=("none", "linear", "cosine", "ratio"),
-                   help="修复图退火：linear/cosine 衰减样本权重；ratio 减占比")
+                   help="修复图退火：linear/cosine 衰减权重；ratio 后期减半（2/8→1/8）")
     p.add_argument("--repair-final-weight", type=float, default=None,
                    help="退火结束时的修复图样本权重（默认见配置）")
     p.add_argument("--repair-per-batch", type=int, default=None,
@@ -436,11 +436,10 @@ def main(argv: list[str] | None = None) -> int:
                         is not None else max(1, int(n) // 2))
             full = int(self.repair_per_batch or 0)
             t = min(1.0, self._step / self.total_steps)
+            # 温和退火：后段只减半，不清零（清零会让大角度轮廓后期失守）
             if t < 0.5:
                 return full
-            if t < 0.75:
-                return max(1, full // 2)
-            return 0
+            return max(1, full // 2)
 
         def random_batch(self, n: int):
             import torch as _torch
