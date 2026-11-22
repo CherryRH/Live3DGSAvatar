@@ -1494,7 +1494,11 @@ def main(argv: list[str] | None = None) -> int:
     if report.best_metric is not None:
         best_secs = timing["best"]
         suffix = f"，累计 {best_secs:.1f}s" if best_secs is not None else ""
-        print(f"  最佳验证 PSNR {report.best_metric:.2f} dB"
+        _label = {"score": "score", "psnr": "PSNR（mask 内）",
+                  "psnr_surface": "表面 PSNR", "robust": "robust"}.get(
+            early_metric_name, early_metric_name)
+        _unit = " dB" if early_metric_name in ("psnr", "psnr_surface") else ""
+        print(f"  最佳验证 {_label} {report.best_metric:.2f}{_unit}"
               f"（第 {report.best_iteration} 步{suffix}）")
     if report.stopped_early:
         print(f"  早停   : 连续 {patience} 次验证提升 < {min_delta:g} dB"

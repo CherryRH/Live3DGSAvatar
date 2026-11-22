@@ -68,7 +68,7 @@ LIVE3DGS_OUTPUT_DIR
 
 | 字段 | 默认 | 说明 |
 |---|---|---|
-| `iterations` | `50000` | 总步数 |
+| `iterations` | `10000` | 总步数上限（三个训练入口共用） |
 | `batch_size` | `10` | 每步真实帧数 |
 | `blend_start` | `3000` | 开始启用形变基 |
 | `scene_extent` | `1.0` | 位置类学习率尺度 |
@@ -78,7 +78,7 @@ LIVE3DGS_OUTPUT_DIR
 | `lpips_weight` | `0.0` | LPIPS 权重 |
 | `lpips_from` | `20000` | 从第几步启用 LPIPS |
 | `eval_every` | `500` | 验证间隔 |
-| `patience` | `2` | 连续无提升次数 |
+| `patience` | `4` | 连续无提升次数（三个训练入口共用） |
 | `min_delta` | `0.05` | 视为提升的最小 dB |
 | `robust_eval` | `true` | 大角度验证 + 缺口惩罚 |
 | `robust_eval_frames` | `24` | 大角度验证帧数 |
@@ -100,7 +100,7 @@ LIVE3DGS_OUTPUT_DIR
 
 | 字段 | 默认 | 说明 |
 |---|---|---|
-| `steps` / `batch` | `7000` / `8` | 步数上限 / 批大小 |
+| `steps` / `batch` | `10000` / `8` | 步数上限 / 批大小 |
 | `repair` | `2` | 每批混入的修复图张数（0 = 关） |
 | `repair_schedule` | `none` | 退火：`none`/`linear`/`cosine`（衰减权重）/`ratio`（2/8→1/8→0） |
 | `repair_final_weight` | `0.2` | `linear`/`cosine` 结束时的修复图权重 |

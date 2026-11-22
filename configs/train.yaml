@@ -57,7 +57,7 @@ train:
     # 入口：bash train_avatar.sh --subject <对象> [--densify]
     avatar:
       # 步数是上限；正常 3000~6000 步内收敛（早停 patience 4）
-      steps: 7000
+      steps: 10000
       batch: 8
       # 每批混入的修复图张数（0 = 不用修复图）
       repair: 2
@@ -90,7 +90,7 @@ train:
         # 分裂方式：copy=父不动+追加副本；subdivide=父换成两个子高斯
         split_mode: copy
         split_scale: 0.7
-    iterations: 50000
+    iterations: 10000
     batch_size: 10
     # 前 N 步不启用形变基（先用模板网格拟合静态外观）
     blend_start: 3000
@@ -113,7 +113,7 @@ train:
     # （提升幅度小于 min_delta 视为无提升）就停。500×2 ≈ best 之后
     # 1000 步内没有 ≥ min_delta 的提升就收，避免在平台期白跑几千步。
     eval_every: 500
-    patience: 2
+    patience: 4
     min_delta: 0.05
     # 定期存档间隔（另有一份 model_best.ply 在验证刷新时写）
     save_every: 5000

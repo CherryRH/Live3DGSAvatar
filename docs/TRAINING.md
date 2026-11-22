@@ -1,6 +1,8 @@
 # training
 
-`src/live3dgsavatar/training/` 是训练循环与参数计划。三个入口：
+`src/live3dgsavatar/training/` 是训练循环与参数计划。三个入口共用同一套
+步数上限（10k）、早停规则（每 500 步验证、patience 4、min_delta 0.05）和
+模型选择指标（组合分 `PSNR + 50·SSIM + 50·(1−LPIPS)`）：
 
 | 入口 | 用途 |
 |---|---|
