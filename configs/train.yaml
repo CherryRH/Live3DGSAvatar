@@ -68,7 +68,7 @@ train:
       ssim_weight: 0.1
       # LPIPS 低权重、后段启用（每步慢 4~5 倍）
       lpips_weight: 0.01
-      lpips_from: 3000
+      lpips_from: 5000
       # xyz 用 2e-4：发丝/轮廓靠位置微调补
       xyz_lr: 0.0002
       tex_size: 512
