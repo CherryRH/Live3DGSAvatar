@@ -20,11 +20,13 @@ PY_RUN=(conda run -n "$MAIN_ENV" --no-capture-output python)
 
 SUBJECT=""
 WORK="rgb"
+FORCE=0
 PASSTHRU=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --subject) SUBJECT="${2:-}"; shift 2 ;;
     --work-name) WORK="${2:-}"; shift 2 ;;
+    --force)     FORCE=1; shift ;;
     --) shift; PASSTHRU=("$@"); break ;;
     *) echo "[error] 未知参数：$1" >&2; exit 2 ;;
   esac
@@ -41,7 +43,7 @@ info "RGBAvatar 基线：$SUBJECT/$WORK（各向同性球、L1+SSIM、无 spill/
   --ssim-weight 0.2 --lpips-weight 0 --alpha-weight 0 \
   --nv-spill-weight 0 --nv-hole-weight 0 \
   --patience 4 --min-delta 0.05 --eval-every 500 \
-  --force "${PASSTHRU[@]}"
+  $( (( FORCE )) && echo "--force" ) "${PASSTHRU[@]}"
 
 info "完成：models/$SUBJECT/$WORK"
 info "评测：bash eval.sh --subject $SUBJECT --work-name $WORK"
