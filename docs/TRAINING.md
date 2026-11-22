@@ -138,10 +138,10 @@ python scripts/make_repairs.py --subject <对象> --work-name base \
 `--repair-root` 会一并写出 `views/ refs/ masks/ repairs/ manifest.json`。
 
 **破洞即封顶（保守策略）**：修复按"从正脸往外"的角度顺序分批，每批做完
-matting 后，用 FLAME 可见头部区（`y<0.6H`）检查 mask 覆盖缺口——公式就是
-"mask 外但 FLAME 该有"的比例（matte 会把 alpha 外的 RGB 置黑，所以等价于
-纯黑占比）。某侧一旦超过 `--max-head-black`（默认 8%），该角度及更远角度
-全部丢弃，不再修复。
+matting 后，在 FLAME 可见头部区（`y<0.6H`）找"最大的一块没被 mask 覆盖"的
+连通域；超过 `--max-hole-px`（默认 3000 px）就判定为破洞，该角度及更远角度
+全部丢弃，不再修复。用"最大连通块"而不是比例：比例会被大片正常区域稀释，
+成片的缺口（比如头顶那一块）才是真正要拦的。
 SyncFix 路径从 `configs/local.yaml` 或 `--syncfix-*` 参数给。
 
 ## 9. 视角语义：头转，不是转相机

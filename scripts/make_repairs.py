@@ -59,6 +59,9 @@ def parse_args(argv=None):
                    help="额外从真实帧里挑 N 张中角度图当参考（默认 2；0 = 不做）")
     p.add_argument("--view-bg", type=float, default=0.8,
                    help="修复输入图的背景灰度 0–1（默认 0.8；用 0 变回黑底）")
+    p.add_argument("--max-hole-px", type=int, default=3000,
+                   help="FLAME 头部区里最大的一块'有轮廓没内容'像素数；"
+                        "超过就判定为破洞（比比例更能抓住成片的缺口）")
     p.add_argument("--max-head-black", type=float, default=0.08,
                    help="修复图在 FLAME 可见头部区（y<0.6H）的纯黑占比上限；"
                         "超了就跳过该角度（SyncFix 没补出内容）")
@@ -119,6 +122,29 @@ def _auto_angles(data_dir, train_end: int, step: float = 5.0,
     pitch_pos = _side(pitch, True, max_pitch)
     pitch_neg = [-v for v in _side(pitch, False, max_pitch)]
     return yaw_pos + yaw_neg, pitch_pos + pitch_neg
+
+
+def _head_hole_px(out: Path, label: str, matte_path: Path,
+                  y_ratio: float = 0.6) -> tuple[int, float]:
+    """FLAME 可见头部区里"最大的一块没被 mask 覆盖"的像素数 + 占比。"""
+    from PIL import Image
+    from scipy import ndimage
+
+    surf_path = out / "flame_surface" / f"{label}.png"
+    if not surf_path.is_file():
+        return 0, 0.0
+    surf = np.asarray(Image.open(surf_path)) > 127
+    head = surf.copy()
+    head[int(y_ratio * head.shape[0]):, :] = False
+    if not bool(head.any()):
+        return 0, 0.0
+    im = np.asarray(Image.open(matte_path).convert("RGBA"))
+    miss = head & ~(im[..., 3] > 127)
+    if not bool(miss.any()):
+        return 0, 0.0
+    lab, n = ndimage.label(miss)
+    biggest = int(ndimage.sum(miss, lab, range(1, n + 1)).max()) if n else 0
+    return biggest, float(miss.sum()) / float(head.sum())
 
 
 def _head_black_fraction(out: Path, label: str, matte_path: Path,
@@ -449,10 +475,12 @@ def main(argv=None) -> int:
                     src = gdir / "matte" / f"{lab}.png"
                     if not src.is_file():
                         continue
-                    frac = _head_black_fraction(out, lab, src)
-                    if args.max_head_black > 0 and frac > float(args.max_head_black):
-                        print(f"  {lab}  破洞 {frac:.1%} > "
-                              f"{args.max_head_black:.0%} → {side} 侧从该角度起停止")
+                    biggest, frac = _head_hole_px(out, lab, src)
+                    too_big = (args.max_hole_px > 0
+                               and biggest > int(args.max_hole_px))
+                    if too_big:
+                        print(f"  {lab}  破洞 {biggest}px（占头部 {frac:.1%}）> "
+                              f"{args.max_hole_px}px → {side} 侧从该角度起停止")
                         stopped = True
                         break
                     shutil.copyfile(src, matte_dir / f"{lab}.png")
