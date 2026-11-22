@@ -38,6 +38,8 @@ def parse_args(argv=None):
     p.add_argument("--dataset", default=None)
     p.add_argument("--dry-run", action="store_true",
                    help="只打印角度与标签，不渲染/不修复")
+    p.add_argument("--auto-quantile", type=float, default=90.0,
+                   help="--auto 的起点分位数（默认 90；调到 50 让修复图覆盖到中位角度）")
     p.add_argument("--auto-yaw-only", action="store_true",
                    help="配合 --auto：只排 yaw 扇，不做 pitch（默认建议）")
     p.add_argument("--auto", action="store_true",
@@ -71,12 +73,13 @@ def parse_args(argv=None):
 
 
 def _auto_angles(data_dir, train_end: int, step: float = 5.0,
-                 max_yaw: float = 90.0, max_pitch: float = 45.0):
-    """按训练段四个方向的 p90 往外排修复角度。
+                 max_yaw: float = 90.0, max_pitch: float = 45.0,
+                 quantile: float = 90.0):
+    """按训练段四个方向的分位数（默认 p90）往外排修复角度。
 
-    修复图是为了补**数据里没有**的角度，所以每一侧都从该侧 p90 往外走
-    （而不是对称地从固定值开始）；这样不会和 GT 已有的角度重复，也避免
-    在数据本来就稀疏的一侧"过度覆盖"。
+    修复图最初是补**数据里没有**的角度，所以默认从 p90 往外走。
+    但实际观察发现：模型在 p50 附近就开始出瑕疵，修复图在 6:2 里起的是
+    "锚定+修轮廓"的作用——想让修复图覆盖到 p50，就把 quantile 调低。
     """
     import numpy as _np
 
@@ -90,8 +93,8 @@ def _auto_angles(data_dir, train_end: int, step: float = 5.0,
     def _side(values, positive: bool, top: float) -> list[float]:
         v = values if positive else -values
         v = v[v > 0]
-        p90 = float(_np.percentile(v, 90)) if v.size else 0.0
-        start = float(_np.ceil(p90 / step) * step + step)
+        pct = float(_np.percentile(v, quantile)) if v.size else 0.0
+        start = float(_np.ceil(pct / step) * step)
         return [float(s) for s in _np.arange(start, top + 1e-6, step)]
 
     yaw_pos = _side(yaw, True, max_yaw)
@@ -170,7 +173,8 @@ def main(argv=None) -> int:
     print(f"  模型   : {ply}")
     print(f"  基帧   : {base_idx:05d}（|yaw| {yaw_all[base_idx]:.1f}°）")
     if args.auto:
-        yaws, pitches = _auto_angles(data_dir, train_end)
+        yaws, pitches = _auto_angles(data_dir, train_end,
+                                     quantile=float(args.auto_quantile))
         if args.auto_yaw_only:
             pitches = []
         print(f"  角度   : auto  yaw {yaws}  pitch {pitches}")
