@@ -72,6 +72,9 @@ def parse_args(argv=None):
     args.max_hole_px = int(rcfg.get("max_hole_px", 3000))
     args.max_head_black = float(rcfg.get("max_head_black", 0.0))  # 旧比例判据，默认关
     args.min_coverage = float(rcfg.get("min_coverage", 0.65))
+    args.mask_mode = str(rcfg.get("mask", "key"))
+    args.key_threshold = int(rcfg.get("key_threshold", 18))
+    args.edge_shrink = int(rcfg.get("edge_shrink", 1))
     args.no_inpaint = not bool(rcfg.get("inpaint", True))
     args.syncfix_batch = int(rcfg.get("syncfix_batch", 4))
     args.ref_size = int(rcfg.get("ref_size", 3))
@@ -138,6 +141,57 @@ def _head_hole_px(out: Path, label: str, matte_path: Path,
     lab, n = ndimage.label(miss)
     biggest = int(ndimage.sum(miss, lab, range(1, n + 1)).max()) if n else 0
     return biggest, float(miss.sum()) / float(head.sum())
+
+
+def _key_rgba(src_dir: Path, dst_dir: Path, *, threshold: int = 18,
+              shrink: int = 1) -> int:
+    """按背景色键控出 alpha，不跑 BiRefNet。
+
+    背景是我们自己渲染的灰底，SyncFix 基本会保留它，所以用"与背景色的
+    最大通道差"就能把人物抠出来；极端角度下比人像 matting 稳得多。
+    """
+    from PIL import Image
+    from scipy import ndimage
+
+    dst_dir.mkdir(parents=True, exist_ok=True)
+    n = 0
+    for p in sorted(src_dir.glob("*.png")):
+        rgb = np.asarray(Image.open(p).convert("RGB"))
+        # 背景色取四条边的中位数，抵消 SyncFix 的整体色调偏移
+        border = np.concatenate([
+            rgb[0, :, :], rgb[-1, :, :], rgb[:, 0, :], rgb[:, -1, :]])
+        bg = np.median(border, axis=0)
+        fg = np.abs(rgb.astype(np.int16) - bg).max(axis=-1) > int(threshold)
+        fg = ndimage.binary_fill_holes(fg)
+        lab, k = ndimage.label(fg)
+        if k > 1:
+            sizes = ndimage.sum(fg, lab, range(1, k + 1))
+            fg = lab == (int(np.argmax(sizes)) + 1)
+        fg = ndimage.binary_closing(fg, iterations=1)
+        fg = ndimage.binary_fill_holes(fg)
+        # 去掉边界附近"接近背景色"的像素（SyncFix 把头发和灰底混出来的浅色描边）
+        band = fg & ~ndimage.binary_erosion(fg, iterations=10)
+        near_bg = np.abs(rgb.astype(np.int16) - bg).max(axis=-1) < 30
+        fg = fg & ~(band & near_bg)
+        fg = ndimage.binary_fill_holes(fg)
+        if shrink > 0:
+            fg = ndimage.binary_erosion(fg, iterations=int(shrink))
+            fg = ndimage.binary_fill_holes(fg)
+        # 剩下的边界像素用最近的内部颜色替换，去掉残留的背景染色
+        rgb_out = rgb.copy()
+        if int(shrink) >= 0:
+            interior = ndimage.binary_erosion(fg, iterations=2)
+            if bool(interior.any()):
+                idx = ndimage.distance_transform_edt(
+                    ~interior, return_distances=False, return_indices=True)
+                rim = fg & ~interior
+                rgb_out[rim] = rgb[idx[0], idx[1]][rim]
+        alpha = (fg.astype(np.uint8) * 255)
+        out = np.dstack([rgb_out, alpha])
+        out[alpha == 0, :3] = 0
+        Image.fromarray(out).save(dst_dir / p.name)
+        n += 1
+    return n
 
 
 def _head_black_fraction(out: Path, label: str, matte_path: Path,
@@ -461,11 +515,30 @@ def main(argv=None) -> int:
                 ], check=True)
                 for f in sorted((gdir / "fix").glob("*.png")):
                     shutil.copyfile(f, rgb_dir / f.name)
-                subprocess.run([
-                    sys.executable, str(REPO_ROOT / "scripts" / "matte_birefnet.py"),
-                    "--input", str(gdir / "fix"), "--out", str(gdir / "matte"),
-                    "--force",
-                ], check=True)
+                if args.mask_mode == "key":
+                    _key_rgba(gdir / "fix", gdir / "matte",
+                              threshold=args.key_threshold,
+                              shrink=args.edge_shrink)
+                else:
+                    subprocess.run([
+                        sys.executable, str(REPO_ROOT / "scripts" / "matte_birefnet.py"),
+                        "--input", str(gdir / "fix"), "--out", str(gdir / "matte"),
+                        "--force",
+                    ], check=True)
+                    if args.mask_mode == "auto":
+                        key_dir = gdir / "matte_key"
+                        _key_rgba(gdir / "fix", key_dir,
+                                  threshold=args.key_threshold,
+                                  shrink=args.edge_shrink)
+                        for kp in key_dir.glob("*.png"):
+                            bp = gdir / "matte" / kp.name
+                            if not bp.is_file():
+                                shutil.copyfile(kp, bp)
+                                continue
+                            b = np.asarray(Image.open(bp).convert("RGBA"))
+                            k2 = np.asarray(Image.open(kp).convert("RGBA"))
+                            b[..., 3] = np.maximum(b[..., 3], k2[..., 3])
+                            Image.fromarray(b).save(bp)
                 for lab in grp:
                     src = gdir / "matte" / f"{lab}.png"
                     if not src.is_file():
@@ -526,7 +599,7 @@ def main(argv=None) -> int:
             out_im = Image.fromarray(a)
             out_im.save(final / p.name)
             n += 1
-        print(f"  修复图 : {n} 张（mask=BiRefNet 抠图）-> {final}")
+        print(f"  修复图 : {n} 张（mask={args.mask_mode}）-> {final}")
 
         if args.repair_root is not None:
             root = Path(args.repair_root)

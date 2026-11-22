@@ -137,6 +137,11 @@ python scripts/make_repairs.py --subject <对象> --work-name base \
 
 `--repair-root` 会一并写出 `views/ refs/ masks/ repairs/ manifest.json`。
 
+**背景键控代替 matting**：修复图渲染在已知灰底上，`repair.mask: key`（默认）
+用"与背景色的通道差"抠图，再把边界 10px 内接近背景色的像素削掉、边界像素用
+最近内部颜色替换。比 BiRefNet 稳：极端角度不会把头发判成背景。需要时可用
+`birefnet`/`auto`。
+
 **破洞即封顶（保守策略）**：修复按"从正脸往外"的角度顺序分批，每批做完
 matting 后，在 FLAME 可见头部区（`y<0.6H`）找"最大的一块没被 mask 覆盖"的
 连通域；超过 `--max-hole-px`（默认 3000 px）就判定为破洞，该角度及更远角度

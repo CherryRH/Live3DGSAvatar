@@ -77,6 +77,12 @@ train:
       max_hole_px: 3000
       # 渲染覆盖率下限（base 没画出来的角度直接跳过）
       min_coverage: 0.65
+      # 抠图方式：key=按背景色键控（默认，背景是我们自己渲染的灰底）；
+      # birefnet=人像 matting（极端角度会切掉头发）；auto=两者取并集
+      mask: key
+      key_threshold: 18
+      # 键控后向内收几像素，去掉 SyncFix 残留的背景描边
+      edge_shrink: 1
       # mask 内纯黑洞修补
       inpaint: true
       # SyncFix 每次喂几张（少 = 模型加载次数多，多 = 显存高）
