@@ -67,7 +67,7 @@ train:
       # 角度：从训练段各方向的 auto_quantile 起，步长 step，最多外推
       # auto_quantile+auto_extrapolate；yaw_only 只做 yaw 扇
       auto_quantile: 90
-      auto_extrapolate: 60
+      auto_extrapolate: 90
       yaw_only: true
       step: 5
       # 渲染/参考图：灰底更接近照片；自动补 N 张真实中角度帧当参考
