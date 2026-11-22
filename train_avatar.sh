@@ -105,7 +105,7 @@ if [[ ! -d "$REPAIRS" ]] || [[ -z "$(ls -A "$REPAIRS" 2>/dev/null)" ]]; then
   if [[ -f "$MODELS/base/model.ply" ]]; then
     info "缺少修复图，用 $MODELS/base 自动生成（p90 起点、只做 yaw 扇）"
     run "${PY_RUN[@]}" scripts/make_repairs.py --subject "$SUBJECT" \
-      --work-name base --auto --auto-yaw-only \
+      --work-name base --auto \
       --out "output/repairs_$SUBJECT" --out-dir "$REPAIRS" \
       --repair-root "$DATA/repair"
   else

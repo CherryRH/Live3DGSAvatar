@@ -128,9 +128,9 @@ bash train_avatar.sh --subject <对象> --no-lpips # 快速实验
 batch 比例混入：
 
 ```bash
-# 按训练段 yaw 两个方向的 p90 自动排角度（只做 yaw 扇，不做 pitch）
+# 角度与所有调参项都来自 configs/train.yaml 的 train.pipeline.repair
 python scripts/make_repairs.py --subject <对象> --work-name base \
-    --auto --auto-yaw-only \
+    --auto \
     --out output/repairs --out-dir datasets/<对象>/repair/repairs \
     --repair-root datasets/<对象>/repair
 ```

@@ -29,6 +29,7 @@ import live3dgsavatar  # noqa: F401,E402
 
 
 def parse_args(argv=None):
+    """命令行只留"跑哪个对象/哪一版/输出到哪"；调参项全部走 config。"""
     p = argparse.ArgumentParser(description="按固定头姿渲染 + SyncFix 生成修复图")
     p.add_argument("--subject", default=None)
     p.add_argument("--work-name", default=None,
@@ -38,15 +39,8 @@ def parse_args(argv=None):
     p.add_argument("--dataset", default=None)
     p.add_argument("--dry-run", action="store_true",
                    help="只打印角度与标签，不渲染/不修复")
-    p.add_argument("--auto-extrapolate", type=float, default=60.0,
-                   help="--auto 最多外推到 p90+该角度（默认 60°；数据范围小的对象"
-                        "不要硬推到 90°）")
-    p.add_argument("--auto-quantile", type=float, default=90.0,
-                   help="--auto 的起点分位数（默认 90；调到 50 让修复图覆盖到中位角度）")
-    p.add_argument("--auto-yaw-only", action="store_true",
-                   help="配合 --auto：只排 yaw 扇，不做 pitch（默认建议）")
     p.add_argument("--auto", action="store_true",
-                   help="按训练段四个方向的 p90 自动排角度（推荐）；给了就忽略 --yaws/--pitches")
+                   help="按训练段分位数自动排角度（推荐）；给了就忽略 --yaws/--pitches")
     p.add_argument("--yaws", default="",
                    help="逗号分隔的相对 yaw（度），如 45,-45；只做 pitch 时给 0")
     p.add_argument("--pitches", default="0",
@@ -55,39 +49,38 @@ def parse_args(argv=None):
                    help="基帧：auto=训练段里 |yaw| 最小的帧；或给帧号")
     p.add_argument("--refs", type=Path, default=None,
                    help="参考图目录（真实帧）；缺省用 datasets/<obj>/repair/refs")
-    p.add_argument("--refs-auto", type=int, default=2,
-                   help="额外从真实帧里挑 N 张中角度图当参考（默认 2；0 = 不做）")
-    p.add_argument("--view-bg", type=float, default=0.8,
-                   help="修复输入图的背景灰度 0–1（默认 0.8；用 0 变回黑底）")
-    p.add_argument("--max-hole-px", type=int, default=3000,
-                   help="FLAME 头部区里最大的一块'有轮廓没内容'像素数；"
-                        "超过就判定为破洞（比比例更能抓住成片的缺口）")
-    p.add_argument("--max-head-black", type=float, default=0.08,
-                   help="修复图在 FLAME 可见头部区（y<0.6H）的纯黑占比上限；"
-                        "超了就跳过该角度（SyncFix 没补出内容）")
-    p.add_argument("--min-coverage", type=float, default=0.65,
-                   help="渲染覆盖率低于此值的视角直接跳过（base 没画出来的角度，"
-                        "修复图只会有洞）")
-    p.add_argument("--no-inpaint", action="store_true",
-                   help="不修补 mask 内的纯黑洞（默认修补）")
     p.add_argument("--out", type=Path, required=True,
                    help="中间目录（views/ refs/ selected.json syncfix/）")
     p.add_argument("--repair-root", type=Path, default=None,
                    help="同时恢复数据集的 repair/ 结构：views/ refs/ masks/ repairs/ + manifest")
     p.add_argument("--out-dir", type=Path, default=None,
                    help="最终修复图目录（unsharp 后）；缺省 <out>/final")
-    p.add_argument("--syncfix-repo", type=Path,
-                   default=Path("/home/test/Projects/SyncFix"))
-    p.add_argument("--syncfix-python", default="syncfix")
-    p.add_argument("--syncfix-model", type=Path,
-                   default=Path("/home/test/Projects/SyncFix/models/paper"))
-    p.add_argument("--ref-size", type=int, default=3)
-    # SyncFix 的 inference 会先把 refs 截断到 ref_size，再按 batch 切片：
-    # 如果一次喂 N 张、n_per_pass < N，只有第一个 batch 有参考图。所以这里
-    # 按 batch 分组、每组单独调用一次，保证每组都带参考。
-    p.add_argument("--syncfix-batch", type=int, default=4)
-    p.add_argument("--sharpen", type=float, default=0.35)
-    return p.parse_args(argv)
+    args = p.parse_args(argv)
+
+    from live3dgsavatar.config import load_config
+
+    cfg = load_config()
+    rcfg = cfg.get("train.pipeline.repair", {}) or {}
+    sxf = cfg.get("syncfix", {}) or {}
+    # 调参项：config 为唯一来源（脚本不再挂这些命令）
+    args.auto_quantile = float(rcfg.get("auto_quantile", 90.0))
+    args.auto_extrapolate = float(rcfg.get("auto_extrapolate", 60.0))
+    args.auto_yaw_only = bool(rcfg.get("yaw_only", True))
+    args.angle_step = float(rcfg.get("step", 5.0))
+    args.view_bg = float(rcfg.get("view_bg", 0.8))
+    args.refs_auto = int(rcfg.get("refs_auto", 2))
+    args.max_hole_px = int(rcfg.get("max_hole_px", 3000))
+    args.max_head_black = float(rcfg.get("max_head_black", 0.0))  # 旧比例判据，默认关
+    args.min_coverage = float(rcfg.get("min_coverage", 0.65))
+    args.no_inpaint = not bool(rcfg.get("inpaint", True))
+    args.syncfix_batch = int(rcfg.get("syncfix_batch", 4))
+    args.ref_size = int(rcfg.get("ref_size", 3))
+    args.sharpen = float(rcfg.get("sharpen", 0.35))
+    args.syncfix_repo = Path(str(sxf.get("repo", "/home/test/Projects/SyncFix")))
+    args.syncfix_python = str(sxf.get("python", "syncfix"))
+    args.syncfix_model = Path(str(sxf.get("model",
+                                          "/home/test/Projects/SyncFix/models/paper")))
+    return args
 
 
 def _auto_angles(data_dir, train_end: int, step: float = 5.0,
@@ -257,7 +250,8 @@ def main(argv=None) -> int:
     print(f"  基帧   : {base_idx:05d}（|yaw| {yaw_all[base_idx]:.1f}°）")
     if args.auto:
         yaws, pitches = _auto_angles(
-            data_dir, train_end, quantile=float(args.auto_quantile),
+            data_dir, train_end, step=float(args.angle_step),
+            quantile=float(args.auto_quantile),
             extrapolate=float(args.auto_extrapolate))
         if args.auto_yaw_only:
             pitches = []
@@ -431,6 +425,7 @@ def main(argv=None) -> int:
         rgb_dir = out / "syncfix"
         rgb_dir.mkdir(parents=True, exist_ok=True)
         matte_dir = out / "matte"
+        matte_dir.mkdir(parents=True, exist_ok=True)
         labels = sorted(p.stem for p in views_dir.glob("*.png"))
         yaw_of = {lab: float(parse_view_label(lab)["yaw"]) for lab in labels}
         sides = {
@@ -539,7 +534,8 @@ def main(argv=None) -> int:
                 (root / sub).mkdir(parents=True, exist_ok=True)
             # 先清掉上一轮的标签，避免角度改了之后留下孤儿文件。
             # ⚠️ `repairs/` 可能就是 --out-dir，不能整个删掉；只删不在本次集合里的。
-            cur = {q.stem for q in views_dir.glob("*.png")}
+            # 只保留"渲染过且通过破洞判定"的标签；被破洞拦下的也要从数据集里清掉
+            cur = {q.stem for q in views_dir.glob("*.png")} & set(kept)
             for sub in ("views", "masks", "repairs"):
                 for stale in (root / sub).glob("*.png"):
                     if stale.stem not in cur:
