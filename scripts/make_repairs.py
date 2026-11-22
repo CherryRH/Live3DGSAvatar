@@ -38,6 +38,9 @@ def parse_args(argv=None):
     p.add_argument("--dataset", default=None)
     p.add_argument("--dry-run", action="store_true",
                    help="只打印角度与标签，不渲染/不修复")
+    p.add_argument("--auto-extrapolate", type=float, default=60.0,
+                   help="--auto 最多外推到 p90+该角度（默认 60°；数据范围小的对象"
+                        "不要硬推到 90°）")
     p.add_argument("--auto-quantile", type=float, default=90.0,
                    help="--auto 的起点分位数（默认 90；调到 50 让修复图覆盖到中位角度）")
     p.add_argument("--auto-yaw-only", action="store_true",
@@ -56,6 +59,12 @@ def parse_args(argv=None):
                    help="额外从真实帧里挑 N 张中角度图当参考（默认 2；0 = 不做）")
     p.add_argument("--view-bg", type=float, default=0.8,
                    help="修复输入图的背景灰度 0–1（默认 0.8；用 0 变回黑底）")
+    p.add_argument("--max-head-black", type=float, default=0.08,
+                   help="修复图在 FLAME 可见头部区（y<0.6H）的纯黑占比上限；"
+                        "超了就跳过该角度（SyncFix 没补出内容）")
+    p.add_argument("--min-coverage", type=float, default=0.65,
+                   help="渲染覆盖率低于此值的视角直接跳过（base 没画出来的角度，"
+                        "修复图只会有洞）")
     p.add_argument("--no-inpaint", action="store_true",
                    help="不修补 mask 内的纯黑洞（默认修补）")
     p.add_argument("--out", type=Path, required=True,
@@ -80,7 +89,7 @@ def parse_args(argv=None):
 
 def _auto_angles(data_dir, train_end: int, step: float = 5.0,
                  max_yaw: float = 90.0, max_pitch: float = 45.0,
-                 quantile: float = 90.0):
+                 quantile: float = 90.0, extrapolate: float = 45.0):
     """按训练段四个方向的分位数（默认 p90）往外排修复角度。
 
     修复图最初是补**数据里没有**的角度，所以默认从 p90 往外走。
@@ -101,13 +110,37 @@ def _auto_angles(data_dir, train_end: int, step: float = 5.0,
         v = v[v > 0]
         pct = float(_np.percentile(v, quantile)) if v.size else 0.0
         start = float(_np.ceil(pct / step) * step)
-        return [float(s) for s in _np.arange(start, top + 1e-6, step)]
+        # 只外推到 p90 + extrapolate：再往外 base 纯属瞎猜，修复图只会教坏模型
+        stop = min(float(top), pct + float(extrapolate))
+        return [float(s) for s in _np.arange(start, stop + 1e-6, step)]
 
     yaw_pos = _side(yaw, True, max_yaw)
     yaw_neg = [-v for v in _side(yaw, False, max_yaw)]
     pitch_pos = _side(pitch, True, max_pitch)
     pitch_neg = [-v for v in _side(pitch, False, max_pitch)]
     return yaw_pos + yaw_neg, pitch_pos + pitch_neg
+
+
+def _head_black_fraction(out: Path, label: str, matte_path: Path,
+                         y_ratio: float = 0.6) -> float:
+    """该视角在 FLAME 可见头部区里"有轮廓但没内容"的比例。
+
+    `matte` 是 BiRefNet 在修复图上的结果；纯黑像素会被它判成背景，所以
+    修复图没补出内容的地方就表现为"FLAME 该有、mask 没有、RGB 全黑"。
+    """
+    from PIL import Image
+
+    surf_path = out / "flame_surface" / f"{label}.png"
+    if not surf_path.is_file():
+        return 0.0
+    surf = np.asarray(Image.open(surf_path)) > 127
+    head = surf.copy()
+    head[int(y_ratio * head.shape[0]):, :] = False
+    if not bool(head.any()):
+        return 0.0
+    im = np.asarray(Image.open(matte_path).convert("RGBA"))
+    black = (im[..., :3].max(axis=-1) <= 12) & ~(im[..., 3] > 127)
+    return float((black & head).sum()) / float(head.sum())
 
 
 def _fill_dark_holes(rgb: np.ndarray, alpha: np.ndarray,
@@ -197,8 +230,9 @@ def main(argv=None) -> int:
     print(f"  模型   : {ply}")
     print(f"  基帧   : {base_idx:05d}（|yaw| {yaw_all[base_idx]:.1f}°）")
     if args.auto:
-        yaws, pitches = _auto_angles(data_dir, train_end,
-                                     quantile=float(args.auto_quantile))
+        yaws, pitches = _auto_angles(
+            data_dir, train_end, quantile=float(args.auto_quantile),
+            extrapolate=float(args.auto_extrapolate))
         if args.auto_yaw_only:
             pitches = []
         print(f"  角度   : auto  yaw {yaws}  pitch {pitches}")
@@ -249,8 +283,17 @@ def main(argv=None) -> int:
         refs_dir.mkdir(parents=True, exist_ok=True)
         for stale in list(views_dir.glob("*.png")) + list(alpha_dir.glob("*.png")):
             stale.unlink()
+        # 中间产物也必须清空：否则上一轮的角度会作为"孤児标签"混进最终目录
+        for sub in ("syncfix", "matte", "final", "flame_surface"):
+            d = out / sub
+            if d.is_dir():
+                for stale in d.glob("*.png"):
+                    stale.unlink()
 
     bg = torch.full((1, 3, 1, 1), float(args.view_bg), device=device)
+    import nvdiffrast.torch as _dr
+    from live3dgsavatar.core.render.faceid import face_id_map
+    glctx = _dr.RasterizeCudaContext()
     labels: list[str] = []
     # 只做"十字"：yaw 扇 + pitch 扇，而不是 yaw×pitch 全网格
     # （全网格会让 22×12 张里大部分是重复的斜向角，SyncFix 成本翻倍）。
@@ -279,6 +322,21 @@ def main(argv=None) -> int:
             res = render_frame(avatar, rasterizer, mesh, weight, cam, bg)
         img = (res.color[0].clamp(0, 1).permute(1, 2, 0).cpu().numpy() * 255.0
                ).astype(np.uint8)
+        # base 在该角度有没有画出东西：覆盖率太低时修复图只会留洞，直接跳过
+        with torch.no_grad():
+            ids = face_id_map(verts, scene.faces.to(device), cam, glctx,
+                              flip_y=False)
+        ids = ids[0] if ids.ndim == 3 else ids
+        surf = (ids >= 0).cpu().numpy()
+        cov = float((res.alpha[0, 0].cpu().numpy()[surf] > 0.5).mean()) \
+            if surf.any() else 0.0
+        if cov < float(args.min_coverage):
+            print(f"  {label}  跳过（覆盖率 {cov:.2f} < {args.min_coverage}）")
+            labels.pop()
+            continue
+        (out / "flame_surface").mkdir(parents=True, exist_ok=True)
+        Image.fromarray((surf.astype(np.uint8) * 255)).save(
+            out / "flame_surface" / f"{label}.png")
         Image.fromarray(img).save(views_dir / f"{label}.png")
         # 渲染 alpha 作为抠图先验：修复图只能保留"渲染里真的有的东西"，
         # 避免 BiRefNet 把背景/漂浮高斯误判成前景（B 站里那块黑斑就是这么来的）。
@@ -339,47 +397,70 @@ def main(argv=None) -> int:
         print(f"  参考图 : {copied} 张 -> {refs_dir}")
         print(f"  输出   : {views_dir}")
 
-        # ---- SyncFix 修复：按 batch 分组，每组都带参考图 ----
+        # ---- SyncFix 修复：按**角度从里往外**分批；某一侧一旦出现破洞就整侧停 ----
         import subprocess
-        fixes = []
-        group = max(1, int(args.syncfix_batch))
-        labels = sorted(p.stem for p in views_dir.glob("*.png"))
-        for gi in range(0, len(labels), group):
-            grp = labels[gi:gi + group]
-            gdir = out / f"_g{gi // group}"
-            (gdir / "views").mkdir(parents=True, exist_ok=True)
-            (gdir / "refs").mkdir(parents=True, exist_ok=True)
-            for lab in grp:
-                shutil.copyfile(views_dir / f"{lab}.png",
-                                gdir / "views" / f"{lab}.png")
-            for ref in refs_dir.glob("*.png"):
-                shutil.copyfile(ref, gdir / "refs" / ref.name)
-            subprocess.run([
-                sys.executable, str(REPO_ROOT / "scripts" / "syncfix_label.py"),
-                "--defects", str(gdir), "--out", str(gdir / "fix"),
-                "--repo", str(args.syncfix_repo),
-                "--python", str(args.syncfix_python),
-                "--model", str(args.syncfix_model),
-                "--ref-size", str(args.ref_size),
-                "--n-per-pass", str(min(group, 4)),
-            ], check=True)
-            fixes.extend(sorted((gdir / "fix").glob("*.png")))
-        if not fixes:
-            raise SystemExit("[error] SyncFix 没有产出图片")
+        from live3dgsavatar.evaluation.views import parse_view_label
 
-        # ---- 掩码：BiRefNet ∩ 渲染 alpha ----
-        # BiRefNet 给的是"确实是人"的区域（不会把纯黑背景算进来）；
-        # 渲染 alpha 给的是"这个视角几何上真的存在的东西"（含头发、不含漂浮）。
-        # 两者求交、再按几何先验膨胀几像素，兼顾完整性与干净度。
+        group = max(1, int(args.syncfix_batch))
         rgb_dir = out / "syncfix"
         rgb_dir.mkdir(parents=True, exist_ok=True)
-        for p in fixes:
-            shutil.copyfile(p, rgb_dir / p.name)
         matte_dir = out / "matte"
-        subprocess.run([
-            sys.executable, str(REPO_ROOT / "scripts" / "matte_birefnet.py"),
-            "--input", str(rgb_dir), "--out", str(matte_dir), "--force",
-        ], check=True)
+        labels = sorted(p.stem for p in views_dir.glob("*.png"))
+        yaw_of = {lab: float(parse_view_label(lab)["yaw"]) for lab in labels}
+        sides = {
+            "pos": sorted([v for v in labels if yaw_of[v] > 0],
+                          key=lambda v: abs(yaw_of[v])),
+            "neg": sorted([v for v in labels if yaw_of[v] < 0],
+                          key=lambda v: abs(yaw_of[v])),
+            "zero": [v for v in labels if abs(yaw_of[v]) < 1e-9],
+        }
+        kept: list[str] = []
+        for side, labs in sides.items():
+            if not labs:
+                continue
+            stopped = False
+            for gi in range(0, len(labs), group):
+                grp = labs[gi:gi + group]
+                gdir = out / f"_g_{side}_{gi // group}"
+                (gdir / "views").mkdir(parents=True, exist_ok=True)
+                (gdir / "refs").mkdir(parents=True, exist_ok=True)
+                for lab in grp:
+                    shutil.copyfile(views_dir / f"{lab}.png",
+                                    gdir / "views" / f"{lab}.png")
+                for ref in refs_dir.glob("*.png"):
+                    shutil.copyfile(ref, gdir / "refs" / ref.name)
+                subprocess.run([
+                    sys.executable, str(REPO_ROOT / "scripts" / "syncfix_label.py"),
+                    "--defects", str(gdir), "--out", str(gdir / "fix"),
+                    "--repo", str(args.syncfix_repo),
+                    "--python", str(args.syncfix_python),
+                    "--model", str(args.syncfix_model),
+                    "--ref-size", str(args.ref_size),
+                    "--n-per-pass", str(min(group, 4)),
+                ], check=True)
+                for f in sorted((gdir / "fix").glob("*.png")):
+                    shutil.copyfile(f, rgb_dir / f.name)
+                subprocess.run([
+                    sys.executable, str(REPO_ROOT / "scripts" / "matte_birefnet.py"),
+                    "--input", str(gdir / "fix"), "--out", str(gdir / "matte"),
+                    "--force",
+                ], check=True)
+                for lab in grp:
+                    src = gdir / "matte" / f"{lab}.png"
+                    if not src.is_file():
+                        continue
+                    frac = _head_black_fraction(out, lab, src)
+                    if args.max_head_black > 0 and frac > float(args.max_head_black):
+                        print(f"  {lab}  破洞 {frac:.1%} > "
+                              f"{args.max_head_black:.0%} → {side} 侧从该角度起停止")
+                        stopped = True
+                        break
+                    shutil.copyfile(src, matte_dir / f"{lab}.png")
+                    kept.append(lab)
+                if stopped:
+                    break
+        if not kept:
+            raise SystemExit("[error] 所有角度都被判为破洞")
         final_src = matte_dir
 
         # ---- unsharp + 输出到 --out-dir（有 alpha 就保留）----
@@ -395,6 +476,19 @@ def main(argv=None) -> int:
                                   np.float32)
                 rgb = Image.fromarray(np.clip(arr + args.sharpen * (arr - blur),
                                               0, 255).astype(np.uint8))
+            surf_path = out / "flame_surface" / f"{p.stem}.png"
+            if surf_path.is_file() and args.max_head_black > 0:
+                surf_px = np.asarray(Image.open(surf_path)) > 127
+                head = surf_px.copy()
+                head[int(0.6 * head.shape[0]):, :] = False
+                if head.any():
+                    rgb_now = np.asarray(rgb, np.uint8)
+                    black = (rgb_now.max(-1) <= 12) & head
+                    frac = float(black.sum()) / float(head.sum())
+                    if frac > float(args.max_head_black):
+                        print(f"  {p.stem}  跳过（头部黑洞 {frac:.1%} "
+                              f"> {args.max_head_black:.0%}）")
+                        continue
             alpha_np = _clean_alpha(
                 np.asarray(Image.open(p).getchannel("A"), np.uint8))
             if not args.no_inpaint:
@@ -429,10 +523,14 @@ def main(argv=None) -> int:
             # masks/ 直接取最终 RGBA 的 alpha（已做渲染先验 + 去暗块），
             # 保证 masks/ 与 repairs/ 完全一致
             for p in final.glob("*.png"):
+                if p.stem not in cur:
+                    continue
                 im = Image.open(p)
                 if im.mode == "RGBA":
                     im.getchannel("A").save(root / "masks" / p.name)
             for p in final.glob("*.png"):
+                if p.stem not in cur:
+                    continue
                 dst = root / "repairs" / p.name
                 if p.resolve() != dst.resolve():   # --out-dir 可能就是 root/repairs
                     shutil.copyfile(p, dst)
