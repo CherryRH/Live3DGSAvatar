@@ -31,7 +31,8 @@ python scripts/build_dataset.py --from datasets/<对象> --name <对象>
 通常不直接调用本脚本，而是用根目录的 `build_dataset.sh`：它会先把 RDF 跑好。
 
 **来源就是目标目录时**（跟踪结果直接落在 `datasets/<对象>/`）：npz 已是训练格式就
-直接跳过；还是 RDF 原始格式就**原地烘焙**，原文件备份为 `rdf_tracking.npz`。
+直接跳过；还是 RDF 原始格式就**原地烘焙**（原始 dump 默认不保留，
+需要时加 `--keep-rdf` 备份为 `rdf_tracking.npz`；它只影响转头支点的精度）。
 """
 
 from __future__ import annotations
@@ -61,6 +62,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="直接指定输出目录（优先于 --name）")
     p.add_argument("--images", type=Path, default=None,
                    help="图像目录（默认 <来源>/images；可以直接给图像目录本身）")
+    p.add_argument("--keep-rdf", action="store_true",
+                   help="保留 RDF 原始 dump（rdf_tracking.npz，只影响转头支点精度）")
     p.add_argument("--keep-images", action="store_true",
                    help="图像用复制而不是移动（默认移动，源目录里的图像会被搬走）")
     p.add_argument("--limit", type=int, default=0, help="最多用多少帧；0 全部")
@@ -140,7 +143,7 @@ def check_destination(out_dir: Path, source: Path, *,
 def build(*, source: Path, out_dir: Path, flame_dir: Path,
           base_dataset: Path | None = None, limit: int = 0,
           force: bool = False, images_dir: Path | None = None,
-          keep_images: bool = False) -> Path:
+          keep_images: bool = False, keep_rdf: bool = False) -> Path:
     """把 `source` 整理进 `out_dir`（images/ + render_inputs.npz）。"""
     import numpy as np
     from PIL import Image
@@ -154,12 +157,15 @@ def build(*, source: Path, out_dir: Path, flame_dir: Path,
         print(f"{out_dir} 已是标准数据集，跳过")
         return out_dir
     if action == "bake_in_place":
-        # 原地烘焙：先把原始 RDF 结果备份一份，再覆盖成训练格式
-        from live3dgsavatar.tracking.tracked import RDF_TRACKING_FILE
-        backup = out_dir / RDF_TRACKING_FILE
-        if not backup.is_file():
-            shutil.copyfile(out_dir / "render_inputs.npz", backup)
-        print(f"原地烘焙：原始结果已备份为 {backup.name}")
+        # 原地烘焙：RDF 原始 dump 默认丢弃（只用于转头支点，缺了会走几何兜底）
+        if keep_rdf:
+            from live3dgsavatar.tracking.tracked import RDF_TRACKING_FILE
+            backup = out_dir / RDF_TRACKING_FILE
+            if not backup.is_file():
+                shutil.copyfile(out_dir / "render_inputs.npz", backup)
+            print(f"原地烘焙：原始结果已备份为 {backup.name}")
+        else:
+            print("原地烘焙：原始 RDF dump 不保留（--keep-rdf 可保留）")
 
     dump_path = find_frames_file(source)
     schema = frames_schema(dump_path)
@@ -274,7 +280,7 @@ def main(argv: list[str] | None = None) -> int:
               force=args.force,
               images_dir=(args.images.expanduser().resolve()
                           if args.images is not None else None),
-              keep_images=bool(args.keep_images))
+              keep_images=bool(args.keep_images), keep_rdf=bool(args.keep_rdf))
     except (FileExistsError, FileNotFoundError, ValueError) as e:
         print(f"[error] {e}", file=sys.stderr)
         return 1
