@@ -145,7 +145,9 @@ python scripts/make_repairs.py --subject <对象> --work-name base \
 **破洞即封顶（保守策略）**：修复按"从正脸往外"的角度顺序分批，每批做完
 matting 后，在 FLAME 可见头部区（`y<0.6H`）找"最大的一块没被 mask 覆盖"的
 连通域；超过 `repair.max_hole_px`（config，默认 3000 px）就判定为破洞，
-该角度及更远角度全部丢弃，不再修复。用"最大连通块"而不是比例：比例会被大片正常区域稀释，
+该角度及更远角度全部丢弃，不再修复。另一条同样机制的判据是
+`repair.max_invented_px`（默认 800）：修复图在**渲染轮廓之外**凭空造出的
+像素数（SyncFix 幻觉，如 biden +70 起的"第二只耳朵"）。用"最大连通块"而不是比例：比例会被大片正常区域稀释，
 成片的缺口（比如头顶那一块）才是真正要拦的。
 SyncFix 路径从 `configs/local.yaml` 或 `--syncfix-*` 参数给。
 

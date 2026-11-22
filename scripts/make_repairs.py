@@ -70,6 +70,8 @@ def parse_args(argv=None):
     args.view_bg = float(rcfg.get("view_bg", 0.8))
     args.refs_auto = int(rcfg.get("refs_auto", 2))
     args.max_hole_px = int(rcfg.get("max_hole_px", 3000))
+    args.max_invented_px = int(rcfg.get("max_invented_px", 400))
+    args.invented_dilate = int(rcfg.get("invented_dilate", 8))
     args.max_head_black = float(rcfg.get("max_head_black", 0.0))  # 旧比例判据，默认关
     args.min_coverage = float(rcfg.get("min_coverage", 0.65))
     args.mask_mode = str(rcfg.get("mask", "key"))
@@ -192,6 +194,25 @@ def _key_rgba(src_dir: Path, dst_dir: Path, *, threshold: int = 18,
         Image.fromarray(out).save(dst_dir / p.name)
         n += 1
     return n
+
+
+def _invented_px(out: Path, label: str, matte_path: Path,
+                 dilate: int = 8) -> int:
+    """修复图在"渲染轮廓之外"凭空造出的像素数（SyncFix 幻觉检测）。
+
+    极端角度下 SyncFix 会补出不存在的结构（biden +70 起的"第二只耳朵"）。
+    渲染里根本没有的东西，修复图却实心画了出来——这就是幻觉。
+    """
+    from PIL import Image
+    from scipy import ndimage
+
+    ap = out / "render_alpha" / f"{label}.png"
+    if not ap.is_file():
+        return 0
+    ref = np.asarray(Image.open(ap)) > 127
+    ref = ndimage.binary_dilation(ref, iterations=int(dilate))
+    m = np.asarray(Image.open(matte_path).convert("RGBA"))[..., 3] > 127
+    return int((m & ~ref).sum())
 
 
 def _head_black_fraction(out: Path, label: str, matte_path: Path,
@@ -544,11 +565,20 @@ def main(argv=None) -> int:
                     if not src.is_file():
                         continue
                     biggest, frac = _head_hole_px(out, lab, src)
+                    invented = _invented_px(out, lab, src,
+                                            dilate=args.invented_dilate)
                     too_big = (args.max_hole_px > 0
                                and biggest > int(args.max_hole_px))
                     if too_big:
                         print(f"  {lab}  破洞 {biggest}px（占头部 {frac:.1%}）> "
                               f"{args.max_hole_px}px → {side} 侧从该角度起停止")
+                    elif (args.max_invented_px > 0
+                          and invented > int(args.max_invented_px)):
+                        print(f"  {lab}  幻觉 {invented}px > "
+                              f"{args.max_invented_px}px（渲染外凭空造内容）"
+                              f" → {side} 侧从该角度起停止")
+                        too_big = True
+                    if too_big:
                         stopped = True
                         break
                     shutil.copyfile(src, matte_dir / f"{lab}.png")
