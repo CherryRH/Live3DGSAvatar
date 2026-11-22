@@ -285,7 +285,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[error] {e}", file=sys.stderr)
         return 1
 
-    print(f"提示：bash train.sh --subject {out_dir.name} --work-name <版本>")
+    print(f"提示：bash train_base.sh --subject {out_dir.name} --work-name <版本>")
     return 0
 
 

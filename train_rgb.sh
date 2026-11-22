@@ -3,10 +3,10 @@
 # 新视角 spill / alpha 监督 / 修复图 / 盘状初始化。
 #
 # 用法：
-#   bash rgb_train.sh --subject bala          # work_name 默认 rgb
-#   bash rgb_train.sh --subject bala -- --iterations 30000
+#   bash train_rgb.sh --subject bala          # work_name 默认 rgb
+#   bash train_rgb.sh --subject bala -- --iterations 30000
 #
-# 与 train.sh 的差别（有意为之）：
+# 与 train_base.sh 的差别（有意为之）：
 #   - 初始化：各向同性球（configs/model_rgb.yaml），不是贴面圆片
 #   - 损失：L1 + SSIM 0.2，无 LPIPS、无 nv_spill、无 alpha（黑底固定）
 #   - 数据：只用真实帧，没有修复图

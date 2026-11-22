@@ -7,7 +7,7 @@
 #   2) 训练：真实帧 + 修复图（2:8）混批；L1 + SSIM + （可选）LPIPS；
 #      可选挂载加密（残差驱动 split）
 #
-# 修复图来自 **base** 模型（先 bash train.sh --subject <对象> --work-name base）。
+# 修复图来自 **base** 模型（先 bash train_base.sh --subject <对象> --work-name base）。
 # 缺修复图时本脚本会用 base 自动生成；缺 surface_masks.npz 时自动缓存。
 #
 # 用法：
@@ -109,7 +109,7 @@ if [[ ! -d "$REPAIRS" ]] || [[ -z "$(ls -A "$REPAIRS" 2>/dev/null)" ]]; then
       --out "output/repair/$SUBJECT" --out-dir "$REPAIRS" \
       --repair-root "$DATA/repair"
   else
-    die "缺少修复图且没有 $MODELS/base：先跑 bash train.sh --subject $SUBJECT --work-name base"
+    die "缺少修复图且没有 $MODELS/base：先跑 bash train_base.sh --subject $SUBJECT --work-name base"
   fi
 fi
 [[ -d "$REPAIRS" ]] || die "修复图生成失败：$REPAIRS"

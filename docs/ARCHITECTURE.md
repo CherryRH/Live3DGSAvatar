@@ -77,7 +77,7 @@ src/live3dgsavatar/
 | 入口 | 作用 |
 |---|---|
 | `build_dataset.sh` | 跟踪、烘焙数据集 |
-| `train.sh` / `scripts/train.py` | 基础训练 |
+| `train_base.sh` / `scripts/train.py` | 基础训练 |
 | `train_avatar.sh` | 单阶段头像重建，可选挂加密 |
 | `eval.sh` / `scripts/render_test.py` | 留出集评测 |
 | `run_gui.sh` / `app/server.py` | GUI 与推流 |

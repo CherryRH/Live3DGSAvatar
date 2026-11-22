@@ -2,11 +2,11 @@
 # 基础训练入口（单阶段重建/加密见 train_avatar.sh）。
 #
 # 用法：
-#   bash train.sh --subject biden                  # work-name 默认 base
-#   bash train.sh --subject biden --work-name base
-#   bash train.sh --subject biden -- --dry-run
-#   bash train.sh --subject biden -- --iterations 8000
-#   bash train.sh --subject biden -- --force
+#   bash train_base.sh --subject biden                  # work-name 默认 base
+#   bash train_base.sh --subject biden --work-name base
+#   bash train_base.sh --subject biden -- --dry-run
+#   bash train_base.sh --subject biden -- --iterations 8000
+#   bash train_base.sh --subject biden -- --force
 #
 # 产物：models/<对象>/<版本>/；中间产物 output/train/<对象>/<版本>/。
 # 加密/后训练：bash train_avatar.sh --subject <对象> [-—hard-only]

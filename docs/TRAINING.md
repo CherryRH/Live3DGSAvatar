@@ -6,7 +6,7 @@
 
 | 入口 | 用途 |
 |---|---|
-| `train.sh` / `scripts/train.py` | 基础训练（单段，从 FLAME 初始化） |
+| `train_base.sh` / `scripts/train.py` | 基础训练（单段，从 FLAME 初始化） |
 | `train_avatar.sh` | 单阶段头像重建（UV 初始化 → 统一集合），可选挂加密 |
 | `scripts/online_update.py` | 通话时的在线外观更新 |
 
@@ -90,7 +90,7 @@ python scripts/online_update.py --subject <对象> --work-name <版本> \
 ## 6. 基础训练
 
 ```bash
-bash train.sh --subject <对象> --work-name <版本>
+bash train_base.sh --subject <对象> --work-name <版本>
 ```
 
 1. `load_scene` + `ManifestSource` 取训练/留出帧（留出集统一为末尾 30%）；
