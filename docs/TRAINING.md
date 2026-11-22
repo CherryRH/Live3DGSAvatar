@@ -105,7 +105,8 @@ bash train.sh --subject <对象> --work-name <版本>
 1. **初始化**：`scripts/init_uv.py` 生成未训练的 UV 绑定高斯（各向同性球或
    盘状由 `configs/model.yaml` 的 `init_scale_*` 决定）；`scripts/merge_layers.py`
    合并成 tex 512 的统一集合（形变基 K=20 从第 0 步可用）。
-2. **训练**（`--stage base`）：真实帧 + 修复图按 `--repair-per-batch` 混批；
+2. **训练**（`--stage base`）：真实帧 + 修复图按 `--repair-per-batch` 混批
+   （`repair_schedule` 可退火：`ratio` = 2/8 → 1/8 → 0，修复图前期锚定、后期让真实帧收尾）；
    L1 + SSIM +（默认）第 `lpips_from` 步起的 LPIPS；`nv_spill` 抑制轮廓外
    半透明薄雾，`alpha` 向 GT 前景 mask 回归。
 3. **加密（可选）**：`--densify` 打开残差驱动 split/prune（每 `every` 步，

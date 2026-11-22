@@ -167,6 +167,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="硬表面阶段：FLAME 表面内、原图无数据区域的 alpha 归零权重")
     p.add_argument("--repair-dir", type=Path, default=None,
                    help="硬表面初始化：额外混入的 SyncFix 修复图目录")
+    p.add_argument("--repair-schedule", default=None,
+                   choices=("none", "linear", "cosine", "ratio"),
+                   help="修复图退火：linear/cosine 衰减样本权重；ratio 减占比")
+    p.add_argument("--repair-final-weight", type=float, default=None,
+                   help="退火结束时的修复图样本权重（默认见配置）")
     p.add_argument("--repair-per-batch", type=int, default=None,
                    help="每个 batch 的修复图数量；缺省为 batch/2")
     p.add_argument("--angle-weight", type=float, default=0.0,
@@ -363,6 +368,12 @@ def main(argv: list[str] | None = None) -> int:
     surface_bg = float(
         args.surface_bg_weight if args.surface_bg_weight is not None
         else cfg.get("train.pipeline.hard_surface.bg_weight", 1.0))
+    avatar_section = cfg.get("train.pipeline.avatar", {}) or {}
+    repair_schedule = (args.repair_schedule
+                       or avatar_section.get("repair_schedule", "none"))
+    repair_final_weight = float(
+        args.repair_final_weight if args.repair_final_weight is not None
+        else avatar_section.get("repair_final_weight", 0.2))
     alpha_weight = float(
         args.alpha_weight if args.alpha_weight is not None
         else cfg.get("train.pipeline.alpha_weight", 0.0))
@@ -392,7 +403,8 @@ def main(argv: list[str] | None = None) -> int:
         """真实帧 + 修复帧 1:1；修复帧使用各自的相机和 FLAME surface mask。"""
 
         def __init__(self, real, repair_batches, surface_masks, K_data,
-                     w2c_data, repair_per_batch=None):
+                     w2c_data, repair_per_batch=None, *,
+                     schedule="none", total_steps=0, final_weight=0.2):
             self.real = real
             self.repair = repair_batches
             self.surface_masks = surface_masks
@@ -400,11 +412,41 @@ def main(argv: list[str] | None = None) -> int:
             self.w2c_data = w2c_data
             self.repair_per_batch = repair_per_batch
             self.batch_size = 10
+            # 修复图退火：前期当"锚定"权重高，后期让真实帧主导
+            self.schedule = str(schedule)
+            self.total_steps = max(1, int(total_steps))
+            self.final_weight = float(final_weight)
+            self._step = 0
+
+        def _repair_weight(self) -> float:
+            """当前步修复图的样本权重（1 = 与真实帧同权）。"""
+            if self.schedule == "none":
+                return 1.0
+            t = min(1.0, self._step / self.total_steps)
+            if self.schedule == "linear":
+                return 1.0 + (self.final_weight - 1.0) * t
+            if self.schedule == "cosine":
+                return self.final_weight + (1.0 - self.final_weight) * 0.5 * (
+                    1.0 + __import__("math").cos(__import__("math").pi * t))
+            return 1.0
+
+        def _repair_count(self, n: int) -> int:
+            if self.schedule != "ratio":
+                return (int(self.repair_per_batch) if self.repair_per_batch
+                        is not None else max(1, int(n) // 2))
+            full = int(self.repair_per_batch or 0)
+            t = min(1.0, self._step / self.total_steps)
+            if t < 0.5:
+                return full
+            if t < 0.75:
+                return max(1, full // 2)
+            return 0
 
         def random_batch(self, n: int):
             import torch as _torch
-            n_rep = (int(self.repair_per_batch) if self.repair_per_batch
-                     is not None else max(1, int(n) // 2))
+            n_rep = self._repair_count(n)
+            rep_w = self._repair_weight()
+            self._step += 1
             n_rep = min(n_rep, int(n) - 1, len(self.repair))
             n_real = int(n) - n_rep
             rb = self.real.random_batch(n_real)
@@ -418,11 +460,17 @@ def main(argv: list[str] | None = None) -> int:
             def cat(name):
                 vals = [getattr(rb, name)] + [getattr(r, name) for r in reps]
                 return _torch.cat(vals, 0)
+            weight = None
+            if n_rep > 0 and rep_w != 1.0:
+                weight = _torch.cat([
+                    _torch.ones(n_real),
+                    _torch.full((n_rep,), float(rep_w)),
+                ])
             return Batch(
                 mesh=cat("mesh"), blend_weight=cat("blend_weight"),
                 image=cat("image"), mask=cat("mask"),
                 indices=cat("indices"), K=cat("K"), w2c=cat("w2c"),
-                surface=cat("surface"))
+                surface=cat("surface"), weight=weight)
 
         def __len__(self):
             return len(self.real)
@@ -671,7 +719,10 @@ def main(argv: list[str] | None = None) -> int:
                               for k in d.files}
         train_src = MixedHardSource(
             train_src, repair_batches, surface_masks, K_data, w2c_data,
-            repair_per_batch=args.repair_per_batch)
+            repair_per_batch=args.repair_per_batch,
+            schedule=repair_schedule,
+            total_steps=int(iterations),
+            final_weight=repair_final_weight)
         ratio = (f"{int(args.repair_per_batch)}:{int(batch_size) - int(args.repair_per_batch)}"
                  if args.repair_per_batch is not None else "1:1")
         print(f"  初始化混合: {len(repair_batches)} 张修复图，batch 修复:真实={ratio}")
@@ -771,6 +822,9 @@ def main(argv: list[str] | None = None) -> int:
         loss_terms.append(f"surface_outside {surface_outside:g}")
     if surface_bg > 0:
         loss_terms.append(f"surface_bg {surface_bg:g}")
+    if repair_schedule != "none":
+        loss_terms.append(f"修复图退火 {repair_schedule}"
+                          f"（末权重 {repair_final_weight:g}）")
     if alpha_weight > 0:
         loss_terms.append(f"alpha {alpha_weight:g}(对 GT mask)")
     if ssim_weight > 0:

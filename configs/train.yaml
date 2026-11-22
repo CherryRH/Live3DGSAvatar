@@ -71,6 +71,9 @@ train:
       batch: 8
       # 每批混入的修复图张数（0 = 不用修复图）
       repair: 2
+      # 修复图退火：none / linear / cosine（衰减样本权重）/ ratio（减占比）
+      repair_schedule: none
+      repair_final_weight: 0.2
       blend_start: 0
       ssim_weight: 0.1
       # LPIPS 低权重、后段启用（每步慢 4~5 倍）
