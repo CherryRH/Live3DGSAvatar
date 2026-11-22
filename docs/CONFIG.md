@@ -94,7 +94,7 @@ LIVE3DGS_OUTPUT_DIR
 | `perceptual_frames` | `240` | SSIM/LPIPS 的抽样帧数（全量太慢） |
 
 组合分 `score = PSNR + ssim·SSIM + lpips·(1−LPIPS)` 只在 base 阶段作为
-`--early-metric` 的默认值；hard_surface 用 `psnr_surface`。
+`--early-metric` 的默认值（遗留的 `--stage hard_surface` 用 `psnr_surface`）。
 
 ### 单阶段训练 `train.pipeline.avatar`（`train_avatar.sh` 读取）
 

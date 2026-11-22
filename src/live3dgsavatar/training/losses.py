@@ -244,7 +244,7 @@ class PhotometricLoss:
         return loss, metrics
 
 def outside_alpha_loss(alpha: torch.Tensor, surface: torch.Tensor) -> torch.Tensor:
-    """FLAME 表面外的 alpha 应尽量为 0；硬表面阶段专用。"""
+    """FLAME 表面外的 alpha 应尽量为 0。"""
     if alpha.shape != surface.shape:
         raise ValueError(f"alpha {tuple(alpha.shape)} 与 surface "
                          f"{tuple(surface.shape)} 形状不一致")

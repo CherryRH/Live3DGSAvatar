@@ -1,13 +1,13 @@
 #!/usr/bin/env python
-"""生成"未训练"的 UV 初始化模型（跳过 hard_surface 阶段用）。
+"""生成"未训练"的 UV 初始化模型（训练前的起点）。
 
-输出一个和 stage1 产物同构的目录：
+输出一个可直接用于训练的目录：
 
     <out-dir>/model.ply     —— 零初始化的 UV 绑定高斯（位置/颜色由绑定和训练填）
     <out-dir>/config.yaml   —— 结构配置（tex_size 等）
 
 之后 `train_avatar.sh` 的 merge + 训练可以照常跑，只是初始化没经过
-硬表面训练。用于对照"硬表面阶段到底有没有用"。
+任何训练。用于对照"是否先从几何初始化开始"。
 """
 
 from __future__ import annotations

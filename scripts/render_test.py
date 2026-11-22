@@ -147,7 +147,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--showcase-frame", type=int, default=None,
                    help="展示用的基础帧下标（默认取本次评测中头姿最正的一帧）")
     p.add_argument("--frontface", action="store_true",
-                   help="只渲染朝向相机的高斯（硬表面/背面剔除）")
+                   help="只渲染朝向相机的高斯（背面剔除）")
     p.add_argument("--no-lpips", action="store_true",
                    help="跳过 LPIPS（首次使用需下载 AlexNet 权重）")
     p.add_argument("--profile", action="store_true",

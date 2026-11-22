@@ -299,8 +299,7 @@ class Session:
                         "当前版本只支持 v1 格式，请删除该目录或重新训练。")
             raise ValueError(f"{model_ply} 加载失败：{e}{hint}") from e
 
-        # 硬表面初始化的模型训练时用前表面门控；GUI 渲染要保持一致。
-        # 后续加密阶段是不开门控训练的，所以只对硬表面产物启用。
+        # 旧的几何初始化产物训练时用前表面门控；GUI 渲染保持一致。
         self._frontface = model_ply.parent.name.startswith(
             ("hard_surface", "densify_hard"))
 

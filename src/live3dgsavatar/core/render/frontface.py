@@ -2,7 +2,7 @@
 
 RGBAvatar/3DGS 的高斯没有天然背面剔除；背面高斯可能在正面视角下
 贡献颜色，到了大角度就变成“正面很好、侧面破洞/糊”。这里用高斯的
-最短轴（硬表面阶段已对齐 FLAME 法线）和相机方向做点积，只保留朝向
+最短轴和相机方向做点积，只保留朝向
 相机的高斯不透明度。
 """
 
@@ -33,7 +33,7 @@ def frontface_gaussians(gaussians: GaussianSet, camera: Camera,
                         mesh=None, face_id=None) -> GaussianSet:
     """把背向相机的高斯 opacity 置 0（保留参数，不破坏梯度/存储）。
 
-    硬表面高斯的旋转轴方向有 ± 二义性；若给出 mesh/face_id，直接用
+    高斯的旋转轴方向有 ± 二义性；若给出 mesh/face_id，直接用
     绑定面的几何法线判断朝向，避免把正面一起剔掉。
     """
     if gaussians.space != "world":

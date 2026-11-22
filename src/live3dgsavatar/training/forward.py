@@ -31,7 +31,7 @@ class ForwardOptions:
 
     Attributes:
         build_graph: 是否保留计算图（训练 True，验证/评测 False）。
-        frontface: 是否剔除背面高斯（硬表面初始化阶段为 True）。
+        frontface: 是否剔除背面高斯（几何初始化/排查时可用）。
         clamp_max_scale: 切向尺度硬上限（米）；``None`` 表示不裁。
     """
 
@@ -44,7 +44,7 @@ class ForwardOptions:
 class ForwardResult:
     """一次前向的结果：渲染输出 +（可选）中间高斯。
 
-    `gaussians` 只在需要几何约束（硬表面 terms）时非空——走快速路径
+    `gaussians` 只在需要几何约束时非空——走快速路径
     （`render_frame`）时没有中间高斯可拿。
     """
 

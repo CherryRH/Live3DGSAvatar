@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 基础训练入口（硬表面/加密/后训练见 train_avatar.sh）。
+# 基础训练入口（单阶段重建/加密见 train_avatar.sh）。
 #
 # 用法：
 #   bash train.sh --subject biden --work-name base

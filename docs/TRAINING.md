@@ -131,7 +131,7 @@ batch 比例混入：
 # 角度与所有调参项都来自 configs/train.yaml 的 train.pipeline.repair
 python scripts/make_repairs.py --subject <对象> --work-name base \
     --auto \
-    --out output/repairs --out-dir datasets/<对象>/repair/repairs \
+    --out output/repair/<对象> --out-dir datasets/<对象>/repair/repairs \
     --repair-root datasets/<对象>/repair
 ```
 

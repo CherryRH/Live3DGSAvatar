@@ -120,11 +120,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    choices=("psnr", "psnr_surface", "robust", "score"),
                    default=None,
                    help="早停指标；psnr=mask 内 PSNR，psnr_surface=FLAME 表面内 PSNR"
-                        "（硬表面阶段默认），robust=大角度综合分")
+                        "（几何初始化阶段默认），robust=大角度综合分")
     p.add_argument("--eval-frames", type=int, default=None,
                    help="验证只用其中 N 帧（等间隔抽样）；缺省用全部留出集")
     p.add_argument("--early-stop-after", type=int, default=None,
-                   help="第几步之后允许早停；硬表面阶段默认 200，其余默认 blend_start+1000")
+                   help="第几步之后允许早停；几何初始化默认 200，其余默认 blend_start+1000")
     p.add_argument("--robust-eval", dest="robust_eval", action="store_true",
                    default=None,
                    help="验证时加入大角度视角，用 正脸PSNR − λ·缺口 早停")
@@ -140,33 +140,33 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         "没有就用仓库模板 configs/model.yaml）")
     p.add_argument("--stage", choices=("base", "hard_surface"), default=None,
                    help="训练阶段标签：base 保持旧流程；hard_surface 从 UV/FLAME "
-                        "初始化，先拟合硬表面（不读取 base）")
+                        "初始化，先拟合几何表面（可选工具，主流程不用）")
     p.add_argument("--surface-spill-weight", type=float, default=None,
-                   help="硬表面阶段：FLAME 表面外半透明溢出的权重（默认取配置）")
+                   help="几何初始化：FLAME 表面外半透明溢出的权重（默认取配置）")
     p.add_argument("--surface-margin", type=int, default=None,
-                   help="硬表面阶段 surface_spill 的边界余量像素")
+                   help="几何初始化：surface_spill 的边界余量像素")
     p.add_argument("--surface-every", type=int, default=None,
-                   help="硬表面阶段每多少步计算一次表面 alpha 约束；默认取配置")
+                   help="几何初始化：每多少步计算一次表面 alpha 约束；默认取配置")
     p.add_argument("--surface-point-weight", type=float, default=None,
-                   help="硬表面阶段：高斯中心到 FLAME 表面的距离权重")
+                   help="几何初始化：高斯中心到 FLAME 表面的距离权重")
     p.add_argument("--surface-normal-weight", type=float, default=None,
-                   help="硬表面阶段：最短轴与面法线对齐权重")
+                   help="几何初始化：最短轴与面法线对齐权重")
     p.add_argument("--surface-scale-weight", type=float, default=None,
-                   help="硬表面阶段：法向尺度压短权重")
+                   help="几何初始化：法向尺度压短权重")
     p.add_argument("--surface-size-weight", type=float, default=None,
-                   help="硬表面阶段：切向尺度上限权重")
+                   help="几何初始化：切向尺度上限权重")
     p.add_argument("--surface-iso-weight", type=float, default=None,
-                   help="硬表面阶段：切向两轴等长（小圆片）权重")
+                   help="几何初始化：切向两轴等长（小圆片）权重")
     p.add_argument("--surface-max-scale", type=float, default=None,
-                   help="硬表面阶段：切向尺度上限（米）")
+                   help="几何初始化：切向尺度上限（米）")
     p.add_argument("--surface-outside-weight", type=float, default=None,
-                   help="硬表面阶段：FLAME 表面外 alpha 归零权重")
+                   help="几何初始化：FLAME 表面外 alpha 归零权重")
     p.add_argument("--alpha-weight", type=float, default=None,
                    help="alpha 直接监督权重：向 GT 前景 mask 回归（0=关）")
     p.add_argument("--surface-bg-weight", type=float, default=None,
-                   help="硬表面阶段：FLAME 表面内、原图无数据区域的 alpha 归零权重")
+                   help="几何初始化：FLAME 表面内、原图无数据区域的 alpha 归零权重")
     p.add_argument("--repair-dir", type=Path, default=None,
-                   help="硬表面初始化：额外混入的 SyncFix 修复图目录")
+                   help="几何初始化：额外混入的 SyncFix 修复图目录")
     p.add_argument("--repair-schedule", default=None,
                    choices=("none", "linear", "cosine", "ratio"),
                    help="修复图退火：linear/cosine 衰减权重；ratio 后期减半（2/8→1/8）")
@@ -190,9 +190,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--densify-split-jitter", type=float, default=None,
                    help="分裂副本沿自身尺度的随机位移倍数（1σ；0=原地复制）")
     p.add_argument("--hard-xyz-lr", type=float, default=None,
-                   help="分层全量阶段硬表面 xyz 的小学习率；缺省沿用默认")
+                   help="分层全量阶段的 xyz 小学习率；缺省沿用默认")
     p.add_argument("--hard-offset-cap", type=float, default=None,
-                   help="硬表面阶段切空间偏移上限（米）；每步后投影，防止长训练缓慢外漂")
+                   help="几何初始化：切空间偏移上限（米）；每步后投影，防止长训练缓慢外漂")
     p.add_argument("--resume-hard", action="store_true",
                    help="hard_surface 阶段允许 --init-ply 热启动（带几何约束的 refine）")
     p.add_argument("--init-ply", type=Path, default=None,
@@ -329,7 +329,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.early_stop_after is not None:
         early_stop_after = max(0, int(args.early_stop_after))
     elif stage == "hard_surface":
-        # 硬表面只做初始化：形变基一直是关的，早停没必要等 blend_start。
+        # 几何初始化：形变基一直是关的，早停没必要等 blend_start。
         early_stop_after = int(
             cfg.get("train.pipeline.hard_surface.early_stop_after", 200))
     else:
@@ -384,7 +384,7 @@ def main(argv: list[str] | None = None) -> int:
         surface_point = surface_normal = surface_scale = 0.0
         surface_size = surface_iso = surface_outside = surface_bg = 0.0
     else:
-        # 硬表面阶段使用真实视角的表面约束；新视角项留到后续阶段。
+        # 几何初始化阶段使用真实视角的表面约束；新视角项留到后续阶段。
         nv_hole = nv_spill = 0.0
     if (stage == "hard_surface" and args.init_ply is not None
             and not args.resume_hard):
@@ -565,7 +565,7 @@ def main(argv: list[str] | None = None) -> int:
                   f"（margin {nv_margin}px, alpha "
                   f"{nv_alpha_min:g}–{nv_alpha_max:g}）")
         if stage == "hard_surface":
-            print(f"  [dry-run] 硬表面: spill "
+            print(f"  [dry-run] 几何初始化: spill "
                   f"{surface_spill:g}（每 {surface_every} 步，"
                   f"margin {surface_margin}px）")
         print(f"  [dry-run] 产物目录 {out_dir}")
@@ -642,7 +642,7 @@ def main(argv: list[str] | None = None) -> int:
         width=scene.width, height=scene.height).to(str(device))
     print(f"  高斯数 : {avatar.num_gaussians}   基 K={avatar.num_basis}")
 
-    # 硬表面从零初始化时，可把 SyncFix 修复图作为等比例额外观测。
+    # 几何初始化时，可把 SyncFix 修复图作为等比例额外观测。
     # 修复图没有相机/网格，用基准帧的 mesh + 目标 yaw 构造 camera。
     if args.repair_dir is not None:
         if stage not in ("hard_surface", "base"):
@@ -744,7 +744,7 @@ def main(argv: list[str] | None = None) -> int:
             groups={k: v for k, v in plan.groups.items()
                     if k not in ("xyz", "xyz_b")},
             scene_extent=plan.scene_extent)
-        print("  位移   : 冻结硬表面 xyz / xyz_b")
+        print("  位移   : 冻结几何初始化 xyz / xyz_b")
     hard_xyz_lr = (args.hard_xyz_lr if args.hard_xyz_lr is not None
                    else (cfg.get("train.pipeline.hard_surface.xyz_lr")
                          if stage == "hard_surface" else None))
@@ -759,9 +759,9 @@ def main(argv: list[str] | None = None) -> int:
         plan = plan.scaled(lr_scale)
         print(f"  lr 缩放 : {lr_scale:g}")
 
-    # 硬表面允许微小形变（补偿 FLAME/RDF 误差），但每步把切空间偏移投影到
+    # 几何初始化允许微小形变（补偿 FLAME/RDF 误差），但每步把切空间偏移投影到
     # 上限之内：否则长期训练时 1% 的高斯会慢慢漂到表面外 8mm+，既不再是
-    # "硬表面"，也浪费步数。
+    # 几何初始化，也浪费步数。
     offset_guard = None
     if stage == "hard_surface":
         cap = float(args.hard_offset_cap if args.hard_offset_cap is not None
@@ -782,7 +782,7 @@ def main(argv: list[str] | None = None) -> int:
     lpips_from = int(args.lpips_from if args.lpips_from is not None
                      else cfg.get("train.pipeline.lpips_from", 20_000))
     objective = Objective.rgba_avatar_defaults()
-    # 硬表面阶段只监督 FLAME mask 内部，背景/头发/衣服不进入 L1。
+    # 几何初始化只监督 FLAME mask 内部，背景/头发/衣服不进入 L1。
     objective.mask_weight = 0.0 if stage == "hard_surface" else mask_weight
     objective.nv_hole = nv_hole
     objective.nv_spill = nv_spill
@@ -843,13 +843,13 @@ def main(argv: list[str] | None = None) -> int:
     else:
         print("  新视角 : 关闭")
     if stage == "hard_surface":
-        print(f"  硬表面 : spill {surface_spill:g}"
+        print(f"  几何初始化 : spill {surface_spill:g}"
               f"（每 {surface_every} 步，margin {surface_margin}px），"
               f"point {surface_point:g} + normal {surface_normal:g} + "
               f"scale {surface_scale:g} + size {surface_size:g} + "
               f"iso {surface_iso:g} + outside {surface_outside:g} + "
               f"bg {surface_bg:g}（cap {surface_max_scale:g}m）")
-    # 硬表面 mask 用半分辨率面 id 图再上采样；512² 每步算代价太高。
+    # 几何初始化 mask 用半分辨率面 id 图再上采样；512² 每步算代价太高。
     k_half = scene.K.clone()
     k_half[:2] *= 0.5
     cam_half = Camera(K=k_half, w2c=camera.w2c[:1],
@@ -931,7 +931,7 @@ def main(argv: list[str] | None = None) -> int:
             if surface_iso > 0:
                 out.surface_iso_loss = terms["surface_iso"]
 
-            # FLAME 支撑面作为硬表面 loss mask；只拟合表面内部，不把
+            # FLAME 支撑面作为几何初始化 loss mask；只拟合表面内部，不把
             # 头发/背景/衣服一并纳入 L1。半分辨率面 id 上采样足够稳定。
             surface = torch.cat(
                 [_surface_mask(batch, i).to(device)
@@ -1035,7 +1035,7 @@ def main(argv: list[str] | None = None) -> int:
         try:
             batches = list(source.iter_batches(max(1, batch_size)))
             if eval_frames is not None and eval_frames > 0 and batches:
-                # 等间隔抽批：硬表面阶段每 100 步就要验证一次，跑全量太贵
+                # 等间隔抽批：几何初始化每 100 步就要验证一次，跑全量太贵
                 per_batch = max(1, int(batches[0].mesh.shape[0]))
                 want = max(1, int(eval_frames) // per_batch)
                 if want < len(batches):
@@ -1074,7 +1074,7 @@ def main(argv: list[str] | None = None) -> int:
                         perc_n += 1
                     perc_seen += 1
             if stage == "hard_surface":
-                # 硬表面只负责 FLAME 表面那一片：mask 内 PSNR 会被头发/衣服
+                # 几何初始化只负责 FLAME 表面那一片：mask 内 PSNR 会被头发/衣服
                 # 拖住，不能反映"壳做得好不好"。这里按表面 mask 单独统计，
                 # 顺带量一下表面被覆盖的比例（孔洞率）。
                 surf = torch.cat(
@@ -1098,8 +1098,8 @@ def main(argv: list[str] | None = None) -> int:
             metrics["psnr_surface"] = surf_psnr / max(1, n)
             metrics["surface_hole"] = surf_hole / max(1, n)
             # "初始化是否定型"：几何参数每次验证之间还在挪多少（mm）。
-            # 覆盖与贴面会先收敛，颜色/PSNR 会后收敛 —— 后者 stage2 会重练，
-            # 所以硬表面段的早停应该看几何，而不是看 PSNR 平台。
+            # 覆盖与贴面会先收敛，颜色/PSNR 会后收敛 —— 后者训练会重练，
+            # 所以几何初始化段的早停应该看几何，而不是看 PSNR 平台。
             with torch.no_grad():
                 geom = (avatar.xyz.detach().clone(),
                         avatar.scaling.detach().clone())
@@ -1462,7 +1462,7 @@ def main(argv: list[str] | None = None) -> int:
             d_state["splits"] += 1
             if added:
                 with torch.no_grad():
-                    # 初始硬表面/已有高斯全部保留；只剪本次新增的低 opacity 副本。
+                    # 已有高斯全部保留；只剪本次新增的低 opacity 副本。
                     keep = torch.ones(int(avatar.num_gaussians), dtype=torch.bool,
                                       device=avatar.opacity.device)
                     keep[n_before:] = (

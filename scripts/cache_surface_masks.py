@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""预计算每帧 FLAME 可见表面 mask，供 hard_surface 训练直接加载。
+"""预计算每帧 FLAME 可见表面 mask，供训练/修复图判定直接加载。
 
 训练时每步用 nvdiffrast 重算 surface mask 会逐步占用显存并 OOM；
 这个脚本把 mask 一次性算好存到 `datasets/<name>/surface_masks.npz`。

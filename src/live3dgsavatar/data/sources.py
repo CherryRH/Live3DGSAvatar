@@ -61,7 +61,7 @@ class Batch:
     blend_weight: torch.Tensor
     image: torch.Tensor
     mask: torch.Tensor
-    #: 这批样本在数据集里的全局帧号（硬表面 surface mask 缓存用）
+    #: 这批样本在数据集里的全局帧号（FLAME surface mask 缓存用）
     indices: torch.Tensor | None = None
     weight: torch.Tensor | None = None
     #: 逐像素监督权重 `[B,1,H,W]`（缺陷加权微调用）
@@ -71,7 +71,7 @@ class Batch:
     w2c: torch.Tensor | None = None
     #: 本批使用的背景色 `[B,3,1,1]`（随机背景时每批重采样；None = 黑底）
     bg: torch.Tensor | None = None
-    #: 逐帧 FLAME surface mask（硬表面混合修复帧训练用）
+    #: 逐帧 FLAME surface mask（修复帧混合训练用）
     surface: torch.Tensor | None = None
 
     def __len__(self) -> int:

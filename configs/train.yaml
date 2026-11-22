@@ -14,47 +14,6 @@ train:
     # 训练入口：scripts/train.py。默认 batch 10、50000 步、blend_start 3000；
     # 验证集统一取**末尾 30%**（test_ratio），不再使用固定的 350 帧。
     enabled: true
-    # 训练阶段标签：base 保持旧流程；hard_surface 从 UV/FLAME 初始化，
-    # 第一段只把硬表面拟合好，不读取旧 base 模型。
-    stage: base
-    # hard_surface 阶段的真实视角表面约束；chest 在 FLAME 覆盖内，不单独排除。
-    hard_surface:
-      # 空洞监督实测无效（见 docs/TRAINING.md 消融），只保留轮廓外溢约束
-      spill_weight: 0.05
-      margin: 4
-      every: 10
-      # 强几何：中心贴面、法线对齐、法向尺度压短
-      point_weight: 500.0
-      normal_weight: 0.05
-      scale_weight: 0.03
-      size_weight: 0.5
-      xyz_lr: 0.00005   # 轻微形变余量，补偿 FLAME/RDF 系统误差
-      iso_weight: 0.0
-      max_scale: 0.0020  # 切向尺度上限 2.0 mm（统一默认）
-      outside_weight: 1.0
-      bg_weight: 1.0
-      # 切空间偏移上限（米）：允许补偿 FLAME/RDF 误差的微小形变，
-      # 但每步投影回 3mm 内，避免长训练时少数高斯慢慢漂到表面外。
-      max_offset: 0.003
-      # 硬表面只做初始化：形变基一直关，早停不必等 blend_start。
-      # 第几步之后允许早停（之前只记录/挑 best）。
-      early_stop_after: 200
-    # 统一集合加密训练管线（densify_train.sh 读取；--shell-densify 输出 CFG_DENSIFY_*）
-    #
-    # 两段式：
-    #   1) init    硬表面"只做初始化"：从 UV/FLAME 零初始化，损失只覆盖 FLAME
-    #              表面内，几何约束最强（贴面/法线/小圆片/尺度上限），形变基
-    #              **关闭**。目标不是把外观拟合到位，而是快速得到一个干净、
-    #              贴面、大角度不漏的壳。
-    #   2) densify 合并成 tex 512 的统一集合：全部高斯一起漂移 + 残差驱动 split，
-    #              形变基从第 0 步开启，一次训练把外观/头发/细节补上。
-    #
-    # 不再单独设"硬表面精修"段：它会把壳自由漂移到头发/背景，既不再是硬表面，
-    # 又让第三段无事可做。实测两段式（1500+4000 步）与三段式（9000 步）同分。
-    #
-    # 两段更新的参数（ParameterPlan.rgba_avatar_defaults）：
-    #   xyz 5e-5 / opacity 0.25 / scaling 0.025 / rotation 0.005 / f_dc 0.0125
-    #   stage2 额外训练 xyz_b / rotation_b / f_dc_b / weight_module。
     # 选模型/早停：PSNR + 50·SSIM + 50·(1−LPIPS)（感知项在抽样帧上算）
     selection:
       ssim: 50.0
@@ -76,7 +35,7 @@ train:
       # 有效性：FLAME 头部区最大连通缺口 > max_hole_px 判定破洞，整侧封顶
       max_hole_px: 3000
       # 修复图在"渲染轮廓之外"凭空造出的像素上限（SyncFix 幻觉，如双侧耳朵）
-      max_invented_px: 800
+      max_invented_px: 1000
       invented_dilate: 8
       # 渲染覆盖率下限（base 没画出来的角度直接跳过）
       min_coverage: 0.65

@@ -1,7 +1,7 @@
 #!/usr/bin/env python
-"""把硬表面模型摊到更大的 UV 网格上（加密前的一次性扩容）。
+"""把 UV 初始化模型摊到更大的 UV 网格上（给加密留容量）。
 
-硬表面模型通常是 tex 256（约 6 万高斯），加密阶段要 split 出更多高斯，
+UV 初始化模型通常是 tex 256（约 6 万高斯），加密阶段要 split 出更多高斯，
 而 256² 只有 65536 个槽位。这里把它复制进一个 tex 更大的空 avatar：
 **高斯数不变**，只是把容量放大，后续 split 才有地方放。
 
@@ -27,7 +27,7 @@ import live3dgsavatar  # noqa: F401,E402
 def main() -> int:
     p = argparse.ArgumentParser()
     p.add_argument("--hard", type=Path, required=True,
-                   help="硬表面模型 model.ply（同目录要有 config.yaml）")
+                   help="要扩容的 model.ply（同目录要有 config.yaml）")
     p.add_argument("--out", type=Path, required=True)
     p.add_argument("--tex-size", type=int, default=512)
     a = p.parse_args()

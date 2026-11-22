@@ -71,7 +71,7 @@ class Objective:
     # 新视角几何监督（默认 0 = 关闭；由 train.py 按配置打开）
     nv_hole: float = 0.0
     nv_spill: float = 0.0
-    # 硬表面阶段：直接在真实视角的 FLAME 支撑面上约束 alpha 覆盖/外溢
+    # 几何初始化阶段：直接在真实视角的 FLAME 支撑面上约束 alpha 覆盖/外溢
     surface_spill: float = 0.0
     surface_point: float = 0.0
     surface_normal: float = 0.0
