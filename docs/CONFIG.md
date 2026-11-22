@@ -96,24 +96,28 @@ LIVE3DGS_OUTPUT_DIR
 组合分 `score = PSNR + ssim·SSIM + lpips·(1−LPIPS)` 只在 base 阶段作为
 `--early-metric` 的默认值；hard_surface 用 `psnr_surface`。
 
-### 加密管线 `train.pipeline.densify`（`densify_train.sh` 读取）
-
-两段式：`init_*` 是硬表面初始化，其余是统一集合加密段。
+### 单阶段训练 `train.pipeline.avatar`（`train_avatar.sh` 读取）
 
 | 字段 | 默认 | 说明 |
 |---|---|---|
-| `init_steps` / `init_batch` / `init_repair` | `2500` / `8` / `2` | 初始化步数上限/批大小/修复图占比 |
-| `init_eval_every` / `init_eval_frames` | `100` / `120` | 初始化段验证频率与抽帧 |
-| `init_min_delta` / `init_patience` | `0.15` / `2` | 初始化段早停 |
-| `init_blend_start` | `100000` | 初始化段不启用形变基（大于步数即可） |
-| `tex_size` | `512` | 统一集合的 UV 纹理边长 |
-| `steps` / `batch` / `repair` | `7000` / `8` / `2` | 加密段步数、批大小、修复图占比 |
-| `blend_start` | `0` | 加密段形变基启用步（0 = 立即） |
+| `steps` / `batch` | `7000` / `8` | 步数上限 / 批大小 |
+| `repair` | `2` | 每批混入的修复图张数（0 = 关） |
+| `blend_start` | `0` | 形变基启用步（0 = 立即） |
 | `ssim_weight` / `lpips_weight` / `lpips_from` | `0.1` / `0.01` / `3000` | 感知项与 LPIPS 启用步 |
 | `xyz_lr` | `0.0002` | 位置学习率 |
+| `tex_size` | `512` | 统一集合的 UV 纹理边长 |
+| `patience` | `4` | 早停耐心 |
+| `densify.*` | 见下 | 加密挂载项（默认关） |
+
+加密 `train.pipeline.avatar.densify`（`--densify` 打开）：
+
+| 字段 | 默认 | 说明 |
+|---|---|---|
 | `every` / `count` / `max_gaussians` | `300` / `900` / `200000` | split 间隔/每次数量/上限 |
-| `prune_opacity` / `split_jitter` | `0.01` / `0.8` | 剪枝阈值/分裂抖动 |
-| `patience` | `4` | 加密段早停耐心 |
+| `prune_opacity` | `0.01` | 剪枝阈值 |
+| `split_jitter` | `0.8` | 分裂副本位移（1σ） |
+| `split_hole_weight` | `0.0` | 选点权重（缺口 vs 颜色残差） |
+| `split_pattern` / `split_mode` / `split_scale` | `random` / `copy` / `0.7` | 分裂方向/方式/尺度 |
 
 ### 新视角监督 `train.pipeline.novel_view`
 

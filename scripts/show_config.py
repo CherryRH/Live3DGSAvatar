@@ -33,8 +33,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--json", action="store_true", help="以 JSON 输出")
     p.add_argument("--sources", action="store_true",
                    help="显示配置文件来源与是否存在")
-    p.add_argument("--shell-densify", action="store_true",
-                   help="输出加密管线的 shell 变量 CFG_DENSIFY_*（densify_train.sh 用）")
+    p.add_argument("--shell-avatar", action="store_true",
+                   help="输出单阶段训练脚本用的 shell 变量 CFG_AVATAR_*"
+                        "（train_avatar.sh 用；嵌套的 densify 会变成 DENSIFY_*）")
     p.add_argument("--config-dir", type=Path, default=None)
     return p.parse_args()
 
@@ -61,11 +62,18 @@ def main() -> int:
         print()
 
     data = cfg.resolved()
-    if args.shell_densify:
+    if args.shell_avatar:
         import shlex
-        section = data["train"]["pipeline"]["densify"]
+        section = data["train"]["pipeline"]["avatar"]
+        flat: dict[str, object] = {}
         for key, value in section.items():
-            print(f"CFG_DENSIFY_{key.upper()}={shlex.quote(str(value))}")
+            if isinstance(value, dict):
+                for sub, sub_value in value.items():
+                    flat[f"DENSIFY_{sub.upper()}"] = sub_value
+            else:
+                flat[key.upper()] = value
+        for key, value in flat.items():
+            print(f"CFG_AVATAR_{key}={shlex.quote(str(value))}")
         return 0
     if args.section:
         if args.section not in data:

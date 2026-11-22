@@ -5,11 +5,11 @@
 | 入口 | 用途 |
 |---|---|
 | `train.sh` / `scripts/train.py` | 基础训练（单段，从 FLAME 初始化） |
-| `densify_train.sh` | 硬表面初始化 → 统一集合加密（两段式） |
+| `train_avatar.sh` | 单阶段头像重建（UV 初始化 → 统一集合），可选挂加密 |
 | `scripts/online_update.py` | 通话时的在线外观更新 |
 
 数值默认值只在 `configs/train.yaml`（与 `configs/model.yaml`）里，本文件不重复
-列数字；`python scripts/show_config.py --shell-densify` 会打印加密管线实际用的值。
+列数字；`python scripts/show_config.py --shell-avatar` 会打印训练脚本实际用的值。
 
 ## 1. Trainer
 
@@ -97,32 +97,40 @@ bash train.sh --subject <对象> --work-name <版本>
 4. `ValidationHook` 按指标早停并保存 `model_best.ply`，结束时装入
    `models/<对象>/<版本>/`。
 
-## 7. 加密管线（`densify_train.sh`）
+## 7. 单阶段头像重建（`train_avatar.sh`）
 
-两段式，只读 `configs/train.yaml` 的 `train.pipeline.densify`：
+一次训练完成外观/形变拟合，加密是**可开关的挂载项**（默认关）。只读
+`configs/train.yaml` 的 `train.pipeline.avatar`：
 
-1. **硬表面初始化**（`--stage hard_surface`）：从 UV/FLAME 零初始化，盘状高斯
-   贴在 FLAME 面上，形变基关闭；损失只覆盖表面内 + 几何项 + 表面外的半透明
-   外溢（spill）。按表面 PSNR 自动早停，只求"干净、贴面、大角度不漏"的壳。
-2. **统一集合加密**（`--stage base --densify`）：把壳合并成 tex 512 的统一集合，
-   形变基从第 0 步开启，残差驱动的 split/prune 补外观/头发/细节；混入初始化
-   修复图（`--repair-per-batch`），真实帧始终占主导。
+1. **初始化**：`scripts/init_uv.py` 生成未训练的 UV 绑定高斯（各向同性球或
+   盘状由 `configs/model.yaml` 的 `init_scale_*` 决定）；`scripts/merge_layers.py`
+   合并成 tex 512 的统一集合（形变基 K=20 从第 0 步可用）。
+2. **训练**（`--stage base`）：真实帧 + 修复图按 `--repair-per-batch` 混批；
+   L1 + SSIM +（默认）第 `lpips_from` 步起的 LPIPS；`nv_spill` 抑制轮廓外
+   半透明薄雾，`alpha` 向 GT 前景 mask 回归。
+3. **加密（可选）**：`--densify` 打开残差驱动 split/prune（每 `every` 步，
+   每次最多 `count` 个），默认关。
 
 ```bash
-bash densify_train.sh --subject <对象>            # 全流程（需先有修复图）
-bash densify_train.sh --subject <对象> --hard-only
+bash train_avatar.sh --subject <对象>            # 默认不加密
+bash train_avatar.sh --subject <对象> --densify  # 挂上加密
+bash train_avatar.sh --subject <对象> --no-lpips # 快速实验
 ```
 
-## 8. 初始化修复图（`scripts/make_repairs.py`）
+依赖：修复图由 **base** 模型生成（缺省自动生成）；缺 `surface_masks.npz`
+时脚本会自动跑 `scripts/cache_surface_masks.py`。
 
-加密管线需要 `datasets/<对象>/repair/repairs/`。修复图由 **base 模型按目标
-头姿渲染 → SyncFix 修复 → BiRefNet 抠图** 生成，只在初始化阶段用一次：
+## 8. 修复图（`scripts/make_repairs.py`）
+
+`train_avatar.sh` 需要 `datasets/<对象>/repair/repairs/`。修复图由 **base 模型
+按目标头姿渲染 → SyncFix 修复 → BiRefNet 抠图** 生成，只生成一次、训练时按
+batch 比例混入：
 
 ```bash
 # 按训练段 yaw 两个方向的 p90 自动排角度（只做 yaw 扇，不做 pitch）
 python scripts/make_repairs.py --subject <对象> --work-name base \
     --auto --auto-yaw-only \
-    --out output/repairs_yaw --out-dir datasets/<对象>/repair/repairs \
+    --out output/repairs --out-dir datasets/<对象>/repair/repairs \
     --repair-root datasets/<对象>/repair
 ```
 

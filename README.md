@@ -24,9 +24,9 @@ tex 分辨率变化，默认几万级）。每帧由 129 维驱动参数生成�
 对 FLAME 表面外扩 12 px 的半透明外溢（薄雾）做监督，减少侧面和边缘漂浮。
 验证用 PSNR 与覆盖缺口合成的鲁棒指标，平台期早停。
 
-**加密**：先做硬表面初始化（贴 FLAME 面、只求干净覆盖），再把壳合并成统一集合
-做一次训练，由残差驱动的分裂/剪枝补外观与细节。初始化阶段可混入 SyncFix 生成的
-**修复图**，只在没有真实数据的大角度上补一次，之后不再迭代外扩。
+**统一训练**：从 UV 初始化合并成 tex 512 的统一集合，一次训练同时拟合外观与形变。
+可混入 SyncFix 生成的**修复图**（由 `base` 模型渲染、按 batch 比例监督），只在没有
+真实数据的大角度上补一次；**加密**（残差驱动 split/prune）是可开关的挂载项，默认关。
 
 **大角度语义**：数据集里的"转头"是头动、肩胸不动。修复图、showcase、验证和
 前端视角都按**头转**渲染（驱动 FLAME 头姿），而不是绕头心转相机。
@@ -43,14 +43,11 @@ conda activate live3dgs
 ```bash
 bash build_dataset.sh <图像目录> --name <对象>
 bash build_dataset.sh --video videos/<对象> --name <对象>   # 从视频直接构建
-bash train.sh --subject <对象> --work-name base
-# 加密前先生成初始化修复图（SyncFix 路径见 configs/local.yaml）
-python scripts/make_repairs.py --subject <对象> --work-name base \
-  --auto --auto-yaw-only \
-  --out output/repairs_yaw --out-dir datasets/<对象>/repair/repairs \
-  --repair-root datasets/<对象>/repair
-bash densify_train.sh --subject <对象>
-bash eval.sh --subject <对象> --work-name densify
+bash train.sh --subject <对象> --work-name base          # 修复图的来源
+# 修复图（缺省时 train_avatar.sh 会用它自动生成；SyncFix 路径见 configs/local.yaml）
+bash train_avatar.sh --subject <对象>                    # 默认不加密
+bash train_avatar.sh --subject <对象> --densify          # 挂上加密
+bash eval.sh --subject <对象> --work-name avatar
 # 多版本对比：原图 + N 个渲染并排，showcase 为 N 图并列
 bash eval.sh --subject <对象> --work-name base -- \
   --work-names base <版本2> <版本3> <版本4>
@@ -64,7 +61,7 @@ bash run_gui.sh --subject <对象> --work-name base
 | `setup_env.sh` | 创建 conda 环境、编译本地 CUDA 扩展 | `live3dgs` 环境 |
 | `build_dataset.sh` | 跟踪、对齐并烘焙训练数据 | `datasets/<对象>/` |
 | `train.sh` | 基础训练 | `models/<对象>/<版本>/` |
-| `densify_train.sh` | 硬表面初始化 → 加密（两段式） | `models/<对象>/<版本>/` |
+| `train_avatar.sh` | 单阶段头像重建，可选挂加密 | `models/<对象>/<版本>/` |
 | `rgb_train.sh` | RGBAvatar 风格基线（各向同性球、纯 L1、随机背景、无 spill/alpha/修复图/加密） | `models/<对象>/rgb/` |
 | `eval.sh` | 留出集渲染评测 + ±45° 大角度指标（支持 `--work-names` 多版本） | `output/render_test/.../report.json`、`compare.mp4`、`showcase.png` |
 | `run_gui.sh` | 浏览器预览与实时驱动 | 本地 Web 页面 |
@@ -77,9 +74,10 @@ bash run_gui.sh --subject <对象> --work-name base
 bash train.sh --subject <对象> --work-name <版本> --no-spill
 bash train.sh --subject <对象> --work-name <版本> -- --iterations 8000
 
-# 加密管线（硬表面 -> 统一集合加密）
-bash densify_train.sh --subject <对象> --hard-only     # 只到硬表面
-bash densify_train.sh --subject <对象>                 # 全流程
+# 单阶段重建
+bash train_avatar.sh --subject <对象>            # 默认：不加密
+bash train_avatar.sh --subject <对象> --densify  # 挂上加密
+bash train_avatar.sh --subject <对象> --no-lpips # 快速实验
 
 # 评测（默认末尾留出集全部；--frames 可只测前 N 帧）
 bash eval.sh --subject <对象> --work-name <版本> --frames 200

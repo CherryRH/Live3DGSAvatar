@@ -18,6 +18,6 @@ def test_train_sh_is_base_only() -> None:
     p = _run(TRAIN_SH, "--help")
     assert p.returncode == 0
     assert "--post-train" not in p.stdout
-    # 后训练/加密已收敛到 densify_train.sh，train.sh 不再提它
+    # 加密已收敛到 train_avatar.sh，train.sh 不再提它
     assert "post_train.sh" not in p.stdout
-    assert "densify_train.sh" in p.stdout
+    assert "train_avatar.sh" in p.stdout

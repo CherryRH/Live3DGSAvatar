@@ -94,7 +94,7 @@
 
 ```bash
 python scripts/render_test.py --subject bala --dataset bala \
-    --work-names base densify \
+    --work-names base avatar \
     --frame-mode heldout --frames -1
 ```
 

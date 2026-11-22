@@ -7,7 +7,7 @@
   → build_dataset：RDF 跟踪 → FLAME 网格、blend_weight、相机
   → datasets/<对象>/render_inputs.npz + images/ + input/
   → train：GaussianAvatar 参数（model.ply）
-  → densify_train：硬表面初始化 → 统一集合加密（+ 初始化修复图）
+  → train_avatar：单阶段统一集合训练（可选加密、混入修复图）
   → eval：留出集指标 + compare/showcase
   → app：浏览器预览、实时驱动、在线更新
 ```
@@ -78,11 +78,11 @@ src/live3dgsavatar/
 |---|---|
 | `build_dataset.sh` | 跟踪、烘焙数据集 |
 | `train.sh` / `scripts/train.py` | 基础训练 |
-| `densify_train.sh` | 硬表面初始化 → 加密（两段式） |
+| `train_avatar.sh` | 单阶段头像重建，可选挂加密 |
 | `eval.sh` / `scripts/render_test.py` | 留出集评测 |
 | `run_gui.sh` / `app/server.py` | GUI 与推流 |
 | `run_tracking.sh` / `scripts/rdf_bridge.py` | 实时追踪服务 |
-| `scripts/make_repairs.py` | 用 SyncFix 生成初始化修复图（`densify_train.sh` 的前置） |
+| `scripts/make_repairs.py` | 用 SyncFix 生成修复图（由 base 渲染；`train_avatar.sh` 的前置） |
 | `scripts/online_update.py` | 在线外观更新 |
 
 ## 5. 核心接口

@@ -1285,7 +1285,8 @@ def main(argv: list[str] | None = None) -> int:
 
     densify_hook = None
     if args.densify:
-        dcfg = cfg.get("train.pipeline.densify", {}) or {}
+        avatar_cfg = cfg.get("train.pipeline.avatar", {}) or {}
+        dcfg = avatar_cfg.get("densify", {}) or {}
         d_every = int(args.densify_every if args.densify_every is not None
                       else dcfg.get("every", 300))
         d_count = int(args.densify_count if args.densify_count is not None

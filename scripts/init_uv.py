@@ -6,7 +6,7 @@
     <out-dir>/model.ply     —— 零初始化的 UV 绑定高斯（位置/颜色由绑定和训练填）
     <out-dir>/config.yaml   —— 结构配置（tex_size 等）
 
-之后 `densify_train.sh` 的 merge + stage2 可以照常跑，只是初始化没经过
+之后 `train_avatar.sh` 的 merge + 训练可以照常跑，只是初始化没经过
 硬表面训练。用于对照"硬表面阶段到底有没有用"。
 """
 
