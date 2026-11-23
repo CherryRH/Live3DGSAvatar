@@ -73,6 +73,7 @@ BATCH="${AVATAR_BATCH:-${CFG_AVATAR_BATCH:-8}}"
 REPAIR="${AVATAR_REPAIR:-${CFG_AVATAR_REPAIR:-2}}"
 BLEND="${AVATAR_BLEND_START:-${CFG_AVATAR_BLEND_START:-0}}"
 SSIM="${AVATAR_SSIM_WEIGHT:-${CFG_AVATAR_SSIM_WEIGHT:-0.1}}"
+XYZ_LR="${AVATAR_XYZ_LR:-${CFG_AVATAR_XYZ_LR:-0.0002}}"
 # 默认不把 LPIPS 放进损失（保持与其他对照单一变量）；--lpips 才启用
 LPIPS=0
 (( USE_LPIPS )) && LPIPS="${AVATAR_LPIPS_WEIGHT:-${CFG_AVATAR_LPIPS_WEIGHT:-0.01}}"
@@ -99,7 +100,7 @@ run() {
 echo "=============================================================="
 echo "单阶段头像重建：$SUBJECT / $NAME"
 echo "  训练 : $STEPS 步  batch $BATCH  repair $REPAIR  ssim $SSIM  lpips $LPIPS  退火 $SCHEDULE"
-echo "  结构 : tex $TEX  学习率 默认（不单独覆盖）  加密 $([[ "$DENSIFY" == 1 ]] && echo "开（every $EVERY count $COUNT）" || echo "关")"
+echo "  结构 : tex $TEX  xyz_lr $XYZ_LR（盘状初始化配套）  加密 $([[ "$DENSIFY" == 1 ]] && echo "开（every $EVERY count $COUNT）" || echo "关")"
 echo "  产物 : $MODELS/$NAME"
 (( PLAN )) && echo "  --plan : 只打印命令，不执行"
 echo "=============================================================="
@@ -165,7 +166,7 @@ run "${PY_RUN[@]}" scripts/train.py \
   --init-ply "$UNIFIED" --model-config "$UNIFIED_CFG" \
   "${REPAIR_ARGS[@]}" \
   --batch-size "$BATCH" --iterations "$STEPS" \
-  --blend-start "$BLEND" --patience "$PATIENCE" \
+  --blend-start "$BLEND" --hard-xyz-lr "$XYZ_LR" --patience "$PATIENCE" \
   --ssim-weight "$SSIM" --lpips-weight "$LPIPS" --lpips-from "$LPIPS_FROM" \
   --repair-schedule "$SCHEDULE" --repair-final-weight "$FINAL_W" \
   "${DENSIFY_ARGS[@]}" "${FORCE_FLAG[@]}" "${EXTRA[@]}"

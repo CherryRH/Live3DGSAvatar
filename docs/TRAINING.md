@@ -104,9 +104,10 @@ bash train_base.sh --subject <对象> --work-name <版本>
 一次训练完成外观/形变拟合，加密是**可开关的挂载项**（默认关）。只读
 `configs/train.yaml` 的 `train.pipeline.avatar`：
 
-1. **初始化**：`scripts/init_uv.py` 生成未训练的 UV 绑定高斯（各向同性球或
-   盘状由 `configs/model.yaml` 的 `init_scale_*` 决定）；`scripts/merge_layers.py`
-   合并成 tex 512 的统一集合（形变基 K=20 从第 0 步可用）。
+1. **初始化**：`scripts/init_uv.py` 用 `configs/model.yaml` 的**盘状**高斯
+   （2.2 mm 切向 / 0.4 mm 法向）生成 UV 绑定；`scripts/merge_layers.py` 合并成
+   tex 512 的统一集合。盘状高斯配套**较低 xyz lr（2e-4）**：8e-4 的步长与圆片
+   尺寸同量级，容易来回滑出表面。
 2. **训练**（`--stage base`）：真实帧 + 修复图按 `--repair-per-batch` 混批
    （`repair_schedule` 可退火）；LPIPS 默认**不**进损失，需要时加 `--lpips`
    （用于单独的 `avatar_lpips` 对照）；

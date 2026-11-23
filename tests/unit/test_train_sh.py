@@ -18,6 +18,10 @@ def test_train_sh_is_base_only() -> None:
     p = _run(TRAIN_SH, "--help")
     assert p.returncode == 0
     assert "--post-train" not in p.stdout
-    # 加密已收敛到 train_avatar.sh，train_base.sh 不再提它
     assert "post_train" not in p.stdout
-    assert "train_avatar.sh" in p.stdout
+    # base 是"各向同性 + 高 lr + spill/alpha"的 RGBAvatar 风格配方，
+    # 不参与加密/修复图；加密只在 train_avatar.sh 里
+    body = TRAIN_SH.read_text()
+    assert "--densify" not in body
+    assert "model_rgb.yaml" in body
+    assert "repair" not in body

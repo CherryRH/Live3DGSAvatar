@@ -60,7 +60,7 @@ bash run_gui.sh --subject <对象> --work-name base
 |---|---|---|
 | `setup_env.sh` | 创建 conda 环境、编译本地 CUDA 扩展 | `live3dgs` 环境 |
 | `build_dataset.sh` | 跟踪、对齐并烘焙训练数据 | `datasets/<对象>/` |
-| `train_base.sh` | 基础训练 | `models/<对象>/<版本>/` |
+| `train_base.sh` | 基础模型（各向同性初始化 + 高 lr + spill/alpha，修复图来源） | `models/<对象>/base/` |
 | `train_avatar.sh` | 单阶段头像重建，可选挂加密 | `models/<对象>/<版本>/` |
 | `train_rgb.sh` | RGBAvatar 风格参照（各向同性球、L1+SSIM 0.1、黑底、无 spill/alpha/修复图） | `models/<对象>/rgb/` |
 | `eval.sh` | 留出集渲染评测 + ±45° 大角度指标（支持 `--work-names` 多版本） | `output/render_test/.../report.json`、`compare.mp4`、`showcase.png` |
