@@ -20,21 +20,26 @@
 tex 分辨率变化，默认几万级）。每帧由 129 维驱动参数生成切空间变换，再绑定回
 世界空间；高斯属性包括位置、旋转、尺度、不透明度和 SH DC 颜色。
 
-**两组配方，组内单变量**：
+**两组配方**（组内只差一个变量，便于归因）：
 
-- `base` / `rgb`：**各向同性球**初始化 + 高 xyz 学习率（8e-4）；两者只差
-  `base` 多了 `nv_spill` 与 `alpha` 监督；
-- `avatar`：**盘状**初始化（2.2 mm / 0.4 mm）+ 低 xyz 学习率（2e-4），并混入
-  SyncFix 生成的**修复图**；`avatar` 与 `avatar_norep` 只差修复图开关。
+| | `rgb`（参照） | `base` | `avatar` |
+|---|---|---|---|
+| 初始化 | 各向同性球（0.8 mm） | 各向同性球（0.8 mm） | 盘状（2.2 / 0.4 mm） |
+| 集合 | UV tex 256 直接绑定 | UV tex 256 直接绑定 | 合并 tex 512 统一集合 |
+| xyz 学习率 | 8e-4 | 8e-4 | 2e-4 |
+| 损失 | L1 + SSIM 0.1 | L1 + SSIM 0.1 | L1 + SSIM 0.1 |
+| 额外监督 | — | `nv_spill` 0.05 + `alpha` 0.2 | `nv_spill` 0.05 + `alpha` 0.2 |
+| 训练数据 | 真实帧 | 真实帧 | 真实帧 + **修复图 2 张/批**（默认退火：前 50% 步 2 张，之后 1 张） |
+| 背景 | 黑底 | 黑底 | 黑底 |
+| 加密 | — | — | 可选（默认关） |
+| 步数/早停/选模 | 10k / patience 4 / 组合分 | 同左 | 同左 |
 
-训练统一为 L1 + SSIM 0.1，黑底，10k 步上限、每 500 步验证、组合分选模、
-patience 4 早停；LPIPS 默认不进损失（`--lpips` 可选）。
+训练统一为 L1 + SSIM 0.1、黑底、10k 步上限、每 500 步验证、组合分
+（`PSNR + 50·SSIM + 50·(1−LPIPS)`）选模、patience 4 早停；LPIPS 默认不进损失
+（`--lpips` 可选）。`avatar_norep` 是 `avatar` 关掉修复图的对照。
 
-**修复图**：由 `base` 模型按目标头姿渲染 → SyncFix 修复 → 背景色键控抠图；
-每批 8 张里 **6 张真实帧 + 2 张修复图**，并在训练前 50% 步之后减半为 1 张
-（`repair_schedule: ratio`，默认开）。参考图**默认至少 3 张**（基帧 + 左右真实帧），
-保证 SyncFix 有中/左/右身份参考。**加密**（残差驱动 split/prune）是可开关的
-挂载项，默认关。
+**修复图**：由 `base` 模型按目标头姿渲染 → SyncFix 修复 → 背景色键控抠图
+（另有两道有效性检查：FLAME 头部区最大连通缺口、渲染轮廓外新增内容）。
 
 **大角度语义**：数据集里的"转头"是头动、肩胸不动。修复图、showcase、验证和
 前端视角都按**头转**渲染（驱动 FLAME 头姿），而不是绕头心转相机。
@@ -44,6 +49,29 @@ patience 4 早停；LPIPS 默认不进损失（`--lpips` 可选）。
 ```bash
 bash setup_env.sh
 conda activate live3dgs
+```
+
+## SyncFix 配置
+
+修复图由仓库外的 [SyncFix](https://syncfix.github.io/) 生成：它需要**单独的
+conda 环境**和官方权重，不在本仓库里。三处路径在 `configs/local.yaml` 配置：
+
+```yaml
+syncfix:
+  repo: /path/to/SyncFix          # SyncFix 仓库根目录（含 inference.py）
+  python: syncfix                 # 跑 SyncFix 的 conda 环境名
+  model: /path/to/SyncFix/models/paper   # 官方权重目录
+```
+
+`train_avatar.sh` 在缺修复图时会自动调用 `scripts/make_repairs.py`
+（内部通过 `scripts/syncfix_label.py` 启动 `syncfix` 环境的 `inference.py`）。
+`make_repairs` 的角度/参考图/破洞阈值等参数都在 `configs/train.yaml` 的
+`train.pipeline.repair`，命令行只留对象与输出路径：
+
+```bash
+python scripts/make_repairs.py --subject <对象> --work-name base --auto \
+  --out output/repair/<对象> --out-dir datasets/<对象>/repair/repairs \
+  --repair-root datasets/<对象>/repair
 ```
 
 ## 快速开始
@@ -149,7 +177,9 @@ node web/tests/all.mjs
 
 ## 致谢
 
-渲染管线参考 [RGBAvatar](https://github.com/gapszju/RGBAvatar)，并使用
+渲染管线参考 [RGBAvatar](https://github.com/gapszju/RGBAvatar)，
+修复图使用 [SyncFix](https://syncfix.github.io/)
+（*Fixing 3D Reconstructions via Multi-View Synchronization*），并使用
 [3D Gaussian Splatting](https://github.com/graphdeco-inria/gaussian-splatting)、
 [fused-ssim](https://github.com/rahul-goel/fused-ssim)、
 [nvdiffrast](https://github.com/NVlabs/nvdiffrast) 等开源工作。
