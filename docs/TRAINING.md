@@ -108,8 +108,10 @@ bash train_base.sh --subject <对象> --work-name <版本>
    （2.2 mm 切向 / 0.4 mm 法向）生成 UV 绑定；`scripts/merge_layers.py` 合并成
    tex 512 的统一集合。盘状高斯配套**较低 xyz lr（2e-4）**：8e-4 的步长与圆片
    尺寸同量级，容易来回滑出表面。
-2. **训练**（`--stage base`）：真实帧 + 修复图按 `--repair-per-batch` 混批
-   （`repair_schedule` 可退火）；LPIPS 默认**不**进损失，需要时加 `--lpips`
+2. **训练**（`--stage base`）：真实帧 + 修复图按 `--repair-per-batch` 混批；
+   `repair_schedule: ratio` 时按**训练步数预算**退火——前 50% 步用 2 张/批，
+   之后 1 张/批（`t = 已执行批数 / 步数上限`，与早停无关）；
+   LPIPS 默认**不**进损失，需要时加 `--lpips`
    （用于单独的 `avatar_lpips` 对照）；
    L1 + SSIM +（默认）第 `lpips_from` 步起的 LPIPS；`nv_spill` 抑制轮廓外
    半透明薄雾，`alpha` 向 GT 前景 mask 回归。
