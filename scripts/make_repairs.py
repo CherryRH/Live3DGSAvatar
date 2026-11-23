@@ -79,7 +79,8 @@ def parse_args(argv=None):
     args.edge_shrink = int(rcfg.get("edge_shrink", 1))
     args.no_inpaint = not bool(rcfg.get("inpaint", True))
     args.syncfix_batch = int(rcfg.get("syncfix_batch", 4))
-    args.ref_size = int(rcfg.get("ref_size", 3))
+    args.ref_size = max(int(rcfg.get("ref_size", 3)),
+                        max(3, int(rcfg.get("refs_auto", 3))))
     args.sharpen = float(rcfg.get("sharpen", 0.35))
     args.syncfix_repo = Path(str(sxf.get("repo", "/home/test/Projects/SyncFix")))
     args.syncfix_python = str(sxf.get("python", "syncfix"))
@@ -441,24 +442,43 @@ def main(argv=None) -> int:
         Image.fromarray(amask).save(alpha_dir / f"{label}.png")
         print(f"  {label}  (yaw {yaw:+.1f}°, pitch {pitch:+.1f}°)")
 
-    # 参考图：优先用真实的正面/侧面照；没有就退回基帧原图
+    # 参考图：至少 3 张（中/左/右），refs_auto 更大时继续加
     if not args.dry_run:
+        from live3dgsavatar.data.pose import head_yaw
+
         refs_src = args.refs or (data_dir / "repair" / "refs")
         copied = 0
         if Path(refs_src).is_dir():
             for p in sorted(Path(refs_src).glob("*.png")):
                 shutil.copyfile(p, refs_dir / p.name)
                 copied += 1
-        if args.refs_auto > 0:
-            from live3dgsavatar.data.pose import head_yaw
+        target_refs = max(3, int(args.refs_auto))
+        test_ratio = float(cfg.get("train.pipeline.test_ratio", 0.3))
+
+        def _save_ref(frame_idx: int, name: str) -> None:
+            arr = np.asarray(Image.open(data_dir / "images" / f"{frame_idx:05d}.png")
+                             .convert("RGBA"))
+            rgb = arr[..., :3].astype(np.float32)
+            rgb[arr[..., 3] <= 127] = float(args.view_bg) * 255.0
+            Image.fromarray(rgb.astype(np.uint8)).save(refs_dir / name)
+
+        # 中：基帧（始终作为身份参考）
+        base_ref = refs_dir / f"base_{base_idx:05d}.png"
+        if not base_ref.is_file() and copied < target_refs:
+            _save_ref(base_idx, base_ref.name)
+            copied += 1
+
+        # 左/右（及更多）：按目标 |yaw| 从真实帧里挑，左右交替
+        picked: list[int] = []
+        if copied < target_refs:
             yaw_all = np.abs(head_yaw(np.asarray(
                 np.load(data_dir / "render_inputs.npz",
                         allow_pickle=True)["blend_weight"], dtype=np.float32)))
-            train_end = int(len(yaw_all) * (1.0 - 0.3))
-            targets = [0.0, 20.0, 35.0, 50.0]
-            picked = []
+            train_end = int(len(yaw_all) * (1.0 - test_ratio))
+            targets = [20.0, -20.0, 35.0, -35.0, 50.0, -50.0,
+                       0.0, 65.0, -65.0, 80.0, -80.0]
             for target in targets:
-                if len(picked) >= int(args.refs_auto):
+                if copied >= target_refs:
                     break
                 cand = np.abs(yaw_all[:train_end] - target)
                 for idx in np.argsort(cand)[:8]:
@@ -466,30 +486,17 @@ def main(argv=None) -> int:
                     if idx == base_idx or idx in picked:
                         continue
                     picked.append(idx)
+                    _save_ref(idx, f"auto_{idx:05d}.png")
+                    copied += 1
                     break
-            for idx in picked:
-                arr = np.asarray(Image.open(data_dir / "images" / f"{idx:05d}.png")
-                                 .convert("RGBA"))
-                rgb = arr[..., :3].astype(np.float32)
-                fg = arr[..., 3] > 127
-                rgb[~fg] = float(args.view_bg) * 255.0
-                Image.fromarray(rgb.astype(np.uint8)).save(
-                    refs_dir / f"auto_{idx:05d}.png")
-                copied += 1
-            print(f"  参考图 : 追加 {len(picked)} 张真实帧 "
-                  f"{['%05d' % i for i in picked]}")
-        if copied == 0:
-            raw = np.asarray(Image.open(data_dir / "images" / f"{base_idx:05d}.png")
-                             .convert("RGBA"))
-            rgb = raw[..., :3].copy()
-            rgb[raw[..., 3] <= 127] = float(args.view_bg) * 255.0
-            Image.fromarray(rgb).save(refs_dir / f"{base_idx:05d}.png")
-            copied = 1
+            if picked:
+                print(f"  参考图 : 追加 {len(picked)} 张真实帧 "
+                      f"{['%05d' % i for i in picked]}")
+        print(f"  参考图 : {copied} 张（目标 ≥{target_refs}）-> {refs_dir}")
         (out / "selected.json").write_text(json.dumps({
             "subject": subject, "model": str(ply), "base_frame": base_idx,
             "yaws": yaws, "views": labels, "refs": copied,
         }, indent=2, ensure_ascii=False), encoding="utf-8")
-        print(f"  参考图 : {copied} 张 -> {refs_dir}")
         print(f"  输出   : {views_dir}")
 
         # ---- SyncFix 修复：按**角度从里往外**分批；某一侧一旦出现破洞就整侧停 ----

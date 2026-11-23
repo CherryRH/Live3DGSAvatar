@@ -29,9 +29,10 @@ train:
       auto_extrapolate: 90
       yaw_only: true
       step: 5
-      # 渲染/参考图：灰底更接近照片；自动补 N 张真实中角度帧当参考
+      # 渲染/参考图：灰底更接近照片；参考图**至少 3 张**（基帧作中心/身份参考，
+      # 左右各一张近 ±20° 的真实帧）；refs_auto 更大时继续加，ref_size 自动跟随
       view_bg: 0.8
-      refs_auto: 2
+      refs_auto: 3
       # 有效性：FLAME 头部区最大连通缺口 > max_hole_px 判定破洞，整侧封顶
       max_hole_px: 3000
       # 修复图在"渲染轮廓之外"凭空造出的像素上限（SyncFix 幻觉，如双侧耳朵）

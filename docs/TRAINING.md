@@ -141,6 +141,10 @@ python scripts/make_repairs.py --subject <对象> --work-name base \
     --repair-root datasets/<对象>/repair
 ```
 
+参考图**至少 3 张**：基帧（中心/身份）+ 左右各一张接近 ±20° 的真实帧；
+`repair.refs_auto` 更大时继续按 ±35°/±50° 往两边加，`ref_size` 会自动跟随，
+保证 SyncFix 不会只吃一张正面参考。
+
 `--repair-root` 会一并写出 `views/ refs/ masks/ repairs/ manifest.json`。
 
 **背景键控代替 matting**：修复图渲染在已知灰底上，`repair.mask: key`（默认）
