@@ -19,5 +19,5 @@ def test_train_sh_is_base_only() -> None:
     assert p.returncode == 0
     assert "--post-train" not in p.stdout
     # 加密已收敛到 train_avatar.sh，train_base.sh 不再提它
-    assert "post_train_base.sh" not in p.stdout
+    assert "post_train" not in p.stdout
     assert "train_avatar.sh" in p.stdout

@@ -855,7 +855,7 @@ LEGACY_FREE_ENTRIES = (
     "scripts/init_free_layer.py",
     "scripts/init_free_residual.py",
     "scripts/edit_free_layer.py",
-    "layered_train_base.sh",
+    "layered_train.sh",
 )
 
 

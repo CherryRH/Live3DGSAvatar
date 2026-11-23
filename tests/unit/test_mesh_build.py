@@ -122,28 +122,30 @@ def test_teeth_follow_the_lips() -> None:
         "牙齿没有跟随嘴唇平移")
 
 
-def test_teeth_error_against_ground_truth_is_within_known_bound() -> None:
-    """与真值比较（需要先跑过 `scripts/rdf_dump.py`）。
+def test_teeth_are_reproducible_from_the_baked_mesh() -> None:
+    """同一份烘焙数据里，用前 5023 个顶点重建牙齿应与烘焙结果一致。
 
-    已知误差约 7 mm，来源是"我们的模板与 RDF 的 identity 不同" ——
-    这是 shape 差异，刚体/相似变换都吸收不了（两种都试过，均未改善）。
-    上界写得宽松，只用于捕捉**实现退化**，不用于追求精度。
+    旧版本拿 `crh_2` 的 RDF 导出当真值；但数据集现在默认**不保留**
+    `rdf_tracking.npz`，这条真值来源已不存在（测试因此永久跳过）。
+    改为自洽回归：烘焙文件里的前 5023 个顶点就是当时 `teeth.build` 的
+    输入，用同一 builder 重建出的 60 个牙齿必须与烘焙结果逐点吻合。
+    它抓不到"烘焙时就错了"，但能捕捉 TeethBuilder 的任何实现退化。
+
+    阈值取 0.1 mm（远小于牙齿尺度）：实测误差为 0.0000 mm。
     """
-    cfg = load_config()
-    rdf_path = Path(str(cfg.paths.output_dir)) / "rdf" / "crh_2.npz"
-    data = Path(str(cfg.paths.data_root)) / "crh_2" / "render_inputs.npz"
-    if not rdf_path.exists() or not data.exists():
-        pytest.skip("缺少 RDF 导出或数据集真值（先跑 scripts/rdf_dump.py）")
+    data = Path(str(load_config().paths.data_root)) / "bala" / "render_inputs.npz"
+    if not data.is_file():
+        pytest.skip("缺少 datasets/bala/render_inputs.npz（数据集不入库）")
 
     tb = _builder()
-    rdf = np.load(rdf_path)
-    gt = np.load(data)
-    n = min(50, int(rdf["verts"].shape[0]), int(gt["mesh"].shape[0]))
+    with np.load(data) as d:
+        mesh = np.asarray(d["mesh"], np.float64)
+    n = min(20, int(mesh.shape[0]))
 
-    base = torch.from_numpy(np.asarray(rdf["verts"], np.float64)[:n])
-    gt_teeth = torch.from_numpy(np.asarray(gt["mesh"], np.float64)[:n, MB.NUM_BASE_VERTS:])
+    base = torch.from_numpy(np.ascontiguousarray(mesh[:n, :MB.NUM_BASE_VERTS]))
+    baked = torch.from_numpy(np.ascontiguousarray(mesh[:n, MB.NUM_BASE_VERTS:]))
 
     out = tb.build(base)
-    err = (out[:, MB.NUM_BASE_VERTS:] - gt_teeth).norm(dim=-1)
+    err = (out[:, MB.NUM_BASE_VERTS:] - baked).norm(dim=-1)
     mean_mm = float(err.mean()) * 1000.0
-    assert mean_mm < 12.0, f"牙齿平均误差 {mean_mm:.1f} mm，超过已知上界 12 mm"
+    assert mean_mm < 0.1, f"牙齿平均误差 {mean_mm:.3f} mm，超过 0.1 mm"

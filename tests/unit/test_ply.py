@@ -181,14 +181,26 @@ def test_read_embedded_config_roundtrip(tmp_path) -> None:
 
 
 def test_read_embedded_config_returns_none_without_comment(tmp_path) -> None:
-    """参照实现写出的文件没有这条注释，必须返回 None 让调用方回退。"""
+    """参照实现写出的 PLY 没有这条注释，必须返回 None 让调用方回退。
+
+    用合成的最小 PLY，而不是依赖本机 `models/` 里的参照模型：
+    这条测试只关心"没有注释时返回 None"，和具体模型无关。
+    """
     from live3dgsavatar.core.io.ply import read_embedded_config
 
-    real = REPO_ROOT / "models" / "crh_1" / "test" / "model.ply"
-    if real.is_file():
-        assert read_embedded_config(real) is None
-    else:
-        pytest.skip("仓库里没有参照实现写出的模型")
+    path = tmp_path / "reference.ply"
+    path.write_text(
+        "ply\n"
+        "format ascii 1.0\n"
+        "element vertex 1\n"
+        "property float x\n"
+        "property float y\n"
+        "property float z\n"
+        "end_header\n"
+        "0 0 0\n",
+        encoding="ascii")
+
+    assert read_embedded_config(path) is None
 
 
 # ------------------------------------------------------- 统一集合分裂/剪枝 --

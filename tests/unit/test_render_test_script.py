@@ -182,9 +182,10 @@ def test_two_datasets_load_independently() -> None:
     from live3dgsavatar.data.scene import load_scene
 
     root = REPO_ROOT / "datasets"
-    a, b = root / "crh_1", root / "crh_2"
+    # `crh_2` 已随数据集整理移除；用现存的两个不同帧数的对象。
+    a, b = root / "crh_1", root / "crh_new"
     if not (a.is_dir() and b.is_dir()):
-        pytest.skip("缺少仓库内数据集")
+        pytest.skip("缺少仓库内数据集（crh_1 / crh_new）")
 
     cfg = load_config()
     cfg.set("subject", "crh_1")          # 故意固定 subject

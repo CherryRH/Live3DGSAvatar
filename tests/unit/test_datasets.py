@@ -125,7 +125,7 @@ def test_real_datasets_are_discoverable() -> None:
     if not infos:
         pytest.skip("data_root 下没有数据集可用")
 
-    for name in ("crh_1", "crh_2"):
+    for name in ("crh_1", "crh_new"):
         if name not in infos:
             continue
         info = infos[name]

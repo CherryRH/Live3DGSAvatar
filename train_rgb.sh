@@ -34,13 +34,13 @@ done
 [[ -n "$SUBJECT" ]] || { echo "[error] 需要 --subject" >&2; exit 2; }
 
 info() { echo "[rgb] $*"; }
-info "RGBAvatar 基线：$SUBJECT/$WORK（各向同性球、L1+SSIM、无 spill/alpha/修复图）"
+info "RGBAvatar 基线：$SUBJECT/$WORK（各向同性球、L1+SSIM 0.1、黑底、无 spill/alpha/修复图）"
 
 "${PY_RUN[@]}" scripts/train.py \
   --subject "$SUBJECT" --work-name "$WORK" --stage base \
   --model-config configs/model_rgb.yaml \
   --iterations 10000 --batch-size 8 --blend-start 0 \
-  --ssim-weight 0.2 --lpips-weight 0 --alpha-weight 0 \
+  --ssim-weight 0.1 --lpips-weight 0 --alpha-weight 0 \
   --nv-spill-weight 0 --nv-hole-weight 0 \
   --patience 4 --min-delta 0.05 --eval-every 500 \
   $( (( FORCE )) && echo "--force" ) "${PASSTHRU[@]}"

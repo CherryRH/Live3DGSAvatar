@@ -74,7 +74,7 @@ LIVE3DGS_OUTPUT_DIR
 | `scene_extent` | `1.0` | 位置类学习率尺度 |
 | `test_ratio` | `0.3` | 末尾留出比例 |
 | `mask_weight` | `1.0` | 背景/前景权重 |
-| `ssim_weight` | `0.05` | SSIM 相对 L1 权重 |
+| `ssim_weight` | `0.1` | SSIM 相对 L1 权重 |
 | `lpips_weight` | `0.0` | LPIPS 权重 |
 | `lpips_from` | `20000` | 从第几步启用 LPIPS |
 | `eval_every` | `500` | 验证间隔 |
@@ -105,8 +105,7 @@ LIVE3DGS_OUTPUT_DIR
 | `repair_schedule` | `none` | 退火：`none`/`linear`/`cosine`（衰减权重）/`ratio`（2/8→1/8→0） |
 | `repair_final_weight` | `0.2` | `linear`/`cosine` 结束时的修复图权重 |
 | `blend_start` | `0` | 形变基启用步（0 = 立即） |
-| `ssim_weight` / `lpips_weight` / `lpips_from` | `0.1` / `0.01` / `3000` | 感知项与 LPIPS 启用步 |
-| `xyz_lr` | `0.0002` | 位置学习率 |
+| `ssim_weight` / `lpips_weight` / `lpips_from` | `0.1` / `0.01` / `3000` | 感知项；LPIPS 只在 `--lpips` 时启用 |
 | `tex_size` | `512` | 统一集合的 UV 纹理边长 |
 | `patience` | `4` | 早停耐心 |
 | `densify.*` | 见下 | 加密挂载项（默认关） |
