@@ -1,7 +1,7 @@
 # Live3DGSAvatar
 
 面向视频通话的 3DGS 头部重建：从单目视频 / RDF 跟踪结果训练可驱动高斯头像，
-支持加密、留出集评测、浏览器预览和实时驱动。
+支持留出集评测、大角度头转指标、可选加密、浏览器预览和实时驱动。
 
 | 模块 | 职责 |
 |---|---|
@@ -20,13 +20,21 @@
 tex 分辨率变化，默认几万级）。每帧由 129 维驱动参数生成切空间变换，再绑定回
 世界空间；高斯属性包括位置、旋转、尺度、不透明度和 SH DC 颜色。
 
-**基础训练**：真实帧重建 L1，可加 SSIM/LPIPS；每 4 步采一个 ±10–50° 新视角，
-对 FLAME 表面外扩 12 px 的半透明外溢（薄雾）做监督，减少侧面和边缘漂浮。
-验证用 PSNR 与覆盖缺口合成的鲁棒指标，平台期早停。
+**两组配方，组内单变量**：
 
-**统一训练**：从 UV 初始化合并成 tex 512 的统一集合，一次训练同时拟合外观与形变。
-可混入 SyncFix 生成的**修复图**（由 `base` 模型渲染、按 batch 比例监督），只在没有
-真实数据的大角度上补一次；**加密**（残差驱动 split/prune）是可开关的挂载项，默认关。
+- `base` / `rgb`：**各向同性球**初始化 + 高 xyz 学习率（8e-4）；两者只差
+  `base` 多了 `nv_spill` 与 `alpha` 监督；
+- `avatar`：**盘状**初始化（2.2 mm / 0.4 mm）+ 低 xyz 学习率（2e-4），并混入
+  SyncFix 生成的**修复图**；`avatar` 与 `avatar_norep` 只差修复图开关。
+
+训练统一为 L1 + SSIM 0.1，黑底，10k 步上限、每 500 步验证、组合分选模、
+patience 4 早停；LPIPS 默认不进损失（`--lpips` 可选）。
+
+**修复图**：由 `base` 模型按目标头姿渲染 → SyncFix 修复 → 背景色键控抠图；
+每批 8 张里 **6 张真实帧 + 2 张修复图**，并在训练前 50% 步之后减半为 1 张
+（`repair_schedule: ratio`，默认开）。参考图**默认至少 3 张**（基帧 + 左右真实帧），
+保证 SyncFix 有中/左/右身份参考。**加密**（残差驱动 split/prune）是可开关的
+挂载项，默认关。
 
 **大角度语义**：数据集里的"转头"是头动、肩胸不动。修复图、showcase、验证和
 前端视角都按**头转**渲染（驱动 FLAME 头姿），而不是绕头心转相机。
@@ -44,8 +52,9 @@ conda activate live3dgs
 bash build_dataset.sh <图像目录> --name <对象>
 bash build_dataset.sh --video videos/<对象> --name <对象>   # 从视频直接构建
 bash train_base.sh --subject <对象>                    # 修复图的来源（work-name 默认 base）
-# 修复图（缺省时 train_avatar.sh 会用它自动生成；SyncFix 路径见 configs/local.yaml）
-bash train_avatar.sh --subject <对象>                    # 默认不加密
+bash train_rgb.sh --subject <对象>                     # RGBAvatar 风格参照（work-name 默认 rgb）
+# 修复图（缺省时 train_avatar.sh 会用 base 自动生成；SyncFix 路径见 configs/local.yaml）
+bash train_avatar.sh --subject <对象>                    # 盘状 + 修复图 + 退火，默认不加密
 bash train_avatar.sh --subject <对象> --densify          # 挂上加密
 bash eval.sh --subject <对象> --work-name avatar
 # 多版本对比：原图 + N 个渲染并排，showcase 为 N 图并列
@@ -61,7 +70,7 @@ bash run_gui.sh --subject <对象> --work-name base
 | `setup_env.sh` | 创建 conda 环境、编译本地 CUDA 扩展 | `live3dgs` 环境 |
 | `build_dataset.sh` | 跟踪、对齐并烘焙训练数据 | `datasets/<对象>/` |
 | `train_base.sh` | 基础模型（各向同性初始化 + 高 lr + spill/alpha，修复图来源） | `models/<对象>/base/` |
-| `train_avatar.sh` | 单阶段头像重建，可选挂加密 | `models/<对象>/<版本>/` |
+| `train_avatar.sh` | 盘状初始化 + 低 lr + 修复图（默认退火 2/8→1/8），可选挂加密 | `models/<对象>/<版本>/` |
 | `train_rgb.sh` | RGBAvatar 风格参照（各向同性球、L1+SSIM 0.1、黑底、无 spill/alpha/修复图） | `models/<对象>/rgb/` |
 | `eval.sh` | 留出集渲染评测 + ±45° 大角度指标（支持 `--work-names` 多版本） | `output/render_test/.../report.json`、`compare.mp4`、`showcase.png` |
 | `run_gui.sh` | 浏览器预览与实时驱动 | 本地 Web 页面 |
@@ -70,14 +79,15 @@ bash run_gui.sh --subject <对象> --work-name base
 常用参数：
 
 ```bash
-# 训练
-bash train_base.sh --subject <对象> --work-name <版本> --no-spill
-bash train_base.sh --subject <对象> --work-name <版本> -- --iterations 8000
+# 训练（三个入口共用 10k 上限 / patience 4 / 组合分选模）
+bash train_base.sh --subject <对象> -- --iterations 8000
+bash train_base.sh --subject <对象> --work-name <版本> -- --no-spill
 
-# 单阶段重建
-bash train_avatar.sh --subject <对象>            # 默认：不加密
+# 头像重建
+bash train_avatar.sh --subject <对象>            # 默认：修复图 + 退火，不加密
 bash train_avatar.sh --subject <对象> --densify  # 挂上加密
-bash train_avatar.sh --subject <对象> --no-lpips # 快速实验
+bash train_avatar.sh --subject <对象> --lpips    # 额外开 LPIPS（更慢）
+bash train_avatar.sh --subject <对象> --no-repairs   # 无修复图对照
 
 # 评测（默认末尾留出集全部；--frames 可只测前 N 帧）
 bash eval.sh --subject <对象> --work-name <版本> --frames 200
@@ -93,7 +103,7 @@ output/
   compare_defects/<对象>/<版本>/  与基线的缺陷对比
   analyze/<对象>/<版本>/          解剖与统计
   online_update/<实验名>/        在线更新状态与对比图
-  repairs_base_5deg/              修复图生成的中间产物（可删）
+  repair/<对象>/                  修复图生成的中间产物（views/syncfix/matte/final，可删）
   cache/                          可重建缓存（FLAME 拓扑等）
 models/<对象>/<版本>/            最终 model.ply + config.yaml + report.json
 ```
@@ -107,7 +117,7 @@ models/<对象>/<版本>/            最终 model.ply + config.yaml + report.jso
 
 - 路径/设备：`configs/system.yaml`
 - 渲染/模型结构：`configs/render.yaml`
-- 训练/后训练/在线更新：`configs/train.yaml`
+- 训练/修复图/在线更新：`configs/train.yaml`
 - 本地覆盖：`configs/local.yaml`
 
 ## 目录

@@ -63,7 +63,7 @@ train:
       # 每批混入的修复图张数（0 = 不用修复图）
       repair: 2
       # 修复图退火：none / linear / cosine（衰减样本权重）/ ratio（后段减半 2/8→1/8）
-      repair_schedule: none
+      repair_schedule: ratio
       repair_final_weight: 0.2
       blend_start: 0
       ssim_weight: 0.1
