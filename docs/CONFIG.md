@@ -102,7 +102,7 @@ LIVE3DGS_OUTPUT_DIR
 |---|---|---|
 | `steps` / `batch` | `10000` / `8` | 步数上限 / 批大小 |
 | `repair` | `2` | 每批混入的修复图张数（0 = 关） |
-| `repair_schedule` | `none` | 退火：`none`/`linear`/`cosine`（衰减权重）/`ratio`（2/8→1/8→0） |
+| `repair_schedule` | `none` | 退火：`none`/`linear`/`cosine`（衰减权重）/`ratio`（2/8→1/8） |
 | `repair_final_weight` | `0.2` | `linear`/`cosine` 结束时的修复图权重 |
 | `blend_start` | `0` | 形变基启用步（0 = 立即） |
 | `ssim_weight` / `lpips_weight` / `lpips_from` | `0.1` / `0.01` / `3000` | 感知项；LPIPS 只在 `--lpips` 时启用 |

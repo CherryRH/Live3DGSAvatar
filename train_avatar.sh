@@ -4,7 +4,7 @@
 # 流程：
 #   1) 初始化：UV 绑定高斯（各向同性球/盘状由 configs/model.yaml 决定）
 #      → 合并成 tex 512 的统一集合（形变基 K=20 一开始就可用）
-#   2) 训练：真实帧 + 修复图（2:8）混批；L1 + SSIM + （可选）LPIPS；
+#   2) 训练：每批 8 张 = 6 张真实帧 + 2 张修复图；L1 + SSIM + （可选）LPIPS；
 #      可选挂载加密（残差驱动 split）
 #
 # 修复图来自 **base** 模型（先 bash train_base.sh --subject <对象> --work-name base）。
