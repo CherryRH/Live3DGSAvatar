@@ -53,44 +53,8 @@ train:
       ref_size: 3
       sharpen: 0.35
 
-    # 单阶段头像重建：UV 初始化 → tex 512 统一集合 → 训练。
-    # 修复图（由 base 生成）按 batch 混入；加密是可开关的挂载项（默认关）。
-    # 入口：bash train_avatar.sh --subject <对象> [--densify]
-    avatar:
-      # 步数是上限；正常 3000~6000 步内收敛（早停 patience 4）
-      steps: 10000
-      batch: 8
-      # 每批混入的修复图张数（0 = 不用修复图）
-      repair: 2
-      # 修复图退火：none / linear / cosine（衰减样本权重）/ ratio（后段减半 2/8→1/8）
-      repair_schedule: ratio
-      repair_final_weight: 0.2
-      blend_start: 0
-      ssim_weight: 0.1
-      # LPIPS 低权重、后段启用（每步慢 4~5 倍）
-      lpips_weight: 0.01
-      lpips_from: 5000
-      # xyz 用 2e-4：发丝/轮廓靠位置微调补
-      xyz_lr: 0.0002
-      tex_size: 512
-      # 选模型用组合分（PSNR+50·SSIM+50·(1−LPIPS)）；评估只抽 240 帧，
-      # 组合分会抖，patience 2 会提前停在 4500 附近
-      patience: 4
-      # ---- 加密（默认关；--densify 打开）----
-      densify:
-        every: 300
-        count: 900
-        max_gaussians: 200000
-        prune_opacity: 0.01
-        # 分裂副本沿自身尺度的位移（1σ）；0 = 原地复制（会与父高斯重合）
-        split_jitter: 0.8
-        # 选点权重：大角度覆盖缺口 vs 颜色残差（0=纯颜色）
-        split_hole_weight: 0.0
-        # 分裂方向：quad=切平面 4 方向轮转，random=随机
-        split_pattern: random
-        # 分裂方式：copy=父不动+追加副本；subdivide=父换成两个子高斯
-        split_mode: copy
-        split_scale: 0.7
+    # 三个配方（rgb/base/avatar）各自的特有参数在 configs/train_<配方>.yaml；
+    # 这里只保留三入口共用的训练参数。
     iterations: 10000
     batch_size: 10
     # 前 N 步不启用形变基（先用模板网格拟合静态外观）

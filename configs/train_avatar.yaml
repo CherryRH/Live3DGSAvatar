@@ -1,0 +1,19 @@
+# avatar 配方：盘状初始化 + 低 lr + 修复图（默认 ratio 退火）+ 可选加密。
+recipe: avatar
+model_config: configs/model.yaml
+xyz_lr: 0.0002
+ssim_weight: 0.1
+lpips_weight: 0.0        # --lpips 时启用
+lpips_from: 5000
+spill_weight: 0.05
+alpha_weight: 0.2
+repair: 2
+repair_schedule: ratio
+repair_final_weight: 0.2
+merge_tex: 512
+densify:
+  every: 300
+  count: 900
+  max_gaussians: 200000
+  prune_opacity: 0.01
+  split_jitter: 0.8

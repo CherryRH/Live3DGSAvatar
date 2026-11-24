@@ -1,0 +1,21 @@
+# 本机配置模板：复制为 configs/local.yaml 后按本机修改（local.yaml 不入库）。
+# 只放"跟机器相关"的项；训练/渲染参数在 system.yaml / render.yaml / train*.yaml。
+paths:
+  data_root: datasets
+  output_dir: output
+  models_dir: models
+  # FLAME 模型目录（含 generic_model.pkl 或 flame2023.pkl）；null = 用默认查找
+  flame_dir: null
+syncfix:
+  # 仓库外的 SyncFix（独立 conda 环境 + 官方权重）
+  repo: /path/to/SyncFix
+  python: syncfix
+  model: /path/to/SyncFix/models/paper
+runtime:
+  device: cuda
+app:
+  host: localhost
+  port: 8000
+tracking:
+  host: 127.0.0.1
+  port: 8980

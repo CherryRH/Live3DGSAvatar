@@ -37,14 +37,18 @@ done
 [[ -n "$SUBJECT" ]] || { echo "[error] 需要 --subject" >&2; exit 2; }
 
 info() { echo "[rgb] $*"; }
+eval "$(conda run -n "$MAIN_ENV" --no-capture-output python scripts/show_recipe.py --name rgb --shell)"
+SSIM_W="${RECIPE_SSIM_WEIGHT:-0.1}"; LPIPS_W="${RECIPE_LPIPS_WEIGHT:-0}"
+SPILL_W="${RECIPE_SPILL_WEIGHT:-0}"; ALPHA_W="${RECIPE_ALPHA_WEIGHT:-0}"
+MODEL_CFG="${RECIPE_MODEL_CONFIG:-configs/model_rgb.yaml}"
 info "RGBAvatar 基线：$SUBJECT/$WORK（各向同性球、L1+SSIM 0.1、黑底、无 spill/alpha/修复图）"
 
 "${PY_RUN[@]}" scripts/train.py \
   --subject "$SUBJECT" --work-name "$WORK" --stage base \
-  --model-config configs/model_rgb.yaml \
+  --model-config "$MODEL_CFG" \
   --iterations 10000 --batch-size 8 --blend-start 0 \
-  --ssim-weight 0.1 --lpips-weight 0 --alpha-weight 0 \
-  --nv-spill-weight 0 --nv-hole-weight 0 \
+  --ssim-weight "$SSIM_W" --lpips-weight "$LPIPS_W" \
+  --alpha-weight "$ALPHA_W" --nv-spill-weight "$SPILL_W" --nv-hole-weight 0 \
   --patience 4 --min-delta 0.05 --eval-every 500 \
   $( (( FORCE )) && echo "--force" ) "${PASSTHRU[@]}"
 

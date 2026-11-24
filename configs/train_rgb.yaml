@@ -1,0 +1,14 @@
+# RGB 参照配方：各向同性初始化 + 高 lr + L1/SSIM 0.1、黑底；
+# 不掺 spill/alpha、修复图与加密。通用参数在 train.yaml。
+recipe: rgb
+model_config: configs/model_rgb.yaml
+xyz_lr: null
+ssim_weight: 0.1
+lpips_weight: 0.0
+lpips_from: 5000
+spill_weight: 0.0
+alpha_weight: 0.0
+repair: 0
+repair_schedule: none
+repair_final_weight: 0.2
+merge_tex: null

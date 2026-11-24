@@ -16,8 +16,8 @@
 
     命令行参数  >  环境变量  >  configs/*.yaml  >  代码内置兜底值
 
-`configs/local.yaml` 若存在，会在 `system.yaml` / `render.yaml` 之后**深合并**，
-用于放本机私有覆盖（该文件已被 .gitignore 忽略）。
+`configs/local.yaml` 若不存在，会退回 `configs/local.example.yaml` 模板；
+两者都在 `train.yaml` 之后深合并，用来放本机私有覆盖（`local.yaml` 被 gitignore）。
 """
 
 from __future__ import annotations
@@ -45,6 +45,12 @@ _ENV_OVERRIDES = {
     "LIVE3DGS_SUBJECT": "subject",
     "LIVE3DGS_WORK_NAME": "work_name",
     "LIVE3DGS_DEVICE": "runtime.device",
+    "LIVE3DGS_FLAME_DIR": "paths.flame_dir",
+    "LIVE3DGS_SYNCFIX_REPO": "syncfix.repo",
+    "LIVE3DGS_SYNCFIX_PYTHON": "syncfix.python",
+    "LIVE3DGS_SYNCFIX_MODEL": "syncfix.model",
+    "LIVE3DGS_HOST": "app.host",
+    "LIVE3DGS_PORT": "app.port",
 }
 
 # 代码内置兜底：仅当 YAML 缺失该字段时生效。
@@ -253,7 +259,7 @@ def _resolve_path(value: Any, field: str) -> Any:
 def load_config(
     config_dir: Path | str | None = None,
     files: Iterable[str] = ("system.yaml", "render.yaml", "train.yaml",
-                            "local.yaml"),
+                            "local.yaml", "local.example.yaml"),
     env: bool = True,
 ) -> Config:
     """加载配置。
@@ -268,8 +274,11 @@ def load_config(
     """
     cdir = Path(config_dir).resolve() if config_dir else CONFIG_DIR
 
+    # local.yaml 优先；不存在时用 local.example.yaml 兜底（模板即默认值）
     merged: dict[str, Any] = {}
     for name in files:
+        if name == "local.example.yaml" and (cdir / "local.yaml").is_file():
+            continue
         merged = deep_merge(merged, _load_yaml(cdir / name))
 
     cfg = Config(merged)
