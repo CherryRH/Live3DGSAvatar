@@ -196,7 +196,9 @@ const controls = new Controls(document, {
         refreshDatasets();      // 新模型的"自带数据集"可能不同
         refreshModels();        // 版本列表以磁盘为准
         showOverlay(null);
-        setStatusNote(`已加载模型 ${subject}/${work_name}，已回到第 0 帧并暂停`);
+        setStatusNote(`已加载模型 ${subject}/${work_name}，正在刷新界面…`);
+        // 换模型会改变分辨率/帧数/下拉框，局部刷新容易漏状态；直接整页重载最稳
+        setTimeout(() => window.location.reload(), 300);
       })
       .catch((err) => {
         controls.showModelError(`加载失败：${err.message}`);
@@ -381,10 +383,15 @@ function refreshModels(announce = false) {
     })
     .then((payload) => {
       controls.applyModels(payload);
+      const n = payload.models?.length ?? 0;
+      const loadBtn = document.getElementById("btn-load");
+      if (loadBtn) loadBtn.disabled = n === 0;
+      if (n === 0) {
+        controls.showModelInfo(
+          "还没有模型：先训练（bash train_base.sh / train_avatar.sh），再点「刷新模型列表」");
+      }
       if (announce) {
-        const n = payload.models?.length ?? 0;
-        setStatusNote(n ? `已刷新模型列表：${n} 个` : "没找到模型（models/*/*/model.ply）",
-                      n === 0);
+        setStatusNote(n ? `已刷新模型列表：${n} 个` : "还没有模型，请先训练", n === 0);
       }
     })
     .catch((err) => {
@@ -445,6 +452,12 @@ function connectToBackend() {
     else if (s === "connecting") setConn("connecting", "连接中…");
     else if (s === "retrying") setConn("retrying", "重连中…");
     else setConn("closed", "已断开");
+  });
+
+  client.addEventListener("no_model", (ev) => {
+    const hint = ev.detail?.hint ?? "还没有模型，请先训练";
+    controls.showModelInfo(hint);
+    setStatusNote(hint);
   });
 
   client.addEventListener("error", (ev) => {

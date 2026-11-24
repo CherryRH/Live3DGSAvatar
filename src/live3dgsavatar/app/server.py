@@ -232,8 +232,10 @@ async def _serve_client(app: FastAPI, ws: WebSocket, session: Session) -> None:
     # 提示一次，然后轮询等待；用户在界面里点「加载模型」后自动接上。
     if not session.ready:
         await sender.json({
-            "type": "error", "transient": True,
-            "message": "还没有加载模型：在右侧选择后点「加载模型」"})
+            "type": "no_model",
+            "hint": ("还没有模型。先训练一个：bash train_base.sh --subject <对象>"
+                     "（或 bash train_avatar.sh --subject <对象>），"
+                     "训练完成后点「刷新模型列表」再加载。")})
         ready_log = IntervalLogger(interval_s=10.0)
         while not session.ready:
             await asyncio.sleep(0.3)
