@@ -39,7 +39,7 @@ DENSIFY=0
 USE_LPIPS=0
 NO_REPAIRS=0
 PLAN=0
-RUN_EVAL=0
+RUN_EVAL=1
 FORCE=0
 EXTRA=()
 
@@ -52,6 +52,7 @@ while [[ $# -gt 0 ]]; do
     --no-repairs)  NO_REPAIRS=1; shift ;;
     --plan|--show-plan) PLAN=1; shift ;;
     --eval)        RUN_EVAL=1; shift ;;
+    --no-eval)     RUN_EVAL=0; shift ;;
     --force)       FORCE=1; shift ;;
     --)            shift; EXTRA=("$@"); break ;;
     -h|--help)     usage ;;

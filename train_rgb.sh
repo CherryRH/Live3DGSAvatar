@@ -23,6 +23,7 @@ usage() { sed -n '2,14p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0; }
 SUBJECT=""
 WORK="rgb"
 FORCE=0
+RUN_EVAL=1
 PASSTHRU=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -30,6 +31,7 @@ while [[ $# -gt 0 ]]; do
     -h|--help) usage ;;
     --work-name) WORK="${2:-}"; shift 2 ;;
     --force)     FORCE=1; shift ;;
+    --no-eval)   RUN_EVAL=0; shift ;;
     --) shift; PASSTHRU=("$@"); break ;;
     *) echo "[error] 未知参数：$1" >&2; exit 2 ;;
   esac
@@ -54,3 +56,8 @@ info "RGBAvatar 基线：$SUBJECT/$WORK（各向同性球、L1+SSIM 0.1、黑底
 
 info "完成：models/$SUBJECT/$WORK"
 info "评测：bash eval.sh --subject $SUBJECT --work-name $WORK"
+
+if (( RUN_EVAL )) && [[ -f "$REPO_ROOT/models/$SUBJECT/$WORK/model.ply" ]]; then
+  echo "[eval] 评测：bash eval.sh --subject $SUBJECT --work-name $WORK"
+  bash "$REPO_ROOT/eval.sh" --subject "$SUBJECT" --work-name "$WORK"
+fi

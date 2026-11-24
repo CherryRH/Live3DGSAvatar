@@ -25,12 +25,14 @@ usage() { sed -n '2,17p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0; }
 SUBJECT=""
 WORK="base"
 FORCE=0
+RUN_EVAL=1
 EXTRA=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --subject)   SUBJECT="${2:-}"; shift 2 ;;
     --work-name) WORK="${2:-}"; shift 2 ;;
     --force)     FORCE=1; shift ;;
+    --no-eval)   RUN_EVAL=0; shift ;;
     -h|--help)   usage ;;
     --)          shift; EXTRA=("$@"); break ;;
     *)           echo "[error] 未知参数：$1" >&2; exit 2 ;;
@@ -54,3 +56,8 @@ echo "[base] 优化版 RGBAvatar：$SUBJECT/$WORK（各向同性、xyz lr 默认
 
 echo "[base] 完成：models/$SUBJECT/$WORK"
 echo "[base] 评测：bash eval.sh --subject $SUBJECT --work-name $WORK"
+
+if (( RUN_EVAL )) && [[ -f "$REPO_ROOT/models/$SUBJECT/$WORK/model.ply" ]]; then
+  echo "[eval] 评测：bash eval.sh --subject $SUBJECT --work-name $WORK"
+  bash "$REPO_ROOT/eval.sh" --subject "$SUBJECT" --work-name "$WORK"
+fi

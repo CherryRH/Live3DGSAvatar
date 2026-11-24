@@ -15,8 +15,8 @@
     python scripts/render_test.py --dry-run          # 无需 GPU 的形状/约定自检
 
 单模型时：`report.json`（PSNR / SSIM / LPIPS / 锐度 / 性能）+ `compare.mp4`
-（原图 | 渲染并排，每帧叠加指标）+ `showcase.png`（固定 8 视角 2x4 拼图：
-GT、-15/-30/-45、0、+15/+30/+45；只渲染 7 张）。
+（原图 | 渲染并排，每帧叠加指标）+ `showcase.png`（固定 10 视角 2x5 拼图：
+GT、-60/-45/-30/-15、0、+15/+30/+45/+60；对比视频默认不写，`--save-video` 才写）。
 多模型时：`--work-names` 给多个版本，`compare.mp4` 为“原图 + N 个渲染”横排，
 `showcase.png` 为固定 2x4 拼图；报告为每个模型单独记录指标。
 """
@@ -117,6 +117,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="heldout 模式下留出集比例（默认取 train.pipeline.test_ratio）")
     p.add_argument("--seed", type=int, default=None,
                    help="random 模式的随机种子（默认取配置）")
+    p.add_argument("--save-video", action="store_true",
+                   help="写对比视频（默认不写，省时间；指标/报告/showcase 照常）")
     p.add_argument("--video-fps", type=float, default=None,
                    help="对比视频帧率（默认取配置，30 = 实时指标口径）")
     # `default=None`：脚本不硬编码业务默认量，未给时在 `_finalize` 里取 0
@@ -633,11 +635,11 @@ def showcase_poses(n: int = 30) -> list[tuple[float, float]]:
 
 def render_showcase(args, scene, avatar, rasterizer, bg,
                     frame_idx: int, *, draw_angle: bool = True) -> np.ndarray:
-    """固定 8 个视角的 2x4 展示拼图（GT + 7 个 yaw）。
+    """固定 10 个视角的 2x5 展示拼图（GT + 9 个 yaw）。
 
-    第一排：GT、-15、-30、-45
-    第二排：0、+15、+30、+45
-    只渲染 7 张，不再生成 120 帧视频。
+    第一排：GT、-60、-45、-30、-15
+    第二排：0、+15、+30、+45、+60
+    只渲染 9 张，不生成视频。
     """
     import torch
     from PIL import Image, ImageDraw
@@ -671,7 +673,7 @@ def render_showcase(args, scene, avatar, rasterizer, bg,
         except Exception:
             driver = None
 
-    yaws = (-15.0, -30.0, -45.0, 0.0, 15.0, 30.0, 45.0)
+    yaws = (-60.0, -45.0, -30.0, -15.0, 0.0, 15.0, 30.0, 45.0, 60.0)
     images = []
     for yaw in yaws:
         draw_gs = gs
@@ -707,18 +709,18 @@ def render_showcase(args, scene, avatar, rasterizer, bg,
     tiles = [(f"GT {frame_idx:05d}", gt_img)] + [
         (f"yaw {yaw:+.0f}", img) for yaw, img in zip(yaws, images)]
 
-    # 4x2 拼图，第一排 GT/-15/-30/-45，第二排 0/+15/+30/+45。
-    order = [0, 1, 2, 3, 4, 5, 6, 7]
+    # 5x2 拼图，第一排 GT/-60/-45/-30/-15，第二排 0/+15/+30/+45/+60。
+    order = list(range(10))
     from PIL import Image as _Image, ImageDraw as _ImageDraw
     tile_w, tile_h = scene.width, scene.height
     gap = 4
     label_h = 24
-    canvas = _Image.new("RGB", (tile_w * 4 + gap * 3,
+    canvas = _Image.new("RGB", (tile_w * 5 + gap * 4,
                                 (tile_h + label_h) * 2 + gap),
                         (10, 11, 14))
     draw = _ImageDraw.Draw(canvas)
     for n, idx in enumerate(order):
-        row, col = divmod(n, 4)
+        row, col = divmod(n, 5)
         x = col * (tile_w + gap)
         y = row * (tile_h + label_h + gap)
         label, img = tiles[idx]
@@ -1032,7 +1034,7 @@ def main() -> int:
         report["no_reference"] = models[0].get("no_reference")
 
     video_path = None
-    if gt is not None:
+    if gt is not None and args.save_video:
         # 对比视频：原图 | 模型1 | 模型2 | …；单模型保持原来的两格布局。
         frames_out = []
         for i in sorted(gt):
@@ -1088,7 +1090,7 @@ def main() -> int:
         else:
             showcase_path = out_root / "showcase.png"
             Image.fromarray(showcase_grids[0][1]).save(showcase_path)
-        print(f"  展示拼图：{showcase_path}（2x4；GT/-15/-30/-45 + 0/+15/+30/+45）")
+        print(f"  展示拼图：{showcase_path}（2x5；GT/-60/-45/-30/-15 + 0/+15/+30/+45/+60）")
 
     report_path = out_root / "report.json"
     report_path.write_text(json.dumps(report, indent=2, ensure_ascii=False),

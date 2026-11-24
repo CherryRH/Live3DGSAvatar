@@ -177,4 +177,8 @@ v' = v + w_head · (D·(v − J) + J − v)
 
 ## 10. 评测
 
+三个训练入口（`train_base/train_rgb/train_avatar`）在模型落盘后会自动调用
+`eval.sh`；不需要时加 `--no-eval`。`eval.sh` 默认只写 `report.json` 与
+`showcase.png`（2x5，含 ±60°），对比视频需显式 `--save-video`。
+
 指标口径、留出集用法、报告字段见 `docs/EVALUATION.md`。

@@ -82,6 +82,7 @@ bash train_base.sh --subject <对象>                    # 修复图的来源（
 bash train_rgb.sh --subject <对象>                     # RGBAvatar 风格参照（work-name 默认 rgb）
 # 修复图（缺省时 train_avatar.sh 会用 base 自动生成；SyncFix 路径见 configs/local.yaml）
 bash train_avatar.sh --subject <对象>                    # 盘状 + 修复图 + 退火，默认不加密
+# 三个入口训练完成后会自动跑 eval（--no-eval 可关）
 bash train_avatar.sh --subject <对象> --densify          # 挂上加密
 bash eval.sh --subject <对象> --work-name avatar
 # 多版本对比：原图 + N 个渲染并排，showcase 为 N 图并列
@@ -99,7 +100,7 @@ bash run_gui.sh --subject <对象> --work-name base
 | `train_base.sh` | 基础模型（各向同性初始化 + 高 lr + spill/alpha，修复图来源） | `models/<对象>/base/` |
 | `train_avatar.sh` | 盘状初始化 + 低 lr + 修复图（默认退火 2/8→1/8），可选挂加密 | `models/<对象>/<版本>/` |
 | `train_rgb.sh` | RGBAvatar 风格参照（各向同性球、L1+SSIM 0.1、黑底、无 spill/alpha/修复图） | `models/<对象>/rgb/` |
-| `eval.sh` | 留出集渲染评测 + ±45° 大角度指标（支持 `--work-names` 多版本） | `output/render_test/.../report.json`、`compare.mp4`、`showcase.png` |
+| `eval.sh` | 留出集评测 + ±45° 大角度指标（默认只出报告/showcase，`--save-video` 才写视频） | `report.json`、`showcase.png`（2x5，±60°） |
 | `run_gui.sh` | 浏览器预览与实时驱动 | 本地 Web 页面 |
 | `run_tracking.sh` | 启动 RDF 实时追踪服务 | 追踪 sidecar |
 
