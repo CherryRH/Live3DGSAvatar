@@ -273,6 +273,17 @@ if missing:
     sys.exit(f"  [error] 扩展缺少算子：{missing}")
 PY
 
+# ------------------------------------------------- 6.5 本机配置 ----
+if [[ ! -f "$REPO_ROOT/configs/local.yaml" ]]; then
+  cp "$REPO_ROOT/configs/local.example.yaml" "$REPO_ROOT/configs/local.yaml"
+  log "已生成 configs/local.yaml（本机配置，不入库）"
+  echo "  ⚠️  请编辑 configs/local.yaml，按本机填写："
+  echo "      paths.flame_dir / syncfix.repo / syncfix.python / syncfix.model"
+  echo "      （其余路径默认相对仓库根；训练/渲染参数在 configs/*.yaml）"
+else
+  log "configs/local.yaml 已存在，跳过（模板见 configs/local.example.yaml）"
+fi
+
 # ------------------------------------------------- 7. 自检 ----
 log "7/7 环境自检"
 python "$REPO_ROOT/scripts/env_check.py"

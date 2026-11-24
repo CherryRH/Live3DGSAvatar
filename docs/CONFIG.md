@@ -3,14 +3,17 @@
 ## 1. 优先级
 
 ```text
-命令行 > 环境变量 > configs/local.yaml > configs/*.yaml 默认值
+命令行 > 环境变量 > configs/local.yaml > configs/local.example.yaml > configs/*.yaml 默认值
 ```
+
+`local.yaml` 不存在时自动回退到 `local.example.yaml`；`setup_env.sh` 会在缺文件时
+自动复制一份 `local.yaml` 并提示填写。
 
 查看最终值：
 
 ```bash
 python scripts/show_config.py
-python scripts/show_config.py --shell-avatar
+python scripts/show_recipe.py --name avatar --shell
 ```
 
 ## 2. 配置文件
@@ -21,7 +24,9 @@ python scripts/show_config.py --shell-avatar
 | `configs/render.yaml` | 渲染、模型结构默认值 |
 | `configs/train.yaml` | 三入口共用的训练参数 |
 | `configs/model.yaml` | 模型结构参考值 |
-| `configs/local.yaml` | 本机覆盖，不提交 |
+| `configs/local.example.yaml` | 本机配置模板（入库） |
+| `configs/local.yaml` | 本机覆盖，不提交（缺省回退模板） |
+| `configs/train_<配方>.yaml` | `rgb` / `base` / `avatar` 各自的配方参数 |
 
 ## 3. system.yaml
 

@@ -141,9 +141,39 @@ models/<对象>/<版本>/            最终 model.ply + config.yaml + report.jso
 
 ## 配置
 
-- 路径/设备：`configs/system.yaml`
-- 渲染/模型结构：`configs/render.yaml`
-- 本地覆盖：`configs/local.yaml`
+分三层，越靠后优先级越高：
+
+| 层 | 文件 | 改法 |
+|---|---|---|
+| 1. 仓库默认 | `configs/system.yaml`（路径/设备）、`render.yaml`（渲染/结构）、`train.yaml`（三入口共用训练参数） | 一般不动 |
+| 2. 配方 | `configs/train_rgb.yaml` / `train_base.yaml` / `train_avatar.yaml` | 调某个训练配方时直接改并提交；`avatar` 的修复图参数在 `train_avatar.yaml` 的 `repair:` 块 |
+| 3. 本机 | `configs/local.yaml`（**不入库**） | 复制 `configs/local.example.yaml` 后手改；`setup_env.sh` 在缺文件时会自动复制并提示 |
+
+`local.yaml` 只放跟机器相关的项，模板里已列好：
+
+```yaml
+paths:   {data_root: datasets, output_dir: output, models_dir: models, flame_dir: null}
+syncfix: {repo: /path/to/SyncFix, python: syncfix, model: /path/to/SyncFix/models/paper}
+runtime: {device: cuda}
+app:     {host: localhost, port: 8000}
+tracking:{host: 127.0.0.1, port: 8980}
+```
+
+**临时覆盖**不用改文件，用环境变量即可（CLI > env > yaml > 内置兜底）：
+
+| 变量 | 对应键 |
+|---|---|
+| `LIVE3DGS_DATA_ROOT` / `LIVE3DGS_OUTPUT_DIR` / `LIVE3DGS_MODELS_DIR` | `paths.*` |
+| `LIVE3DGS_FLAME_DIR` | `paths.flame_dir` |
+| `LIVE3DGS_SYNCFIX_REPO` / `_PYTHON` / `_MODEL` | `syncfix.*` |
+| `LIVE3DGS_SUBJECT` / `LIVE3DGS_WORK_NAME` | 当前对象/版本 |
+| `LIVE3DGS_DEVICE` | `runtime.device` |
+| `LIVE3DGS_HOST` / `LIVE3DGS_PORT` | `app.*` |
+
+查看生效值：`python scripts/show_config.py`（`--sources` 看各文件是否加载）。
+
+GUI 设置面板**只影响本次运行**（背景/缩放等渲染参数），不写任何文件，重启恢复
+`configs/render.yaml` 的默认值；路径类配置请改 `configs/local.yaml`。
 
 ## 目录
 
