@@ -134,20 +134,38 @@ def _auto_angles(data_dir, train_end: int, step: float = 5.0,
 
 
 def _pick_ref_frames(yaw_signed: np.ndarray, train_end: int, base_idx: int,
-                     targets: list[float]) -> list[int]:
-    """按**带符号**的 yaw 挑参考帧（±20/±35… 左右各一张）。
+                     count: int) -> list[int]:
+    """在**训练集 yaw 区间**内挑 `count` 张参考帧。
 
-    ⚠️ 不能先取 |yaw| 再配负目标：那样 -20 会匹配到最接近正脸的帧，
-    左右两张会变成几乎一样的中性图（评审前修复图就吃过这个亏）。
+    中（基帧）由调用方单独加入；这里负责：
+      - 左/右：训练集 yaw 的最小值、最大值各一张；
+      - 若还需要更多（ref 总数 > 3），在 [min, max] 上按等分点补：
+        4 张 → 1 个中点，5 张 → 2 个三等分点，依此类推。
+
+    ⚠️ 所有候选帧都只取训练段（`[:train_end]`），不会用到留出帧。
     """
+    yaw = np.asarray(yaw_signed, dtype=np.float64)[:int(train_end)]
+    if yaw.size == 0 or count <= 0:
+        return []
+    lo, hi = float(yaw.min()), float(yaw.max())
+    targets: list[float] = [lo, hi]
+    extra = int(count) - 2
+    if extra > 0:
+        if hi > lo:
+            targets += [lo + (hi - lo) * i / (extra + 1)
+                        for i in range(1, extra + 1)]
+        else:
+            targets += [lo] * extra
     picked: list[int] = []
     for target in targets:
-        cand = np.abs(np.asarray(yaw_signed)[:train_end] - float(target))
-        for idx in np.argsort(cand)[:8]:
+        cand = np.abs(yaw - float(target))
+        for idx in np.argsort(cand)[:16]:
             idx = int(idx)
             if idx == base_idx or idx in picked:
                 continue
             picked.append(idx)
+            break
+        if len(picked) >= int(count):
             break
     return picked
 
@@ -504,9 +522,9 @@ def main(argv=None) -> int:
                 np.load(data_dir / "render_inputs.npz",
                         allow_pickle=True)["blend_weight"], dtype=np.float32))
             train_end = int(len(yaw) * (1.0 - test_ratio))
-            targets = [20.0, -20.0, 35.0, -35.0, 50.0, -50.0,
-                       0.0, 65.0, -65.0, 80.0, -80.0]
-            picked = _pick_ref_frames(yaw, train_end, base_idx, targets)
+            # 中（基帧）已单独加入；这里在训练段 yaw 区间里挑左/右 + 等分点
+            picked = _pick_ref_frames(yaw, train_end, base_idx,
+                                      max(0, target_refs - 1))
             added: list[int] = []
             for idx in picked:
                 if copied >= target_refs:

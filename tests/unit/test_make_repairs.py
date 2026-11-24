@@ -11,25 +11,24 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
 
 
-def test_pick_ref_frames_uses_signed_yaw() -> None:
-    """±20 必须分别落在左右两侧，不能都挑到正脸附近。"""
+def test_pick_ref_frames_uses_training_range_and_splits() -> None:
+    """左右取训练段极值；ref=4 再加区间中点，ref=5 加两个三等分点。"""
     from make_repairs import _pick_ref_frames
 
-    # 前 10 帧：正面附近；后面是 ±20/±35
-    yaw = np.array([0.0, 1.0, -1.0, 2.0, -2.0, 3.0, -3.0, 4.0, -4.0, 5.0,
-                    20.0, -20.0, 35.0, -35.0])
-    picked = _pick_ref_frames(yaw, len(yaw), base_idx=0,
-                              targets=[20.0, -20.0, 35.0, -35.0])
-    assert len(picked) == 4
-    assert yaw[picked[0]] == 20.0
-    assert yaw[picked[1]] == -20.0
-    assert yaw[picked[2]] == 35.0
-    assert yaw[picked[3]] == -35.0
+    yaw = np.array([-10.0, 0.0, 10.0, -30.0, 40.0, 5.0, 100.0])
+    # 训练段只到前 6 帧 → 区间 [-30, 40]，最后那个 100° 的留出帧不能选
+    picked2 = _pick_ref_frames(yaw, 6, base_idx=1, count=2)
+    assert [round(float(yaw[i])) for i in picked2] == [-30, 40]
+    picked3 = _pick_ref_frames(yaw, 6, base_idx=1, count=3)
+    assert sorted(round(float(yaw[i])) for i in picked3) == [-30, 5, 40]
+    picked4 = _pick_ref_frames(yaw, 6, base_idx=1, count=4)
+    assert 100.0 not in [float(yaw[i]) for i in picked4]
+    assert len(picked4) == 4
 
 
 def test_pick_ref_frames_skips_base_and_duplicates() -> None:
     from make_repairs import _pick_ref_frames
 
     yaw = np.array([0.0, 20.0, -20.0])
-    picked = _pick_ref_frames(yaw, len(yaw), base_idx=0, targets=[20.0, -20.0, 20.0])
-    assert picked == [1, 2]
+    picked = _pick_ref_frames(yaw, len(yaw), base_idx=0, count=2)
+    assert sorted(picked) == [1, 2]
