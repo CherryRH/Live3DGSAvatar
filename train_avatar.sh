@@ -70,10 +70,7 @@ recipe_shell="$("${PY_RUN[@]}" scripts/show_recipe.py --name avatar --shell)" ||
   die "读取 configs/train_avatar.yaml 失败"
 eval "$recipe_shell"
 
-STEPS="${AVATAR_STEPS:-10000}"
-BATCH="${AVATAR_BATCH:-8}"
 REPAIR="${AVATAR_REPAIR:-${RECIPE_REPAIR:-2}}"
-BLEND="${AVATAR_BLEND_START:-0}"
 SSIM="${AVATAR_SSIM_WEIGHT:-${RECIPE_SSIM_WEIGHT:-0.1}}"
 ALPHA_W="${AVATAR_ALPHA_WEIGHT:-${RECIPE_ALPHA_WEIGHT:-0.2}}"
 SPILL_W="${AVATAR_SPILL_WEIGHT:-${RECIPE_SPILL_WEIGHT:-0.05}}"
@@ -83,7 +80,7 @@ LPIPS=0
 (( USE_LPIPS )) && LPIPS="${AVATAR_LPIPS_WEIGHT:-${RECIPE_LPIPS_WEIGHT:-0.01}}"
 LPIPS_FROM="${AVATAR_LPIPS_FROM:-${RECIPE_LPIPS_FROM:-5000}}"
 TEX="${AVATAR_TEX_SIZE:-${RECIPE_MERGE_TEX:-512}}"
-PATIENCE="${AVATAR_PATIENCE:-4}"
+
 SCHEDULE="${AVATAR_REPAIR_SCHEDULE:-${RECIPE_REPAIR_SCHEDULE:-ratio}}"
 FINAL_W="${AVATAR_REPAIR_FINAL_WEIGHT:-${RECIPE_REPAIR_FINAL_WEIGHT:-0.2}}"
 
@@ -103,7 +100,7 @@ run() {
 
 echo "=============================================================="
 echo "单阶段头像重建：$SUBJECT / $NAME"
-echo "  训练 : $STEPS 步  batch $BATCH  repair $REPAIR  ssim $SSIM  lpips $LPIPS  退火 $SCHEDULE"
+echo "  训练 : 步数/batch/早停取 configs/train.yaml；repair $REPAIR  ssim $SSIM  lpips $LPIPS  退火 $SCHEDULE"
 echo "  结构 : tex $TEX  xyz_lr $XYZ_LR（盘状初始化配套）  加密 $([[ "$DENSIFY" == 1 ]] && echo "开（every $EVERY count $COUNT）" || echo "关")"
 echo "  产物 : $MODELS/$NAME"
 (( PLAN )) && echo "  --plan : 只打印命令，不执行"
@@ -172,8 +169,7 @@ run "${PY_RUN[@]}" scripts/train.py \
   --subject "$SUBJECT" --work-name "$NAME" --stage base \
   --init-ply "$UNIFIED" --model-config "$UNIFIED_CFG" \
   "${REPAIR_ARGS[@]}" \
-  --batch-size "$BATCH" --iterations "$STEPS" \
-  --blend-start "$BLEND" --hard-xyz-lr "$XYZ_LR" --patience "$PATIENCE" \
+  --hard-xyz-lr "$XYZ_LR" \
   --ssim-weight "$SSIM" --lpips-weight "$LPIPS" --lpips-from "$LPIPS_FROM" \
   --alpha-weight "$ALPHA_W" --nv-spill-weight "$SPILL_W" \
   --repair-schedule "$SCHEDULE" --repair-final-weight "$FINAL_W" \

@@ -21,10 +21,10 @@ train:
       perceptual_frames: 240
     # 三个配方（rgb/base/avatar）各自的特有参数在 configs/train_<配方>.yaml；
     # 这里只保留三入口共用的训练参数。
-    iterations: 10000
-    batch_size: 10
-    # 前 N 步不启用形变基（先用模板网格拟合静态外观）
-    blend_start: 3000
+    iterations: 20000
+    batch_size: 8
+    # 从第 0 步就启用形变基（三入口一致；早前 base/avatar 都传 0）
+    blend_start: 0
     # 位置类学习率的尺度（1.0 = 米制默认）。头部约 0.2 m 时通常保持 1.0，
     # 换到量级完全不同的场景才需要调。
     scene_extent: 1.0
