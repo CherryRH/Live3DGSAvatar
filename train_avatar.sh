@@ -116,6 +116,8 @@ elif [[ ! -d "$REPAIRS" ]] || [[ -z "$(ls -A "$REPAIRS" 2>/dev/null)" ]]; then
       --work-name base --auto \
       --out "output/repair/$SUBJECT" --out-dir "$REPAIRS" \
       --repair-root "$DATA/repair"
+  elif (( PLAN )); then
+    info "缺少修复图，将用 base 自动生成（plan 模式只打印）"
   else
     die "缺少修复图且没有 $MODELS/base：先跑 bash train_base.sh --subject $SUBJECT --work-name base"
   fi

@@ -9,7 +9,7 @@
 #   bash eval.sh --subject <对象> --work-name <版本> --base-work <基线>
 #   bash eval.sh --subject <对象> --work-name <版本> --frames -1      # 留出集全部
 #   bash eval.sh --subject <对象> --work-name <版本> --no-lpips   # 跳过 LPIPS
-#   bash eval.sh --subject <对象> --work-name base -- --work-names base base_post_r2 wk1116_mask_r2
+#   bash eval.sh --subject <对象> --work-name base -- --work-names base avatar rgb
 #
 # 取帧：--frame-mode heldout（默认，末尾 test_ratio 留出集）/ head（从头）/
 #       tail（从尾）/ random（随机，--seed 可重现）。

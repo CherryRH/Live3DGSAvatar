@@ -130,17 +130,18 @@ def main(argv=None) -> int:
             white = color + (1.0 - alpha[..., None])
             haze = float(((alpha > 0.05) & (alpha < 0.9)
                           & (white.mean(-1) < 0.9)).mean())
-            filled = alpha > 0.5
-            gy, gx = np.gradient(grey)
-            # 0–255 尺度，和报告的 sharpeness 口径一致
-            sharp = (float(np.hypot(gx, gy)[surf].mean()) * 255.0
-                     if surf.any() else 0.0)
+            from live3dgsavatar.evaluation.robustness import HOLE_THRESHOLD
+            filled = alpha > HOLE_THRESHOLD
+            from live3dgsavatar.core.metrics import sharpness as _sharpness
+            sharp = float(_sharpness(color * 255.0, surf) or 0.0)
             emb = _embed(app, rgb) if app is not None else None
             if yaw == 0:
                 ref_embed = emb
             rows[f"{yaw:+.0f}"] = {
-                "coverage": float((alpha[surf] > 0.5).mean()) if surf.any() else 0.0,
-                "hole": float((alpha[surf] < 0.5).mean()) if surf.any() else 0.0,
+                "coverage": (float((alpha[surf] > HOLE_THRESHOLD).mean())
+                             if surf.any() else 0.0),
+                "hole": (float((alpha[surf] < HOLE_THRESHOLD).mean())
+                         if surf.any() else 0.0),
                 "outside": float((filled & ~surf).sum()) / max(1, int(filled.sum())),
                 "haze": haze,
                 "sharp": sharp,

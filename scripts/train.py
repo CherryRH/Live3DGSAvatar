@@ -1509,11 +1509,25 @@ def main(argv: list[str] | None = None) -> int:
             if isinstance(v, (int, float, np.integer, np.floating))}}
         for it, metrics in val_hook.history
     ]
+    # best_psnr 必须是"best 那一步真实的 PSNR"，不能塞组合分（评审 B3）
+    best_psnr = None
+    best_metric_values: dict = {}
+    for it, metrics in val_hook.history:
+        if report.best_iteration is not None and int(it) == int(report.best_iteration):
+            best_metric_values = {k: float(v) for k, v in metrics.items()
+                                  if isinstance(v, (int, float, np.integer, np.floating))}
+            best_psnr = best_metric_values.get("psnr",
+                                               best_metric_values.get("psnr_surface"))
+            break
     report_path = out_dir / "report.json"
     report_path.write_text(json.dumps({
         "subject": subject, "work_name": work, "stage": stage,
         "iterations": report.iterations, "seconds": report.seconds,
-        "best_psnr": report.best_metric, "best_iteration": report.best_iteration,
+        "best_psnr": best_psnr, "best_iteration": report.best_iteration,
+        "best_metric": report.best_metric,
+        "best_metric_name": early_metric_name,
+        "best_metric_values": best_metric_values,
+        "best_saved": bool(report.best_saved),
         "best_seconds": (round(timing["best"], 1)
                          if timing["best"] is not None else None),
         "checkpoints": timing["saves"],

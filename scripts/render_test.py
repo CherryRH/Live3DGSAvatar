@@ -333,7 +333,7 @@ def _provenance(models: list[dict], *, background=(0, 0, 0)) -> dict:
         "git_dirty": bool(_git("status", "--porcelain")),
         "model_files": files,
         "metric_version": METRIC_VERSION,
-        "mask": "数据集人像 alpha>127（masked PSNR/SSIM）",
+        "mask": "数据集人像 alpha>250（masked PSNR/SSIM）",
         "hole_threshold": __import__(
             "live3dgsavatar.evaluation.robustness",
             fromlist=["HOLE_THRESHOLD"]).HOLE_THRESHOLD,
@@ -342,7 +342,7 @@ def _provenance(models: list[dict], *, background=(0, 0, 0)) -> dict:
         "ssim": "mask 外置 0 后的局部 SSIM（背景无关）",
         "lpips_scope": "full-image（两侧都合成到同一 metrics 背景）",
         "metric_background": list(background),
-        "robust_views": "±20/30/40 度头转（无 RDF 时相机绕转）",
+        "robust_views": ("±20/30/40 度头转（PoseDriver；缺 RDF 时用几何兜底支点）"),
         "lpips": {"backbone": "alex", "version": lpips_version},
     }
 
@@ -415,16 +415,17 @@ def _large_angle_metrics(avatar, scene, args) -> dict | None:
         alpha = res.alpha[0, 0].cpu().numpy()
         color = res.color[0].clamp(0, 1).permute(1, 2, 0).cpu().numpy()
         white = color + (1.0 - alpha[..., None])
-        filled = alpha > 0.5
-        gy, gx = np.gradient(color.mean(-1))
-        sharp = (float(np.hypot(gx, gy)[surf].mean()) * 255.0
-                 if surf.any() else 0.0)
+        from live3dgsavatar.evaluation.robustness import HOLE_THRESHOLD
+        filled = alpha > HOLE_THRESHOLD
+        from live3dgsavatar.core.metrics import sharpness as _sharpness
+        sharp = float(_sharpness(color * 255.0, surf) or 0.0)
         if yaw == 0.0:
             ref_sharp = sharp
         out[f"{yaw:+.0f}"] = {
-            "coverage": (float((alpha[surf] > 0.5).mean())
+            "coverage": (float((alpha[surf] > HOLE_THRESHOLD).mean())
                          if surf.any() else 0.0),
-            "hole": (float((alpha[surf] < 0.5).mean()) if surf.any() else 0.0),
+            "hole": (float((alpha[surf] < HOLE_THRESHOLD).mean())
+                     if surf.any() else 0.0),
             "outside": float((filled & ~surf).sum()) / max(1, int(filled.sum())),
             "haze": float(((alpha > 0.05) & (alpha < 0.9)
                            & (white.mean(-1) < 0.9)).mean()),
@@ -956,8 +957,8 @@ def main() -> int:
             "test_split": f"last {args.test_ratio:.0%} (heldout)",
             "selection_split": (f"last {args.test_ratio:.0%} (same frames; "
                                 "early-stop / model_best)"),
-            "selection_metric": "robust = PSNR - 10*alpha_deficit "
-                                "(±20/30/40deg head-turn views)",
+            "selection_metric": "score = PSNR + 50*SSIM + 50*(1-LPIPS)"
+                                "（240 帧验证集；与三个训练入口一致）",
             "note": "选模型与报数共用同一留出集：绝对值偏乐观，"
                     "配置间比较请用同一选择规则与同一指标版本",
         },

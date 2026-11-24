@@ -35,7 +35,7 @@ report = trainer.run()
 - `Hook.on_start/on_step/on_end`；
 - `ValidationHook` 每隔 `every` 步评估；`start_after` 之前不累积"无提升"；
   base 阶段的指标是**组合分** `PSNR + 50·SSIM + 50·(1−LPIPS)`（SSIM/LPIPS 在
-  240 帧抽样上算），hard_surface 用 `psnr_surface`；
+  240 帧抽样上算）；遗留的 `--stage hard_surface` 用 `psnr_surface`；
   指标只认**落盘那一刻**的分数（`best_metric` + `best_saved`），不再用历史最大值；
 - `TrainReport.iterations` 是**实际执行**的步数（早停不会多算一步）；
 - 训练不依赖 `data/` 或 `app/`，输入是 batch 协议。
@@ -118,6 +118,14 @@ bash train_base.sh --subject <对象> --work-name <版本>
 3. **加密（可选）**：`--densify` 打开残差驱动 split/prune（每 `every` 步，
    每次最多 `count` 个），默认关。
 
+`alpha` 0.2 与 `nv_spill` 0.05 是**轮廓干净度**的主要来源：前者让 alpha 贴近
+GT 前景，后者把 FLAME 表面外的半透明薄雾压掉；对应指标 `quality.haze`
+（定义见 `EVALUATION.md`）。
+
+遗留的 `--stage hard_surface`（含 `training/geometry.py` 的几何项）保留为可选
+工具，主流程与三个入口都不再使用，`configs/train.yaml` 里也没有它的配置键
+（走代码默认值）。
+
 ```bash
 bash train_avatar.sh --subject <对象>            # 默认不加密
 bash train_avatar.sh --subject <对象> --densify  # 挂上加密
@@ -130,7 +138,7 @@ bash train_avatar.sh --subject <对象> --no-lpips # 快速实验
 ## 8. 修复图（`scripts/make_repairs.py`）
 
 `train_avatar.sh` 需要 `datasets/<对象>/repair/repairs/`。修复图由 **base 模型
-按目标头姿渲染 → SyncFix 修复 → BiRefNet 抠图** 生成，只生成一次、训练时按
+按目标头姿渲染 → SyncFix 修复 → 背景色键控抠图** 生成，只生成一次、训练时按
 batch 比例混入：
 
 ```bash
@@ -156,7 +164,7 @@ python scripts/make_repairs.py --subject <对象> --work-name base \
 matting 后，在 FLAME 可见头部区（`y<0.6H`）找"最大的一块没被 mask 覆盖"的
 连通域；超过 `repair.max_hole_px`（config，默认 3000 px）就判定为破洞，
 该角度及更远角度全部丢弃，不再修复。另一条同样机制的判据是
-`repair.max_invented_px`（默认 800）：修复图在**渲染轮廓之外**凭空造出的
+`repair.max_invented_px`（config，默认 1000）：修复图在**渲染轮廓之外**凭空造出的
 像素数（SyncFix 幻觉，如 biden +70 起的"第二只耳朵"）。用"最大连通块"而不是比例：比例会被大片正常区域稀释，
 成片的缺口（比如头顶那一块）才是真正要拦的。
 SyncFix 路径从 `configs/local.yaml` 或 `--syncfix-*` 参数给。

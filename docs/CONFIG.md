@@ -10,7 +10,7 @@
 
 ```bash
 python scripts/show_config.py
-python scripts/show_config.py --shell-post
+python scripts/show_config.py --shell-avatar
 ```
 
 ## 2. 配置文件
@@ -19,7 +19,7 @@ python scripts/show_config.py --shell-post
 |---|---|
 | `configs/system.yaml` | 路径、设备、数据/模型目录、GUI、tracking |
 | `configs/render.yaml` | 渲染、模型结构、在线更新默认开关 |
-| `configs/train.yaml` | 训练、后训练、在线更新参数 |
+| `configs/train.yaml` | 训练、修复图、在线更新参数 |
 | `configs/model.yaml` | 模型结构参考值 |
 | `configs/local.yaml` | 本机覆盖，不提交 |
 
@@ -102,8 +102,8 @@ LIVE3DGS_OUTPUT_DIR
 |---|---|---|
 | `steps` / `batch` | `10000` / `8` | 步数上限 / 批大小 |
 | `repair` | `2` | 每批混入的修复图张数（0 = 关） |
-| `repair_schedule` | `ratio` | 退火：`none`/`linear`/`cosine`（衰减权重）/`ratio`（2/8→1/8） |
-| `repair_final_weight` | `0.2` | `linear`/`cosine` 结束时的修复图权重 |
+| `repair_schedule` | `ratio` | 退火：`ratio` 只改占比（2/8→1/8）；`linear`/`cosine` 只改 L1 权重 |
+| `repair_final_weight` | `0.2` | `linear`/`cosine` 结束时的修复图权重（仅 L1） |
 | `blend_start` | `0` | 形变基启用步（0 = 立即） |
 | `ssim_weight` / `lpips_weight` / `lpips_from` | `0.1` / `0.01` / `5000` | 感知项；LPIPS 只在 `--lpips` 时启用 |
 | `tex_size` | `512` | 统一集合的 UV 纹理边长 |

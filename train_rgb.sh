@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# 纯 RGBAvatar 基线：只保留"真实帧重建 + 标准加密"，不掺本项目的
-# 新视角 spill / alpha 监督 / 修复图 / 盘状初始化。
+# RGBAvatar 风格参照：各向同性初始化 + 高 xyz lr + L1/SSIM 0.1、黑底；
+# 不掺本项目的 spill/alpha、修复图与加密。
 #
 # 用法：
 #   bash train_rgb.sh --subject bala          # work_name 默认 rgb
@@ -18,6 +18,8 @@ cd "$REPO_ROOT"
 MAIN_ENV="${MAIN_ENV:-live3dgs}"
 PY_RUN=(conda run -n "$MAIN_ENV" --no-capture-output python)
 
+usage() { sed -n '2,14p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0; }
+
 SUBJECT=""
 WORK="rgb"
 FORCE=0
@@ -25,6 +27,7 @@ PASSTHRU=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --subject) SUBJECT="${2:-}"; shift 2 ;;
+    -h|--help) usage ;;
     --work-name) WORK="${2:-}"; shift 2 ;;
     --force)     FORCE=1; shift ;;
     --) shift; PASSTHRU=("$@"); break ;;
