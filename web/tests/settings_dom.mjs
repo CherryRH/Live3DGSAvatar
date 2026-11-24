@@ -225,13 +225,13 @@ t("带单位的数值显示单位", () => {
   ok(texts.includes("FPS"), "缺少单位后缀");
 });
 
-t("标题栏只说会保存，路径退到悬停提示", () => {
+t("标题栏说明设置只在本次运行生效", () => {
   const { root } = build();
   const src = root._map.get("#settings-source");
-  // 界面上不暴露 configs/local.yaml 这种内部路径
+  // 设置不落盘：不应暴露 local.yaml 路径，也不该说"会保存"
   ok(!src.textContent.includes(".yaml"), `不该出现路径：${src.textContent}`);
-  ok(src.textContent.length > 0, "应有一句简短说明");
-  ok(String(src.title).includes("local.yaml"), `路径应在 title 里：${src.title}`);
+  ok(src.textContent.includes("仅本次运行生效"), `说明应写运行时生效：${src.textContent}`);
+  ok(!String(src.textContent).includes("保存"), "不应再提保存");
 });
 
 console.log("\n交互");

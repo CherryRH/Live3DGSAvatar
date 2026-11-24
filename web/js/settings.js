@@ -105,9 +105,8 @@ export function coerceFieldValue(field, raw) {
 /**
  * 只挑出**真正改动过**的项，构成 `patch`。
  *
- * 为什么只发差异：后端会把这批值写进 `local.yaml` 作为覆盖项。
- * 若每次保存都把全部字段写进去，`local.yaml` 会变成整份配置的副本，
- * 之后改默认值就被它永久盖住 —— 而且没人看得出「哪些是我改的」。
+ * 只把改动过的项发给后端；后端只在**本次运行**里应用，不写任何文件，
+ * 重启后恢复配置文件里的默认值。
  */
 export function buildPatch(original, current) {
   const patch = {};
@@ -248,9 +247,9 @@ export class SettingsPanel {
     this.draft.clear();
     for (const f of this.fields) this.draft.set(f.key, f.value);
     if (this.el.source) {
-      // 完整路径属于内部细节；这里只说"改动会保存"，路径留到悬停提示
-      this.el.source.textContent = body.overrides_path ? "改动会保存" : "";
-      this.el.source.title = body.overrides_path ?? "";
+      // 设置只影响本次运行，不落盘
+      this.el.source.textContent = "仅本次运行生效（重启恢复默认）";
+      this.el.source.title = "";
     }
     this.loaded = true;
     // 保持用户当前所在的页签；首次或该分组消失时回落到第一个
@@ -451,7 +450,7 @@ export class SettingsPanel {
     return input;
   }
 
-  // -------------------------------------------------------------- 保存 --
+  // -------------------------------------------------------------- 应用 --
 
   /** 当前草稿与后端的差异（只有可编辑项会被收集）。 */
   collectPatch() {
@@ -485,7 +484,7 @@ export class SettingsPanel {
       return;
     }
 
-    this._status("保存中…");
+    this._status("应用中…");
     this.el.save.disabled = true;
     try {
       const resp = await fetch("/api/settings", {
@@ -501,13 +500,13 @@ export class SettingsPanel {
         this._status(body.warning, true);
       } else {
         const n = Object.keys(patch).length;
-        this._status(`已保存 ${n} 项并应用`);
+        this._status(`已应用 ${n} 项（仅本次运行）`);
       }
       // 把 patch 一并交出去：调用方要知道改了哪些键（路径类改动需要重扫目录），
       // 而 body.applied 只含立即生效的渲染参数。
       this.handlers.onApplied?.(body, patch);
     } catch (err) {
-      this._status(`保存失败：${err.message}`, true);
+      this._status(`应用失败：${err.message}`, true);
     } finally {
       this.el.save.disabled = false;
     }
@@ -518,12 +517,12 @@ export class SettingsPanel {
     this.draft.clear();
     for (const f of this.fields) this.draft.set(f.key, f.value);
     this.render();
-    this._status("已放弃未保存的修改");
+    this._status("已恢复为当前运行值");
   }
 
   _dirty() {
     const n = Object.keys(this.collectPatch()).length;
-    this._status(n ? `${n} 项未保存` : "");
+    this._status(n ? `${n} 项待应用` : "");
   }
 
   _status(text, isError = false) {
