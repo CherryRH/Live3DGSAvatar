@@ -133,6 +133,25 @@ def _auto_angles(data_dir, train_end: int, step: float = 5.0,
     return yaw_pos + yaw_neg, pitch_pos + pitch_neg
 
 
+def _pick_ref_frames(yaw_signed: np.ndarray, train_end: int, base_idx: int,
+                     targets: list[float]) -> list[int]:
+    """按**带符号**的 yaw 挑参考帧（±20/±35… 左右各一张）。
+
+    ⚠️ 不能先取 |yaw| 再配负目标：那样 -20 会匹配到最接近正脸的帧，
+    左右两张会变成几乎一样的中性图（评审前修复图就吃过这个亏）。
+    """
+    picked: list[int] = []
+    for target in targets:
+        cand = np.abs(np.asarray(yaw_signed)[:train_end] - float(target))
+        for idx in np.argsort(cand)[:8]:
+            idx = int(idx)
+            if idx == base_idx or idx in picked:
+                continue
+            picked.append(idx)
+            break
+    return picked
+
+
 def _head_hole_px(out: Path, label: str, matte_path: Path,
                   y_ratio: float = 0.6) -> tuple[int, float]:
     """FLAME 可见头部区里"最大的一块没被 mask 覆盖"的像素数 + 占比。"""
@@ -481,27 +500,23 @@ def main(argv=None) -> int:
         # 左/右（及更多）：按目标 |yaw| 从真实帧里挑，左右交替
         picked: list[int] = []
         if copied < target_refs:
-            yaw_all = np.abs(head_yaw(np.asarray(
+            yaw = head_yaw(np.asarray(
                 np.load(data_dir / "render_inputs.npz",
-                        allow_pickle=True)["blend_weight"], dtype=np.float32)))
-            train_end = int(len(yaw_all) * (1.0 - test_ratio))
+                        allow_pickle=True)["blend_weight"], dtype=np.float32))
+            train_end = int(len(yaw) * (1.0 - test_ratio))
             targets = [20.0, -20.0, 35.0, -35.0, 50.0, -50.0,
                        0.0, 65.0, -65.0, 80.0, -80.0]
-            for target in targets:
+            picked = _pick_ref_frames(yaw, train_end, base_idx, targets)
+            added: list[int] = []
+            for idx in picked:
                 if copied >= target_refs:
                     break
-                cand = np.abs(yaw_all[:train_end] - target)
-                for idx in np.argsort(cand)[:8]:
-                    idx = int(idx)
-                    if idx == base_idx or idx in picked:
-                        continue
-                    picked.append(idx)
-                    _save_ref(idx, f"auto_{idx:05d}.png")
-                    copied += 1
-                    break
-            if picked:
-                print(f"  参考图 : 追加 {len(picked)} 张真实帧 "
-                      f"{['%05d' % i for i in picked]}")
+                _save_ref(idx, f"auto_{idx:05d}.png")
+                copied += 1
+                added.append(idx)
+            if added:
+                print(f"  参考图 : 追加 {len(added)} 张真实帧 "
+                      f"{['%05d' % i for i in added]}")
         print(f"  参考图 : {copied} 张（目标 ≥{target_refs}）-> {refs_dir}")
         (out / "selected.json").write_text(json.dumps({
             "subject": subject, "model": str(ply), "base_frame": base_idx,
