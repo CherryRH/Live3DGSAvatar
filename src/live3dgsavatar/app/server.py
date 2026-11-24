@@ -128,17 +128,13 @@ def _install_routes(app: FastAPI, session: Session) -> None:
         return {
             "groups": settings_mod.groups_payload(),
             "fields": settings_mod.snapshot(session.cfg),
-            "overrides_path": str(settings_mod.overrides_path()),
-            "overrides": settings_mod.load_overrides(),
         }
 
     @app.post("/api/settings")
     async def api_settings_save(payload: dict) -> JSONResponse:
-        """校验 → 即时应用 → 持久化到 `configs/local.yaml`。
+        """校验 → 仅运行时应用（不写任何文件；重启恢复默认）。
 
-        三步都要做：只应用不持久化，重启就丢；只持久化不应用，
-        用户改了却看不到变化。校验失败的项**整批拒绝**（不做部分应用），
-        避免"改了一半"的中间状态。
+        校验失败整批拒绝，避免"改了一半"的中间状态。
         """
         patch = (payload or {}).get("patch")
         if not isinstance(patch, dict) or not patch:
@@ -151,22 +147,9 @@ def _install_routes(app: FastAPI, session: Session) -> None:
 
         applied = session.apply_settings(clean)
 
-        saved_to = None
-        warning = None
-        try:
-            path = await asyncio.to_thread(settings_mod.save_overrides, clean)
-            saved_to = str(path)
-        except OSError as e:
-            # 存盘失败（只读文件系统等）不该让"已经生效的修改"回滚，
-            # 但要明确告诉用户"这次重启后会丢"。
-            warning = f"已应用，但保存失败：{e}"
-            logger.warning("保存设置失败：%s", e)
-
         return JSONResponse({
             "ok": True,
             "applied": applied,
-            "saved_to": saved_to,
-            "warning": warning,
             "groups": settings_mod.groups_payload(),
             "fields": settings_mod.snapshot(session.cfg),
             # 渲染参数的**权威值**（与 /api/state 的 render 同构）。

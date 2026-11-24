@@ -247,21 +247,6 @@ FIELDS: tuple[Field, ...] = (
     _f("runtime.device", "运行设备", "system", "enum", order=30,
        editable=True, choices=("cuda", "cpu"),
        help="cuda 或 cpu，改完需重启", requires="restart"),
-    _f("paths.data_root", "数据集根目录", "system", "path", order=50,
-       editable=True, help="数据集都放在这个目录下；改完点「刷新列表」"),
-    _f("paths.models_dir", "模型根目录", "system", "path", order=70,
-       editable=True, help="模型都放在这个目录下；改完点「刷新列表」"),
-    _f("paths.model_ply", "模型文件名", "system", "text", order=80,
-       editable=True, help="相对模型目录；也可写绝对路径", requires="reload"),
-    _f("paths.models_config", "模型配置文件名", "system", "text", order=90,
-       editable=True, help="相对模型目录", requires="reload"),
-    _f("paths.flame_dir", "FLAME 资产目录", "system", "path", order=100,
-       editable=True, help="含 generic_model.pkl 与 flame_uv.npz",
-       requires="restart"),
-    _f("paths.output_dir", "产物根目录", "system", "path", order=110,
-       editable=True, help="产物与缓存目录", requires="restart"),
-    _f("paths.image_subdir", "人像子目录", "system", "text", order=120,
-       editable=True, help="抠好人像（黑底）的目录名", requires="reload"),
     _f("app.host", "监听地址", "system", "text", order=130,
        editable=True, help="改完需重启", requires="restart"),
     _f("app.port", "端口", "system", "int", order=140,
@@ -436,57 +421,6 @@ def _jsonable(value: Any) -> Any:
 
 
 # ------------------------------------------------------------ 持久化 --
-
-
-def overrides_path() -> Path:
-    """用户覆盖文件：`configs/local.yaml`（已 gitignore，合并链末尾）。"""
-    return repo_root() / "configs" / "local.yaml"
-
-
-def save_overrides(patch: dict[str, Any], path: Path | None = None) -> Path:
-    """把一批已校验的值写进 `local.yaml`，与已有内容深合并。
-
-    **只写覆盖项**，不复制整份配置 —— 这样 `local.yaml` 始终是"我改过什么"的
-    最小记录，升级默认配置时不会互相打架。
-
-    Raises:
-        OSError: 写入失败（权限、只读文件系统）
-    """
-    import yaml  # noqa: PLC0415
-
-    target = Path(path) if path is not None else overrides_path()
-    existing: dict[str, Any] = {}
-    if target.exists():
-        try:
-            loaded = yaml.safe_load(target.read_text(encoding="utf-8"))
-            if isinstance(loaded, dict):
-                existing = loaded
-        except (OSError, yaml.YAMLError):
-            # 已有文件坏了：不静默吞掉，交给上层；这里选择覆盖重建
-            existing = {}
-
-    merged = _deep_merge(existing, _unflatten(patch))
-    target.parent.mkdir(parents=True, exist_ok=True)
-    header = ("# 由 GUI 设置面板写入（gitignore）。\n"
-              "# 只记录被修改过的项；删除本文件即恢复默认。\n")
-    target.write_text(
-        header + yaml.safe_dump(merged, allow_unicode=True, sort_keys=False),
-        encoding="utf-8")
-    return target
-
-
-def load_overrides(path: Path | None = None) -> dict[str, Any]:
-    """读回 `local.yaml` 里的覆盖项（扁平化）；不存在返回空字典。"""
-    import yaml  # noqa: PLC0415
-
-    target = Path(path) if path is not None else overrides_path()
-    if not target.exists():
-        return {}
-    try:
-        data = yaml.safe_load(target.read_text(encoding="utf-8"))
-    except (OSError, yaml.YAMLError):
-        return {}
-    return _flatten(data) if isinstance(data, dict) else {}
 
 
 def _unflatten(patch: dict[str, Any]) -> dict[str, Any]:
