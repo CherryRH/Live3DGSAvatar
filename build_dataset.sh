@@ -11,6 +11,7 @@
 #   ./build_dataset.sh --video <视频> --name <对象> --fps 30 --limit 300
 #       [--head-factor 2.75] [--top-margin 0.08]  # 头颈构图，默认留头顶/脖子边缘
 #   ... --keep-stage 保留 output/build/<name> 供检查
+#   ... --keep-clothes 抠图只去背景、保留衣服（默认会去掉上衣/裙子）
 #
 # 已经跟踪过的目录（含 images/ 与 render_inputs.npz）会跳过 RDF，直接整理：
 #   ./build_dataset.sh <已跟踪的目录> --name <数据集名>
@@ -33,7 +34,7 @@ die() { echo "[error] $*" >&2; exit 1; }
 info() { echo "[build_dataset] $*"; }
 
 usage() {
-  sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '2,21p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
   exit 0
 }
 
@@ -46,6 +47,7 @@ FPS=30
 FORCE=""
 KEEP_IMAGES=""
 KEEP_STAGE=0
+KEEP_CLOTHES=""
 HEAD_FACTOR="2.75"
 TOP_MARGIN="0.08"
 
@@ -60,6 +62,7 @@ while [[ $# -gt 0 ]]; do
     --top-margin)  TOP_MARGIN="${2:-}"; shift 2 ;;
     --keep-stage) KEEP_STAGE=1; shift ;;
     --keep-images) KEEP_IMAGES="--keep-images"; shift ;;
+    --keep-clothes) KEEP_CLOTHES="--keep-clothes"; shift ;;
     --force)   FORCE="--force"; shift ;;
     -h|--help) usage ;;
     -*)        die "未知参数：$1（--help 查看用法）" ;;
@@ -80,12 +83,17 @@ if [[ -n "$VIDEO" ]]; then
   conda run -n "$MAIN_ENV" --no-capture-output \
     python scripts/prepare_video.py "${PRE_ARGS[@]}"
 
-  info "BiRefNet 抠图 + 去衣服（GPU）"
+  if [[ -n "$KEEP_CLOTHES" ]]; then
+    info "BiRefNet 抠图（保留衣服，只去背景；GPU）"
+  else
+    info "BiRefNet 抠图 + 去衣服（GPU）"
+  fi
   conda run -n "$MAIN_ENV" --no-capture-output \
     python scripts/matte_birefnet.py --input "$STAGE/input" \
       --out "$STAGE/images_birefnet" \
       --model "$REPO_ROOT/data/matting/birefnet_portrait" \
-      --clothes-model "$REPO_ROOT/data/matting/clothes_seg" --force
+      --clothes-model "$REPO_ROOT/data/matting/clothes_seg" \
+      $KEEP_CLOTHES --force
   rm -rf "$STAGE/images"
   mv "$STAGE/images_birefnet" "$STAGE/images"
 

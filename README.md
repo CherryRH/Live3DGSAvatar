@@ -78,6 +78,7 @@ python scripts/make_repairs.py --subject <对象> --work-name base --auto \
 ```bash
 bash build_dataset.sh <图像目录> --name <对象>
 bash build_dataset.sh --video videos/<对象> --name <对象>   # 从视频直接构建
+bash build_dataset.sh --video videos/<对象> --name <对象> --keep-clothes  # 只去背景，保留衣服
 bash train_base.sh --subject <对象>                    # 修复图的来源（work-name 默认 base）
 bash train_rgb.sh --subject <对象>                     # RGBAvatar 风格参照（work-name 默认 rgb）
 # 修复图（缺省时 train_avatar.sh 会用 base 自动生成；SyncFix 路径见 configs/local.yaml）
