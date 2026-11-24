@@ -227,7 +227,7 @@ def test_compose_panels_supports_five_panels() -> None:
     m = _load()
     panel = np.zeros((8, 8, 3), np.uint8)
     frame = m.compose_panels([(f"model{i}", panel) for i in range(5)])
-    assert frame.shape == (8 + 22, 8 * 5 + 4 * 4, 3)
+    assert frame.shape == (8 + 34, 8 * 5 + 4 * 4, 3)
 
 
 def test_compose_pair_is_two_panels_with_label_strip() -> None:
@@ -236,7 +236,7 @@ def test_compose_pair_is_two_panels_with_label_strip() -> None:
     right = np.full((16, 16, 3), 200, np.uint8)
     frame = m.compose_pair(left, right, "target 00001",
                            "render 00001 | PSNR 27.1 | SSIM 0.91 | LPIPS 0.08")
-    assert frame.shape == (16 + 22, 16 * 2 + 4, 3), "两格横排 + 标签条"
+    assert frame.shape == (16 + 34, 16 * 2 + 4, 3), "两格横排 + 标签条"
 
 
 def test_write_video_produces_a_file(tmp_path) -> None:

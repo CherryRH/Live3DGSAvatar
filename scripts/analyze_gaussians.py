@@ -69,11 +69,13 @@ def _masked_psnr(pred, gt, mask) -> float:
 def _bars(tile, values, labels, title, color=(70, 110, 200)):
     """在 PIL 图上画一个简单竖条图（不依赖 matplotlib）。"""
     from PIL import ImageDraw
+    from live3dgsavatar.evaluation.annotate import label_font
 
+    font = label_font(18)
     w, h = tile.size
     d = ImageDraw.Draw(tile)
     d.rectangle([0, 0, w, h], fill=(250, 250, 250))
-    d.text((10, 6), title, fill=(20, 20, 20))
+    d.text((10, 6), title, fill=(20, 20, 20), font=font)
     if not values:
         return
     top = max(1e-9, max(values))
@@ -84,8 +86,8 @@ def _bars(tile, values, labels, title, color=(70, 110, 200)):
         x1 = left + (i + 1) * bw - bw * 0.15
         y0 = bottom - (bottom - top_y) * (v / top)
         d.rectangle([x0, y0, x1, bottom], fill=color)
-        d.text((x0, bottom + 3), str(lab), fill=(60, 60, 60))
-    d.text((6, top_y), f"max {top:.0f}", fill=(120, 120, 120))
+        d.text((x0, bottom + 3), str(lab), fill=(60, 60, 60), font=font)
+    d.text((6, top_y), f"max {top:.0f}", fill=(120, 120, 120), font=font)
 
 
 def _render(avatar, rasterizer, mesh, weight, cam, bg, remove=None):
@@ -283,12 +285,12 @@ def main(argv: list[str] | None = None) -> int:
 
     # ---- 3) 拼图 ----
     try:
-        font = ImageFont.truetype(
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 16)
+        from live3dgsavatar.evaluation.annotate import label_font
+        font = label_font()
     except OSError:                                      # pragma: no cover
         font = ImageFont.load_default()
     cols = ["GT"] + [v[0] for v in variants]
-    pad, label_h, w = 6, 26, scene.width
+    pad, label_h, w = 6, 32, scene.width
     sheet = Image.new("RGB", (len(cols) * (w + pad) + pad,
                               len(views) * (w + label_h + pad) + pad),
                       (255, 255, 255))

@@ -637,8 +637,8 @@ def render_showcase(args, scene, avatar, rasterizer, bg,
                     frame_idx: int, *, draw_angle: bool = True) -> np.ndarray:
     """固定 10 个视角的 2x5 展示拼图（GT + 9 个 yaw）。
 
-    第一排：GT、-60、-45、-30、-15
-    第二排：0、+15、+30、+45、+60
+    第一排：GT、-15、-30、-45、-60
+    第二排：0、+15、+30、+45、+60（上下按绝对值对齐）
     只渲染 9 张，不生成视频。
     """
     import torch
@@ -673,7 +673,8 @@ def render_showcase(args, scene, avatar, rasterizer, bg,
         except Exception:
             driver = None
 
-    yaws = (-60.0, -45.0, -30.0, -15.0, 0.0, 15.0, 30.0, 45.0, 60.0)
+    # 上下按绝对值对齐：GT/-15/-30/-45/-60 与 0/+15/+30/+45/+60
+    yaws = (-15.0, -30.0, -45.0, -60.0, 0.0, 15.0, 30.0, 45.0, 60.0)
     images = []
     for yaw in yaws:
         draw_gs = gs
@@ -709,12 +710,14 @@ def render_showcase(args, scene, avatar, rasterizer, bg,
     tiles = [(f"GT {frame_idx:05d}", gt_img)] + [
         (f"yaw {yaw:+.0f}", img) for yaw, img in zip(yaws, images)]
 
-    # 5x2 拼图，第一排 GT/-60/-45/-30/-15，第二排 0/+15/+30/+45/+60。
+    # 5x2 拼图，第一排 GT/-15/-30/-45/-60，第二排 0/+15/+30/+45/+60。
     order = list(range(10))
     from PIL import Image as _Image, ImageDraw as _ImageDraw
     tile_w, tile_h = scene.width, scene.height
     gap = 4
-    label_h = 24
+    from live3dgsavatar.evaluation.annotate import label_font
+    font = label_font()
+    label_h = 34
     canvas = _Image.new("RGB", (tile_w * 5 + gap * 4,
                                 (tile_h + label_h) * 2 + gap),
                         (10, 11, 14))
@@ -724,7 +727,7 @@ def render_showcase(args, scene, avatar, rasterizer, bg,
         x = col * (tile_w + gap)
         y = row * (tile_h + label_h + gap)
         label, img = tiles[idx]
-        draw.text((x + 4, y + 4), label, fill=(232, 234, 240))
+        draw.text((x + 6, y + 4), label, fill=(232, 234, 240), font=font)
         canvas.paste(_Image.fromarray(img), (x, y + label_h))
     return np.asarray(canvas)
 
@@ -1090,7 +1093,7 @@ def main() -> int:
         else:
             showcase_path = out_root / "showcase.png"
             Image.fromarray(showcase_grids[0][1]).save(showcase_path)
-        print(f"  展示拼图：{showcase_path}（2x5；GT/-60/-45/-30/-15 + 0/+15/+30/+45/+60）")
+        print(f"  展示拼图：{showcase_path}（2x5；GT/-15/-30/-45/-60 + 0/+15/+30/+45/+60）")
 
     report_path = out_root / "report.json"
     report_path.write_text(json.dumps(report, indent=2, ensure_ascii=False),
@@ -1195,13 +1198,15 @@ def _label_strip(width: int, text: str, height: int = 20):
     """面板上方的深色标签条（ASCII，避免字体依赖）。"""
     from PIL import Image, ImageDraw
 
+    from live3dgsavatar.evaluation.annotate import label_font
     strip = Image.new("RGB", (width, height), (24, 26, 32))
-    ImageDraw.Draw(strip).text((6, 4), text, fill=(230, 232, 238))
+    ImageDraw.Draw(strip).text((6, 4), text, fill=(230, 232, 238),
+                               font=label_font())
     return strip
 
 
 def compose_panels(panels: list[tuple[str, np.ndarray]],
-                   strip_h: int = 22, gap: int = 4) -> np.ndarray:
+                   strip_h: int = 34, gap: int = 4) -> np.ndarray:
     """任意多图横排：`[(标签, HxWx3 uint8)]`，每格上方带标签。"""
     from PIL import Image, ImageDraw
 
@@ -1211,27 +1216,29 @@ def compose_panels(panels: list[tuple[str, np.ndarray]],
     w, h = tiles[0].size
     canvas = Image.new("RGB", (w * len(tiles) + gap * (len(tiles) - 1),
                                h + strip_h), (10, 11, 14))
+    from live3dgsavatar.evaluation.annotate import label_font
     draw = ImageDraw.Draw(canvas)
     for i, (tile, (label, _)) in enumerate(zip(tiles, panels)):
         x = i * (w + gap)
-        draw.text((x + 4, 4), label, fill=(232, 234, 240))
+        draw.text((x + 6, 4), label, fill=(232, 234, 240), font=label_font())
         canvas.paste(tile, (x, strip_h))
     return np.asarray(canvas)
 
 
 def compose_pair(left: np.ndarray, right: np.ndarray,
                  left_label: str, right_label: str,
-                 strip_h: int = 22, gap: int = 4) -> np.ndarray:
+                 strip_h: int = 34, gap: int = 4) -> np.ndarray:
     """左=原图、右=渲染，一格一条标签，返回 `HxWx3` uint8（拼视频用）。"""
     from PIL import Image, ImageDraw
 
     tiles = [Image.fromarray(np.ascontiguousarray(x)) for x in (left, right)]
     w, h = tiles[0].size
+    from live3dgsavatar.evaluation.annotate import label_font
     canvas = Image.new("RGB", (w * 2 + gap, h + strip_h), (10, 11, 14))
     draw = ImageDraw.Draw(canvas)
     for i, (tile, text) in enumerate(zip(tiles, (left_label, right_label))):
         x = i * (w + gap)
-        draw.text((x + 4, 4), text, fill=(232, 234, 240))
+        draw.text((x + 6, 4), text, fill=(232, 234, 240), font=label_font())
         canvas.paste(tile, (x, strip_h))
     return np.asarray(canvas)
 
