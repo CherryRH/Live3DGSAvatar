@@ -18,8 +18,8 @@ python scripts/show_config.py --shell-avatar
 | 文件 | 内容 |
 |---|---|
 | `configs/system.yaml` | 路径、设备、数据/模型目录、GUI、tracking |
-| `configs/render.yaml` | 渲染、模型结构、在线更新默认开关 |
-| `configs/train.yaml` | 训练、修复图、在线更新参数 |
+| `configs/render.yaml` | 渲染、模型结构默认值 |
+| `configs/train.yaml` | 三入口共用的训练参数 |
 | `configs/model.yaml` | 模型结构参考值 |
 | `configs/local.yaml` | 本机覆盖，不提交 |
 
@@ -132,18 +132,6 @@ LIVE3DGS_OUTPUT_DIR
 | `frames` | `80` | 支持统计帧数 |
 | `yaws` | `±10…±50` | 候选角度 |
 | `robust_spill_weight` | `0.0` | 验证指标中的外溢权重 |
-
-### 在线更新 `train.online_update`
-
-| 字段 | 默认 | 说明 |
-|---|---|---|
-| `enabled` | `true` | 总开关 |
-| `update_color` / `update_opacity` | `true` | 更新内容 |
-| `time_budget_s` | `10.0` | 墙钟预算 |
-| `steps` | `300` | 最大步数 |
-| `lr_color` / `lr_opacity` | `0.002` / `0.02` | 学习率 |
-| `mask_weight` | `0.0` | 背景权重 |
-| `frames` / `frame_chunk` | `8` / `8` | 观测帧数与每步帧数 |
 
 ## 6. 环境变量
 

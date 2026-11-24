@@ -74,6 +74,8 @@ BATCH="${AVATAR_BATCH:-8}"
 REPAIR="${AVATAR_REPAIR:-${RECIPE_REPAIR:-2}}"
 BLEND="${AVATAR_BLEND_START:-0}"
 SSIM="${AVATAR_SSIM_WEIGHT:-${RECIPE_SSIM_WEIGHT:-0.1}}"
+ALPHA_W="${AVATAR_ALPHA_WEIGHT:-${RECIPE_ALPHA_WEIGHT:-0.2}}"
+SPILL_W="${AVATAR_SPILL_WEIGHT:-${RECIPE_SPILL_WEIGHT:-0.05}}"
 XYZ_LR="${AVATAR_XYZ_LR:-${RECIPE_XYZ_LR:-0.0002}}"
 # 默认不把 LPIPS 放进损失（保持与其他对照单一变量）；--lpips 才启用
 LPIPS=0
@@ -172,6 +174,7 @@ run "${PY_RUN[@]}" scripts/train.py \
   --batch-size "$BATCH" --iterations "$STEPS" \
   --blend-start "$BLEND" --hard-xyz-lr "$XYZ_LR" --patience "$PATIENCE" \
   --ssim-weight "$SSIM" --lpips-weight "$LPIPS" --lpips-from "$LPIPS_FROM" \
+  --alpha-weight "$ALPHA_W" --nv-spill-weight "$SPILL_W" \
   --repair-schedule "$SCHEDULE" --repair-final-weight "$FINAL_W" \
   "${DENSIFY_ARGS[@]}" "${FORCE_FLAG[@]}" "${EXTRA[@]}"
 

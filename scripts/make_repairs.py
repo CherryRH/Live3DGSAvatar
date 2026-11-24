@@ -59,8 +59,18 @@ def parse_args(argv=None):
 
     from live3dgsavatar.config import load_config
 
+    from live3dgsavatar.config import CONFIG_DIR
+
     cfg = load_config()
-    rcfg = cfg.get("train.pipeline.repair", {}) or {}
+    # 修复图参数只在 avatar 配方里（train_avatar.yaml 的 repair 块）
+    recipe_path = CONFIG_DIR / "train_avatar.yaml"
+    rcfg: dict = {}
+    if recipe_path.is_file():
+        import yaml
+        recipe = yaml.safe_load(recipe_path.read_text(encoding="utf-8")) or {}
+        rcfg = recipe.get("repair", {}) or {}
+    if not rcfg:
+        rcfg = cfg.get("train.pipeline.repair", {}) or {}
     sxf = cfg.get("syncfix", {}) or {}
     # 调参项：config 为唯一来源（脚本不再挂这些命令）
     args.auto_quantile = float(rcfg.get("auto_quantile", 90.0))

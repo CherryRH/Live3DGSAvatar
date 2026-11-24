@@ -114,17 +114,6 @@ _FALLBACK: dict[str, Any] = {
     "train.pipeline.save_every": 5_000,
     "train.pipeline.prefetch_workers": 2,
     "train.pipeline.max_frames": None,
-    "train.online_update.enabled": True,
-    "train.online_update.update_opacity": True,
-    "train.online_update.color_l1": False,
-    "train.online_update.update_color": True,
-    "train.online_update.time_budget_s": 10.0,
-    "train.online_update.steps": 300,
-    "train.online_update.lr_color": 0.002,
-    "train.online_update.lr_opacity": 0.02,
-    "train.online_update.mask_weight": 0.0,
-    "train.online_update.frames": 8,
-    "train.online_update.frame_chunk": 8,
 }
 
 # 需要解析为绝对路径的字段（相对路径按**仓库根**解析，而非 cwd）

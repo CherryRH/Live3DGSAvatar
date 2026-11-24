@@ -7,7 +7,6 @@
 |---|---|
 | `core/` | 高斯表示、FLAME 形变与绑定、相机、光栅化；不依赖上层 |
 | `data/` | 数据集读取、场景、样本源、姿态/头姿 |
-| `training/` | 训练循环、损失、参数计划、在线更新 |
 | `evaluation/` | 缺陷检测、候选视图、PSNR/SSIM/LPIPS |
 | `app/` | GUI 后端、协议、会话、设置 |
 | `tracking/` | RDF 实时驱动桥 |
@@ -130,7 +129,6 @@ output/
   render_test/<对象>/<版本>/      评测报告/对比视频/展示图
   compare_defects/<对象>/<版本>/  与基线的缺陷对比
   analyze/<对象>/<版本>/          解剖与统计
-  online_update/<实验名>/        在线更新状态与对比图
   repair/<对象>/                  修复图生成的中间产物（views/syncfix/matte/final，可删）
   cache/                          可重建缓存（FLAME 拓扑等）
 models/<对象>/<版本>/            最终 model.ply + config.yaml + report.json
@@ -145,7 +143,6 @@ models/<对象>/<版本>/            最终 model.ply + config.yaml + report.jso
 
 - 路径/设备：`configs/system.yaml`
 - 渲染/模型结构：`configs/render.yaml`
-- 训练/修复图/在线更新：`configs/train.yaml`
 - 本地覆盖：`configs/local.yaml`
 
 ## 目录

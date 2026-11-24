@@ -19,40 +19,6 @@ train:
       ssim: 50.0
       lpips: 50.0
       perceptual_frames: 240
-    # 加密阶段：alpha 直接向 GT 前景 mask 回归（治"半透明 + 轮廓外黑色薄雾"）
-    alpha_weight: 0.2
-    # 修复图生成（scripts/make_repairs.py 读取；脚本里不再挂这些参数）
-    repair:
-      # 角度：从训练段各方向的 auto_quantile 起，步长 step，最多外推
-      # auto_quantile+auto_extrapolate；yaw_only 只做 yaw 扇
-      auto_quantile: 90
-      auto_extrapolate: 90
-      yaw_only: true
-      step: 5
-      # 渲染/参考图：灰底更接近照片；参考图**至少 3 张**（基帧作中心/身份参考，
-      # 左右各一张近 ±20° 的真实帧）；refs_auto 更大时继续加，ref_size 自动跟随
-      view_bg: 0.8
-      refs_auto: 3
-      # 有效性：FLAME 头部区最大连通缺口 > max_hole_px 判定破洞，整侧封顶
-      max_hole_px: 3000
-      # 修复图在"渲染轮廓之外"凭空造出的像素上限（SyncFix 幻觉，如双侧耳朵）
-      max_invented_px: 1000
-      invented_dilate: 8
-      # 渲染覆盖率下限（base 没画出来的角度直接跳过）
-      min_coverage: 0.65
-      # 抠图方式：key=按背景色键控（默认，背景是我们自己渲染的灰底）；
-      # birefnet=人像 matting（极端角度会切掉头发）；auto=两者取并集
-      mask: key
-      key_threshold: 18
-      # 键控后向内收几像素，去掉 SyncFix 残留的背景描边
-      edge_shrink: 1
-      # mask 内纯黑洞修补
-      inpaint: true
-      # SyncFix 每次喂几张（少 = 模型加载次数多，多 = 显存高）
-      syncfix_batch: 4
-      ref_size: 3
-      sharpen: 0.35
-
     # 三个配方（rgb/base/avatar）各自的特有参数在 configs/train_<配方>.yaml；
     # 这里只保留三入口共用的训练参数。
     iterations: 10000

@@ -8,7 +8,6 @@
 |---|---|
 | `train_base.sh` / `scripts/train.py` | 基础训练（单段，从 FLAME 初始化） |
 | `train_avatar.sh` | 单阶段头像重建（UV 初始化 → 统一集合），可选挂加密 |
-| `scripts/online_update.py` | 通话时的在线外观更新 |
 
 数值默认值只在 `configs/train.yaml`（与 `configs/model.yaml`）里，本文件不重复
 列数字；`python scripts/show_config.py --shell-avatar` 会打印训练脚本实际用的值。
@@ -76,16 +75,6 @@ LPIPS 可延迟开启；`ssim_weight` / `lpips_weight` 相对 L1。
 - `scaled(factor)`：整体缩放。
 
 `schedule.py` 提供 `expon_lr`、`blend_active`、`EarlyStopping`。
-
-## 5. 观测与在线更新
-
-`observations.py` 的 `FrameObservation` / `BatchObservation` 描述单帧/多帧观测；
-`updater.py` 的 `OnlineUpdater.fit()` 做闭式颜色校正 + 梯度微调，只改外观。
-
-```bash
-python scripts/online_update.py --subject <对象> --work-name <版本> \
-    --frames 8 --steps 300 --time-budget 10
-```
 
 ## 6. 基础训练
 

@@ -125,7 +125,7 @@ mesh + blend_weight
   → RenderOutput(color, alpha, est_color, est_weight, radii)
 ```
 
-- 推理默认 `torch.no_grad()`；训练/在线更新用 `build_graph=True`；
+- 推理默认 `torch.no_grad()`；训练用 `build_graph=True`；
 - 需要复用同一份形变结果渲染多个相机时用 `render_gaussians()`；
 - 只有 `SimpleRasterizer` 一种实现，训练/推理/热更新共用；
 - `timings` / `sync` 可选，供 GUI 统计 deform / rasterize 耗时；

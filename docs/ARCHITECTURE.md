@@ -9,7 +9,7 @@
   → train：GaussianAvatar 参数（model.ply）
   → train_avatar：单阶段统一集合训练（可选加密、混入修复图）
   → eval：留出集指标 + compare/showcase
-  → app：浏览器预览、实时驱动、在线更新
+  → app：浏览器预览、实时驱动
 ```
 
 ## 2. 分层
@@ -17,7 +17,7 @@
 ```text
 core/        高斯、形变、绑定、相机、光栅化、PLY、指标
 data/        数据集、Scene、样本源、FLAME、姿态、模型目录
-training/    Trainer、损失、参数计划、观测、在线更新
+training/    Trainer、损失、参数计划、观测
 evaluation/  缺陷、视角、表情、选择器、鲁棒性、评测协议
 app/         GUI 后端、WebSocket 协议、会话、设置
 tracking/    RDF 实时驱动桥
@@ -83,7 +83,6 @@ src/live3dgsavatar/
 | `run_gui.sh` / `app/server.py` | GUI 与推流 |
 | `run_tracking.sh` / `scripts/rdf_bridge.py` | 实时追踪服务 |
 | `scripts/make_repairs.py` | 用 SyncFix 生成修复图（由 base 渲染；`train_avatar.sh` 的前置） |
-| `scripts/online_update.py` | 在线外观更新 |
 
 ## 5. 核心接口
 
